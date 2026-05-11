@@ -18,6 +18,12 @@ const directionIcon = (dir) => {
 
 const EMPTY_FORM = { phone: '', contactName: '', direction: 'Outgoing', outcome: 'Connected', duration: '', notes: '', leadId: '' };
 
+// Repeat-attempt rollup: consecutive unpicked outgoing calls to the same number
+// by the same staff member within 24 hours are collapsed into one row showing
+// "× N attempts". Connected calls always stay as individual rows.
+const REPEAT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+const isUnpickedCall = (l) => l.outcome !== 'Connected' && (!l.duration || Number(l.duration) === 0);
+
 export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const canCreate = perms?.can('CallLogs', 'create') === true;
   const canEdit = perms?.can('CallLogs', 'edit') === true;
@@ -41,6 +47,10 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const [addLeadLog, setAddLeadLog] = useState(null);
   const [addLeadForm, setAddLeadForm] = useState({ ...EMPTY_LEAD });
   const [savingLead, setSavingLead] = useState(false);
+  const [groupRepeats, setGroupRepeats] = useState(() => {
+    try { return localStorage.getItem(`callLogGroupRepeats_${user.email}`) !== 'false'; } catch { return true; }
+  });
+  const [dedupRunning, setDedupRunning] = useState(false);
 
   // FIX 1: Split into critical (immediate) + deferred (background) queries
   // Critical data — callLogs + profile must load before table can render
@@ -275,12 +285,79 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     return list;
   }, [callLogs, search, dirFilter, staffFilter, dateFrom, dateTo]);
 
-  const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
+  // Collapse consecutive unpicked attempts to the same number/staff/direction
+  // within 24h into a single synthetic row with an attemptCount. Connected
+  // calls always stay as individual rows.
+  const grouped = useMemo(() => {
+    if (!groupRepeats) return filtered;
+    const result = [];
+    let i = 0;
+    while (i < filtered.length) {
+      const log = filtered[i];
+      if (!isUnpickedCall(log)) { result.push(log); i++; continue; }
+      const phone = normalize(log.phone);
+      const group = [log];
+      let j = i + 1;
+      while (j < filtered.length) {
+        const next = filtered[j];
+        if (!isUnpickedCall(next)) break;
+        if (normalize(next.phone) !== phone) break;
+        if ((next.staffEmail || '') !== (log.staffEmail || '')) break;
+        if ((next.direction || '') !== (log.direction || '')) break;
+        const last = group[group.length - 1];
+        if (Math.abs((last.createdAt || 0) - (next.createdAt || 0)) > REPEAT_GROUP_WINDOW_MS) break;
+        group.push(next);
+        j++;
+      }
+      if (group.length === 1) {
+        result.push(log);
+      } else {
+        result.push({
+          ...log,
+          attemptCount: group.length,
+          firstAttemptAt: Math.min(...group.map(g => g.createdAt || 0)),
+          lastAttemptAt: Math.max(...group.map(g => g.createdAt || 0)),
+          groupedIds: group.map(g => g.id),
+        });
+      }
+      i = j;
+    }
+    return result;
+  }, [filtered, groupRepeats]);
+
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(grouped.length / pageSize);
   const paged = useMemo(() => {
-    if (pageSize === 'all') return filtered;
+    if (pageSize === 'all') return grouped;
     const start = (currentPage - 1) * pageSize;
-    return filtered.slice(start, start + pageSize);
-  }, [filtered, currentPage, pageSize]);
+    return grouped.slice(start, start + pageSize);
+  }, [grouped, currentPage, pageSize]);
+
+  const toggleGroupRepeats = () => {
+    const next = !groupRepeats;
+    setGroupRepeats(next);
+    try { localStorage.setItem(`callLogGroupRepeats_${user.email}`, String(next)); } catch { /* ignore */ }
+  };
+
+  const runDedupe = async () => {
+    if (!perms?.isOwner) { toast('Only the business owner can run cleanup', 'error'); return; }
+    if (!window.confirm('Scan and remove duplicate call log rows? This keeps the original entry and hard-deletes the duplicates.')) return;
+    setDedupRunning(true);
+    try {
+      const r = await fetch('/api/dedupe-call-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId }),
+      });
+      const json = await r.json();
+      if (json.error) throw new Error(json.error);
+      if (json.deleted === 0) toast('No duplicates found — your call logs are clean.', 'success');
+      else toast(`Removed ${json.deleted} duplicate row${json.deleted === 1 ? '' : 's'} from ${json.groups} group${json.groups === 1 ? '' : 's'}.`, 'success');
+    } catch (e) {
+      toast(`Dedupe failed: ${e.message}`, 'error');
+    } finally {
+      setDedupRunning(false);
+    }
+  };
 
   const openNew = () => { setForm(EMPTY_FORM); setEditData(null); setModal(true); };
   const openEdit = (log) => {
@@ -317,11 +394,16 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     } catch (e) { toast(e.message, 'error'); }
   };
 
-  const remove = async (logId) => {
-    if (!window.confirm('Delete this call log?')) return;
+  const remove = async (logIdOrIds) => {
+    // Accepts either a single id or an array (grouped row → delete all attempts)
+    const ids = Array.isArray(logIdOrIds) ? logIdOrIds : [logIdOrIds];
+    const msg = ids.length === 1 ? 'Delete this call log?' : `Delete all ${ids.length} grouped attempts?`;
+    if (!window.confirm(msg)) return;
     try {
-      await db.transact(db.tx.callLogs[logId].delete());
-      toast('Call log deleted', 'success');
+      // Hard delete (per CLAUDE.md rule) — also runs as a single transaction
+      // so the rows disappear atomically.
+      await db.transact(ids.map(id => db.tx.callLogs[id].delete()));
+      toast(ids.length === 1 ? 'Call log deleted' : `${ids.length} attempts deleted`, 'success');
     } catch (e) { toast(e.message, 'error'); }
   };
 
@@ -429,7 +511,21 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
           <button onClick={() => { setSearch(''); setDirFilter(''); setDateFrom(''); setDateTo(''); setStaffFilter(''); }} style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card)', fontSize: 12, cursor: 'pointer' }}>Clear</button>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: 'var(--muted)' }}>{filtered.length} record{filtered.length !== 1 ? 's' : ''}</span>
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+            {filtered.length} record{filtered.length !== 1 ? 's' : ''}
+            {groupRepeats && grouped.length !== filtered.length && (
+              <> · <strong>{grouped.length}</strong> rows (grouped)</>
+            )}
+          </span>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }} title="Collapse consecutive unanswered calls to the same number into one row">
+            <input type="checkbox" checked={groupRepeats} onChange={toggleGroupRepeats} style={{ margin: 0 }} />
+            Group repeats
+          </label>
+          {perms?.isOwner && (
+            <button className="btn btn-secondary btn-sm" onClick={runDedupe} disabled={dedupRunning} title="Scan & hard-delete duplicate call log rows">
+              {dedupRunning ? '⏳ Cleaning…' : '🧹 Cleanup Duplicates'}
+            </button>
+          )}
           <button className="btn btn-secondary btn-sm" onClick={() => {
             setTempCols(activeCols);
             setTempPageSize(pageSize);
@@ -521,7 +617,16 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                       </td>
                     )}
                     {activeCols.includes('Phone') && <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{log.phone}</td>}
-                    {activeCols.includes('Contact') && <td style={{ padding: '10px 12px' }}>{log.contactName || '-'}</td>}
+                    {activeCols.includes('Contact') && (
+                      <td style={{ padding: '10px 12px' }}>
+                        {log.contactName || '-'}
+                        {log.attemptCount > 1 && (
+                          <span style={{ marginLeft: 8, fontSize: 10, padding: '2px 7px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontWeight: 700 }} title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>
+                            × {log.attemptCount} attempts
+                          </span>
+                        )}
+                      </td>
+                    )}
                     {activeCols.includes('Lead') && (
                       <td style={{ padding: '10px 12px' }}>
                         {matchedLead ? (
@@ -545,7 +650,13 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                     )}
                     {activeCols.includes('Duration') && <td style={{ padding: '10px 12px', fontSize: 12 }}>{log.duration && Number(log.duration) > 0 ? `${Math.floor(Number(log.duration) / 60)}:${String(Number(log.duration) % 60).padStart(2, '0')}` : '-'}</td>}
                     {activeCols.includes('Staff') && <td style={{ padding: '10px 12px', fontSize: 12 }}>{log.staffName || '-'}</td>}
-                    {activeCols.includes('Date & Time') && <td style={{ padding: '10px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtDT(log.createdAt)}</td>}
+                    {activeCols.includes('Date & Time') && (
+                      <td style={{ padding: '10px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {log.attemptCount > 1
+                          ? <span title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>Last: {fmtDT(log.lastAttemptAt)}</span>
+                          : fmtDT(log.createdAt)}
+                      </td>
+                    )}
                     {activeCols.includes('Notes') && <td style={{ padding: '10px 12px', fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.notes}>{log.notes || '-'}</td>}
                     <td style={{ padding: '10px 12px', textAlign: 'center' }}>
                       <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
@@ -560,7 +671,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                           </button>
                         )}
                         {canDelete && (
-                          <button onClick={() => remove(log.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4 }} title="Delete">
+                          <button onClick={() => remove(log.groupedIds || log.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4 }} title={log.attemptCount > 1 ? `Delete all ${log.attemptCount} attempts` : 'Delete'}>
                             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
                           </button>
                         )}

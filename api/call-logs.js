@@ -1,7 +1,18 @@
 import { init, tx, id } from '@instantdb/admin';
+import { getLeadsForOwner } from './_leads-cache.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
+
+// Fingerprint a call log for dedup: same number + direction + minute + duration + staff
+// = same physical call. The mobile app sometimes re-sends batches (retry, restart,
+// second device), and without this guard each re-send creates duplicate rows.
+function fingerprintCall(entry) {
+  const cleanPhone = (entry.phone || '').replace(/\D/g, '').slice(-10);
+  const minute = Math.floor((entry.createdAt || Date.now()) / 60000);
+  const dur = entry.duration ? Number(entry.duration) : 0;
+  return `${cleanPhone}|${entry.direction || 'Incoming'}|${minute}|${dur}|${entry.staffEmail || ''}`;
+}
 
 /**
  * Dedicated Call Logs API for Android App integration.
@@ -50,10 +61,11 @@ export default async function handler(req, res) {
 
     /* ── GET: List / Sync ── */
     if (method === 'GET') {
-      const { callLogs, leads } = await db.query({
-        callLogs: { $: { where: { userId: ownerId } } },
-        leads: { $: { where: { userId: ownerId } } },
-      });
+      // Use shared leads cache to avoid pulling 11k leads per request
+      const [{ callLogs }, leads] = await Promise.all([
+        db.query({ callLogs: { $: { where: { userId: ownerId } } } }),
+        getLeadsForOwner(ownerId),
+      ]);
 
       let logs = callLogs || [];
 
@@ -86,37 +98,41 @@ export default async function handler(req, res) {
 
       // Batch mode: array of call logs from Android app
       if (Array.isArray(batch) && batch.length > 0) {
-        // Fetch existing call logs + leads for dedup & auto-match
-        const { callLogs: existingLogs, leads } = await db.query({
-          callLogs: { $: { where: { userId: ownerId } } },
-          leads: { $: { where: { userId: ownerId } } },
-        });
+        // Use shared leads cache (avoids re-pulling 11k leads per request).
+        // Pull existing callLogs in parallel for dedup fingerprint check.
+        const [leads, existingResult] = await Promise.all([
+          getLeadsForOwner(ownerId),
+          db.query({ callLogs: { $: { where: { userId: ownerId } } } }),
+        ]);
         const leadMap = Object.fromEntries((leads || []).map(l => [l.phone?.replace(/\D/g, ''), l]));
 
-        // Build dedup set: phone (last 10 digits) + createdAt + direction + staffEmail
-        const dedupSet = new Set();
-        (existingLogs || []).forEach(log => {
-          const p = (log.phone || '').replace(/\D/g, '').slice(-10);
-          const key = `${p}|${log.createdAt || ''}|${log.direction || ''}|${log.staffEmail || ''}`;
-          dedupSet.add(key);
-        });
+        // Build minute-bucketed fingerprint set. This is more robust than exact
+        // createdAt because mobile re-syncs sometimes have ms-level drift on
+        // the same physical call.
+        const existingFingerprints = new Set();
+        (existingResult.callLogs || []).forEach(l => existingFingerprints.add(fingerprintCall(l)));
 
-        const txs = [];
+        // Filter batch: skip duplicates of existing rows AND dedup within the
+        // batch itself (mobile sometimes includes the same call twice).
+        const seenInBatch = new Set();
+        const accepted = [];
         let skipped = 0;
         for (const entry of batch) {
+          const fp = fingerprintCall(entry);
+          if (existingFingerprints.has(fp) || seenInBatch.has(fp)) { skipped++; continue; }
+          seenInBatch.add(fp);
+          accepted.push(entry);
+        }
+
+        if (accepted.length === 0) {
+          return res.status(200).json({ success: true, created: 0, skipped });
+        }
+
+        const txs = accepted.map(entry => {
           const cleanPhone = entry.phone?.replace(/\D/g, '') || '';
-          const shortPhone = cleanPhone.slice(-10);
           const entryTs = entry.createdAt || Date.now();
-          const dedupKey = `${shortPhone}|${entryTs}|${entry.direction || 'Incoming'}|${entry.staffEmail || ''}`;
-
-          if (dedupSet.has(dedupKey)) {
-            skipped++;
-            continue;
-          }
-          dedupSet.add(dedupKey); // prevent intra-batch duplicates too
-
           const matched = leadMap[cleanPhone] || null;
-          txs.push(tx.callLogs[id()].update({
+          return tx.callLogs[id()].update({
             phone: entry.phone || '',
             contactName: entry.contactName || matched?.name || '',
             direction: entry.direction || 'Incoming',
@@ -132,22 +148,29 @@ export default async function handler(req, res) {
             createdAt: entryTs,
             updatedAt: Date.now(),
             source: 'android',
-          }));
-        }
+          });
+        });
 
-        if (txs.length > 0) {
-          // Batch in groups of 50 to stay within transaction limits
-          for (let i = 0; i < txs.length; i += 50) {
-            await db.transact(txs.slice(i, i + 50));
-          }
+        // Batch in groups of 50 to stay within InstantDB transaction limits
+        for (let i = 0; i < txs.length; i += 50) {
+          await db.transact(txs.slice(i, i + 50));
         }
         return res.status(201).json({ success: true, created: txs.length, skipped });
       }
 
-      // Single create
-      const { leads } = await db.query({ leads: { $: { where: { userId: ownerId } } } });
+      // Single create — also dedup-guarded
+      const [leads, existingResult] = await Promise.all([
+        getLeadsForOwner(ownerId),
+        db.query({ callLogs: { $: { where: { userId: ownerId } } } }),
+      ]);
       const cleanPhone = singleData.phone?.replace(/\D/g, '') || '';
       const matched = (leads || []).find(l => l.phone?.replace(/\D/g, '') === cleanPhone);
+
+      const incomingFp = fingerprintCall(singleData);
+      const isDup = (existingResult.callLogs || []).some(l => fingerprintCall(l) === incomingFp);
+      if (isDup) {
+        return res.status(200).json({ success: true, skipped: 1, reason: 'duplicate' });
+      }
 
       const newId = id();
       await db.transact(tx.callLogs[newId].update({
