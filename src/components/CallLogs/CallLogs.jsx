@@ -622,7 +622,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                         {log.contactName || '-'}
                         {log.attemptCount > 1 && (
                           <span style={{ marginLeft: 8, fontSize: 10, padding: '2px 7px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontWeight: 700 }} title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>
-                            × {log.attemptCount} attempts
+                            × {log.attemptCount}
                           </span>
                         )}
                       </td>
