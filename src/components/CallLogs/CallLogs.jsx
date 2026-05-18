@@ -599,7 +599,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                       <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap' }}>
                         {log.phone}
                         {log.attemptCount > 1 && (
-                          <span style={{ marginLeft: 4, fontSize: 10, padding: '2px 6px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontWeight: 700, verticalAlign: 'middle' }} title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>
+                          <span style={{ marginLeft: 2, fontSize: 10, padding: '2px 5px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontWeight: 700, verticalAlign: 'middle' }} title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>
                             ×{log.attemptCount}
                           </span>
                         )}
