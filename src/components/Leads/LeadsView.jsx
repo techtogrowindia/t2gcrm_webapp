@@ -37,7 +37,8 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [search, setSearch] = useState('');
   const [srcFilter, setSrcFilter] = useState('');
   const [stgFilter, setStgFilter] = useState('');
-  const [staffFilter, setStaffFilter] = useState('my');
+  // Owners see all leads by default; team members default to their own leads.
+  const [staffFilter, setStaffFilter] = useState(() => perms?.isOwner ? '' : 'my');
   const [modal, setModal] = useState(false);
   const [editData, setEditData] = useState(null);
   const [form, setForm] = useState(EMPTY_LEAD);
