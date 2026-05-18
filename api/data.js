@@ -127,29 +127,44 @@ export default async function handler(req, res) {
       // who hit it (the mobile app showed every team member the full 11k
       // dataset because it relies on this endpoint).
       if (module === 'leads') {
-        // Role-aware visibility for mobile. Mirrors usePermissions.js tiers:
-        //   1. Owner (actorId === ownerId)                       → all leads
-        //   2. Team member with role containing "admin"          → all leads
-        //   3. Team member with role containing "manager"        → all leads
-        //   4. Any other role                                    → ONLY leads
-        //                                                          assigned to them
-        //                                                          (or unassigned)
+        // Role-permission-aware visibility for mobile. Each business defines
+        // its own role names — they are NOT hardcoded ("Admin"/"Manager"
+        // matching breaks for businesses that name roles "Boss", "Director",
+        // "TL", etc.). Instead, we look up the role's permission object in
+        // userProfiles.roles[].perms and check what the role is actually
+        // allowed to do.
         //
-        // `userProfiles.teamCanSeeAllLeads` is intentionally ignored — mobile
-        // visibility is derived strictly from role, never from the web's
-        // team-toggle setting.
-        const { leads, teamMembers: teamFromDb } = await db.query({
+        // Tiers:
+        //   1. Owner (actorId === ownerId)                  → all leads
+        //   2. Team member whose role has Leads:'delete' OR
+        //      Leads:'viewAll' permission                   → all leads
+        //   3. Any other team-member role                   → ONLY leads
+        //                                                    assigned to them
+        //                                                    (or unassigned)
+        //
+        // 'delete' is used as the elevated-trust proxy because the default
+        // Sales role intentionally lacks it (per Teams.jsx DEFAULT_ROLES)
+        // while Admin and similar high-trust roles have it. 'viewAll' is
+        // accepted for forward compatibility if a business explicitly opts
+        // into it as a separate permission later.
+        //
+        // userProfiles.teamCanSeeAllLeads is intentionally ignored — mobile
+        // visibility is strictly role-permission-derived.
+        const { leads, teamMembers: teamFromDb, userProfiles } = await db.query({
           leads: { $: { where: { userId: ownerId } } },
           teamMembers: { $: { where: { userId: ownerId } } },
+          userProfiles: { $: { where: { userId: ownerId } } },
         });
         let result = leads || [];
         const teamMembers = teamFromDb || [];
+        const profile = userProfiles?.[0] || {};
+        const roleDefs = profile.roles || [];
 
-        // Resolve caller identity + role from actorId
+        // Resolve caller identity + their role permissions from actorId
         let isOwner = false;
-        let memberRole = '';
         let userEmail = params.userEmail || '';
         let myName = params.myName || '';
+        let rolePerms = null; // resolved role's perms object
         if (!actorId || actorId === ownerId) {
           isOwner = true;
         } else {
@@ -157,17 +172,25 @@ export default async function handler(req, res) {
           if (tm) {
             userEmail = userEmail || tm.email || '';
             myName = myName || tm.name || '';
-            memberRole = (tm.role || '').toLowerCase();
+            const roleDef = roleDefs.find(r => r.name === tm.role);
+            if (roleDef) {
+              // Handle both modern object format and legacy string[] format
+              if (Array.isArray(roleDef.perms)) {
+                rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
+              } else {
+                rolePerms = roleDef.perms || {};
+              }
+            }
           } else if (params.isOwner === true || params.isOwner === 'true') {
             isOwner = true;
           }
         }
 
+        const leadsPerms = (rolePerms && rolePerms.Leads) || [];
         const hasFullVisibility = isOwner
-          || memberRole.includes('admin')
-          || memberRole.includes('manager');
+          || (Array.isArray(leadsPerms) && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll')));
 
-        // Restrict non-admin/non-manager team members to their own leads
+        // Restrict non-elevated team members to their own leads
         if (!hasFullVisibility) {
           result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
         }

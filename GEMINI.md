@@ -638,6 +638,41 @@ call-logs → callLogs, attendance → attendance
 - [ ] Default role permissions set in Teams.jsx DEFAULT_ROLES (optional)
 - [ ] Existing plans re-saved in Admin Panel to include the new module key
 
+## CRITICAL: Web ↔ API Parity — Update Both Together
+
+**Every business-logic change on the web MUST be reflected in the corresponding API endpoint(s) in the same commit.** The mobile app and other external clients consume the API — they don't read web components. If web and API drift, mobile silently breaks.
+
+### Why this rule exists
+
+Production bugs caused by web/API drift:
+1. Mobile saw all 11k leads — `/api/data?module=leads` lacked the assignee filter that `LeadsView` had
+2. Mobile bulk imports bypassed `maxLeads` — the web `performImport` enforced it, the API CRUD didn't
+3. Mobile call logs duplicated — web dedup logic was missing from `/api/call-logs` POST
+
+### When this rule applies
+
+Any change to:
+- Permission checks (`perms.can(...)`, `isOwner`, role tiers)
+- Plan limits (`isWithinLimit`, `maxLeads`, etc.)
+- Validation rules (required fields, dedup, format checks)
+- Filtering / visibility (assignee, stage, source, team-visibility)
+- Field derivation (e.g. `deriveOutcome` for call logs, source normalisation `Retailer → Channel Partners`)
+- Default values (`DEFAULT_STAGES`, `DEFAULT_SOURCES`, etc.)
+- Cascade deletes / orphan prevention
+
+### Checklist before committing any web business-logic change
+
+- [ ] Identified all API endpoint(s) the mobile/external clients hit for this entity
+- [ ] Applied the same business rule server-side
+- [ ] Extracted shared helpers (`api/_shared-*.js`) rather than copy-pasting
+- [ ] Noted the parity in the commit message
+
+### Pattern: shared helpers when both sides need the same rule
+
+For derivations/checks needed in both places (`deriveOutcome`, source normalisation, dedup fingerprint, etc.), put it in a small module both web and API can import — never duplicate.
+
+---
+
 ## Scale Architecture — Server-Driven Pages (CRITICAL)
 
 The production workspace has **11,000+ leads** and similar-scale call logs / activity logs. InstantDB's `db.useQuery` WebSocket has a `handle-receive` timeout that fails at this scale — pages that subscribe to large collections will show a spinner forever or return truncated/0 counts.
@@ -712,22 +747,29 @@ Use `modalLeads` in the dropdown and any `leads.find(name match)` on save.
 - **`maxLeads` default in `ALL_MODULES` is `10000`** — set to `-1` (unlimited) per plan for bulk-import customers.
 - Bulk import (`performImport` in LeadsView) enforces `maxLeads`, trims to fit, asks user to confirm.
 
-### Mobile vs Web API split — ROLE-AWARE MOBILE VISIBILITY
+### Mobile vs Web API split — PERMISSION-DRIVEN MOBILE VISIBILITY
 
 - Web calls `/api/leads-page` and passes `isOwner` / `teamCanSeeAllLeads` / `userEmail` / `myName` explicitly.
-- Mobile calls `GET /api/data?module=leads`. Auto-detects caller from `actorId` and applies role-tier visibility (mirrors `usePermissions.js`):
+- Mobile calls `GET /api/data?module=leads`. Auto-detects caller from `actorId` and applies visibility based on the role's **permissions**, never the role's **name** (each business invents its own role names — "Boss", "Director", "TL", etc.; hardcoded name matching is brittle).
+
+How it resolves:
+1. `actorId` → `teamMembers[]` row → `member.role` string
+2. `member.role` → `userProfiles.roles[]` definition → `roleDef.perms.Leads` action array
+3. Visibility tier:
 
 | Caller | Sees |
 |---|---|
 | Owner (`actorId === ownerId` or absent) | All leads |
-| Team member, role contains `"admin"` | All leads |
-| Team member, role contains `"manager"` | All leads |
+| Team member whose role has `Leads: [..., 'delete']` | All leads |
+| Team member whose role has `Leads: [..., 'viewAll']` | All leads |
 | Any other team-member role | Only leads assigned to them (or unassigned) |
 
-- `userProfiles.teamCanSeeAllLeads` is **ignored** on this endpoint — mobile visibility is strictly role-derived.
-- Optional `staffFilter` / `srcFilter` / `stgFilter` can narrow further but cannot expand beyond the user's allowed set.
-- Role substring match uses the same `toLowerCase().includes(...)` logic as `usePermissions.js`, so "Sales Manager" counts as manager-tier.
-- **Pre-fix gotcha:** raw `/api/data` was returning all leads to every caller. If you add a new module to `/api/data`, decide whether it needs role-tier filtering too (tasks, callLogs, appointments often do).
+- **`delete` is the elevated-trust proxy** because default `Sales` role lacks it, default `Admin` role has it. Backward compatible with existing production roles.
+- **`viewAll`** is accepted for forward compatibility — owners can grant it explicitly when delete authority shouldn't imply full visibility.
+- **Legacy `string[]` perms format** (old roles saved as `perms: ['Leads', 'Customers']`) is converted to `{ Leads: ['list', 'view'], ... }` — they get only their own leads. Re-save with granular perms to elevate.
+- `userProfiles.teamCanSeeAllLeads` is **ignored** here — mobile visibility is strictly permission-derived.
+- Optional `staffFilter` / `srcFilter` / `stgFilter` can narrow further, cannot expand.
+- **Pre-fix gotcha:** raw `/api/data` was returning all leads to every caller. If you add a new module to `/api/data`, decide whether it needs permission-driven filtering too.
 
 ### Symptoms of the Scale Bug (for diagnosis)
 

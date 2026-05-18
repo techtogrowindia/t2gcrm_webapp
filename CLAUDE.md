@@ -674,6 +674,44 @@ Maps sidebar nav item IDs → plan module keys.
 - [ ] Default role permissions set in Teams.jsx DEFAULT_ROLES (optional)
 - [ ] Existing plans re-saved in Admin Panel to include the new module key
 
+## CRITICAL: Web ↔ API Parity — Update Both Together
+
+**Every business-logic change made on the web MUST be reflected in the corresponding API endpoint(s) in the same commit.** The mobile app and other external clients consume the API — they don't read web components. If web and API drift, mobile silently breaks.
+
+### Why this rule exists
+
+Multiple production bugs caused by web/API drift:
+
+1. **Mobile saw all 11k leads** because `/api/data?module=leads` had no assignee filter while the web `LeadsView` did
+2. **Mobile bulk-imports bypassed `maxLeads`** because `performImport` had a plan-limit check but the API CRUD didn't
+3. **Mobile call logs duplicated** because the web's dedup logic wasn't in `/api/call-logs` POST handler
+
+Each of these took separate sessions to diagnose. The web change shipped fine, the API wasn't touched, and the mobile started returning wrong data.
+
+### When this rule applies
+
+Any change to:
+- Permission checks (`perms.can(...)`, `isOwner`, role tiers)
+- Plan limits (`isWithinLimit`, `maxLeads`, etc.)
+- Validation rules (required fields, dedup, format checks)
+- Filtering / visibility (assignee, stage, source, team-visibility)
+- Field derivation (e.g. `deriveOutcome` for call logs, source normalisation `Retailer → Channel Partners`)
+- Default values (`DEFAULT_STAGES`, `DEFAULT_SOURCES`, etc.)
+- Cascade deletes / orphan prevention
+
+### Checklist before committing any web business-logic change
+
+- [ ] Identified all API endpoint(s) the mobile or external clients hit for this entity (`/api/data?module=X`, `/api/leads-page`, `/api/call-logs`, webhooks, etc.)
+- [ ] Applied the same business rule server-side
+- [ ] Verified both code paths use the same constants / helpers where possible (extract shared helpers to `api/_shared-*.js` rather than copy-pasting)
+- [ ] Documented the parity in the relevant commit message
+
+### Pattern: extract shared logic when web & server both need it
+
+When a derivation/check is needed in both places (e.g. `deriveOutcome`, source normalisation, dedup fingerprint), put it in a small module that both can import — never duplicate the logic.
+
+---
+
 ## Scale Architecture — Server-Driven Pages (CRITICAL)
 
 The production workspace has **11,000+ leads** and similar-scale call logs / activity logs. InstantDB's `db.useQuery` WebSocket has a `handle-receive` timeout that fails at this scale — pages that subscribe to large collections will show a spinner forever or return truncated/0 counts.
@@ -762,24 +800,32 @@ Use `modalLeads` in the dropdown options and in any `leads.find(name match)` on 
 - **Bulk import (`performImport` in LeadsView)** enforces `maxLeads`: calculates remaining slots, trims the import to fit, asks the user to confirm. `-1` = unlimited, no check.
 - **Pre-fix gotcha (now fixed):** the single-lead-form `isWithinLimit` check used `leads.length` which was capped at 500 by the old subscription — so the limit was silently bypassed. Now reads `pageData.counts.total` from the server.
 
-### Mobile vs Web API split — ROLE-AWARE MOBILE VISIBILITY
+### Mobile vs Web API split — PERMISSION-DRIVEN MOBILE VISIBILITY
 
-The web calls `/api/leads-page` (always passes `isOwner`, `teamCanSeeAllLeads`, `userEmail`, `myName` explicitly). The Flutter mobile app calls `GET /api/data?module=leads`. That endpoint **auto-detects** the caller from `actorId` and applies **role-tier visibility** that mirrors `usePermissions.js`:
+The web calls `/api/leads-page` (always passes `isOwner`, `teamCanSeeAllLeads`, `userEmail`, `myName` explicitly). The Flutter mobile app calls `GET /api/data?module=leads`. That endpoint **auto-detects** the caller from `actorId` and applies visibility based on **the role's permissions** — never by matching role NAMES (businesses pick their own role names like "Boss", "Director", "TL"; substring matching on "admin"/"manager" is brittle).
+
+How it works:
+
+1. Resolve `actorId` to a `teamMembers[]` entry → get `member.role` (a string).
+2. Look up that role in `userProfiles.roles[]` → get `roleDef.perms` (an object like `{ Leads: ['list', 'create', 'edit', 'delete'], ... }`).
+3. Check `roleDef.perms.Leads` for elevated-trust permissions:
 
 | Caller | Sees |
 |---|---|
 | Owner (`actorId === ownerId` or absent) | All leads |
-| Team member, role contains `"admin"` (case-insensitive) | All leads |
-| Team member, role contains `"manager"` (case-insensitive) | All leads |
+| Team member whose role has `Leads: [..., 'delete']` | All leads |
+| Team member whose role has `Leads: [..., 'viewAll']` | All leads |
 | Any other team-member role | **Only leads where `assign === their email/name` (or unassigned)** |
 
-- The workspace's `userProfiles.teamCanSeeAllLeads` flag is intentionally **ignored** on this endpoint — mobile visibility is derived strictly from role, never from the web's team toggle.
+- **Why `delete` is the proxy:** the default `Sales` role in `Teams.jsx DEFAULT_ROLES` intentionally lacks `delete`; the default `Admin` role has it. Businesses that create custom elevated roles typically grant `delete`. This works for production data without requiring a schema change.
+- **`viewAll` is forward-compatible:** if a business wants visibility without delete authority, the owner can add `viewAll` to that role's Leads perms (e.g. via Teams → Roles & Permissions). The action key is recognised by the API but not yet a default checkbox; can be added to `MODULES` in `Teams.jsx` when needed.
+- **Legacy `string[]` perms format** (old roles saved with `perms: ['Leads', 'Customers']`) is converted to `{ Leads: ['list', 'view'], ... }` — those roles get only their own leads. Re-save the role with granular perms to grant elevated visibility.
+- `userProfiles.teamCanSeeAllLeads` is intentionally **ignored** on this endpoint — mobile visibility is strictly permission-derived, not toggle-derived.
 - Optional `staffFilter` / `srcFilter` / `stgFilter` query params can further narrow but **cannot expand beyond the user's allowed set**.
-- Role matching uses `member.role.toLowerCase().includes('admin' | 'manager')` — identical substring logic to `usePermissions.js`, so a role named "Sales Manager" qualifies as manager-tier.
 
 **Pre-fix gotcha (now fixed):** previously `/api/data?module=leads` was a raw `where: { userId: ownerId }` — every team member saw every lead. Same kind of bug can recur if you add another module to `/api/data` and don't propagate this filter.
 
-**If you add a new module to `/api/data`:** decide whether it needs role-tier visibility too (tasks, callLogs, appointments often do). The default raw query is not safe for any module with per-user assignment.
+**If you add a new module to `/api/data`:** decide whether it needs permission-driven visibility too (tasks, callLogs, appointments often do). The default raw query is not safe for any module with per-user assignment.
 
 ### Symptoms of the Scale Bug (for diagnosis)
 
