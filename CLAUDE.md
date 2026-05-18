@@ -885,7 +885,7 @@ Call logs sync from the Android app via `/api/call-logs` POST batch and have bee
 
 ### Rule 1: Server-side dedup fingerprint (in API)
 
-The mobile app sometimes re-sends the same call (retry, app restart, second device). Every POST to `/api/call-logs` (single or batch) builds a fingerprint per entry and skips matches:
+The mobile app sometimes re-sends the same call (retry, app restart, second device, upgrade). Every POST to `/api/call-logs` (single or batch) builds a fingerprint per entry and skips matches:
 
 ```javascript
 fingerprint = `${last10digits(phone)}|${direction}|${floor(createdAt/60000)}|${duration||0}|${staffEmail||''}`;
@@ -893,7 +893,20 @@ fingerprint = `${last10digits(phone)}|${direction}|${floor(createdAt/60000)}|${d
 
 Minute-bucketing the timestamp is intentional — the Android app can send the same physical call with ms-level drift. Exact-timestamp matching would miss those.
 
-**Dedup runs against existing rows AND deduplicates within the same batch.** Returns `{ created, skipped }`.
+**Dedup runs against existing rows AND deduplicates within the same batch.** Returns `{ created, skipped, lastSyncedAt }`.
+
+**Performance rule — 48h dedup window:** Fingerprints are built from the **last 48 hours of existing logs only** (not all 27k+). Duplicates never arrive more than 48h after the original call. Scanning the full history on every batch POST would grow unbounded over time. The shared `_call-logs-cache.js` is used (never a fresh `db.query`) — fingerprinting costs zero extra DB calls.
+
+**`lastSyncedAt` contract:** Every successful POST response includes `lastSyncedAt` = max `createdAt` of accepted entries. The Android app **must** store this value per `ownerId` and on the next sync only send calls where `deviceLog.createdAt > lastSyncedAt`. This prevents full re-push on app upgrade/reinstall — which is what caused the 448-duplicate incident on 18 May 2026.
+
+```
+Android sync flow (correct):
+  1. read stored lastSyncedAt (default 0 = first sync)
+  2. POST only calls where call.createdAt > lastSyncedAt
+  3. on 201 response: store response.lastSyncedAt for next time
+```
+
+**Cache invalidation:** After every successful write (batch or single), `invalidateCallLogsCache(ownerId)` is called so the next `call-logs-page` request reflects the new rows immediately.
 
 ### Rule 2: Duration is the only honest signal of "Connected"
 

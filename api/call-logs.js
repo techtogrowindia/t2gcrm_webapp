@@ -1,5 +1,6 @@
 import { init, tx, id } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
+import { getCallLogsForOwner, invalidateCallLogsCache } from './_call-logs-cache.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -106,22 +107,29 @@ export default async function handler(req, res) {
 
       // Batch mode: array of call logs from Android app
       if (Array.isArray(batch) && batch.length > 0) {
-        // Use shared leads cache (avoids re-pulling 11k leads per request).
-        // Pull existing callLogs in parallel for dedup fingerprint check.
-        const [leads, existingResult] = await Promise.all([
+        // Use shared caches — avoids fresh DB queries on every sync.
+        // For fingerprinting, only check the last 48h of existing logs:
+        // duplicates never arrive more than 48h after the original call,
+        // and scanning 27k+ rows per batch POST would grow unbounded over time.
+        const DEDUP_WINDOW_MS = 48 * 60 * 60 * 1000;
+        const dedupSince = Date.now() - DEDUP_WINDOW_MS;
+
+        const [leads, existingLogs] = await Promise.all([
           getLeadsForOwner(ownerId),
-          db.query({ callLogs: { $: { where: { userId: ownerId } } } }),
+          getCallLogsForOwner(ownerId),
         ]);
         const leadMap = Object.fromEntries((leads || []).map(l => [l.phone?.replace(/\D/g, ''), l]));
 
-        // Build minute-bucketed fingerprint set. This is more robust than exact
-        // createdAt because mobile re-syncs sometimes have ms-level drift on
-        // the same physical call.
+        // Build fingerprint set from recent logs only (last 48h).
+        // Minute-bucketed timestamp is more robust than exact createdAt —
+        // mobile re-syncs sometimes have ms-level drift on the same physical call.
         const existingFingerprints = new Set();
-        (existingResult.callLogs || []).forEach(l => existingFingerprints.add(fingerprintCall(l)));
+        existingLogs
+          .filter(l => (l.createdAt || 0) >= dedupSince)
+          .forEach(l => existingFingerprints.add(fingerprintCall(l)));
 
         // Filter batch: skip duplicates of existing rows AND dedup within the
-        // batch itself (mobile sometimes includes the same call twice).
+        // batch itself (mobile sometimes includes the same call twice in one batch).
         const seenInBatch = new Set();
         const accepted = [];
         let skipped = 0;
@@ -136,9 +144,10 @@ export default async function handler(req, res) {
           return res.status(200).json({ success: true, created: 0, skipped });
         }
 
+        const now = Date.now();
         const txs = accepted.map(entry => {
           const cleanPhone = entry.phone?.replace(/\D/g, '') || '';
-          const entryTs = entry.createdAt || Date.now();
+          const entryTs = entry.createdAt || now;
           const matched = leadMap[cleanPhone] || null;
           return tx.callLogs[id()].update({
             phone: entry.phone || '',
@@ -154,7 +163,7 @@ export default async function handler(req, res) {
             userId: ownerId,
             actorId: entry.actorId || ownerId,
             createdAt: entryTs,
-            updatedAt: Date.now(),
+            updatedAt: now,
             source: 'android',
           });
         });
@@ -163,24 +172,37 @@ export default async function handler(req, res) {
         for (let i = 0; i < txs.length; i += 50) {
           await db.transact(txs.slice(i, i + 50));
         }
-        return res.status(201).json({ success: true, created: txs.length, skipped });
+
+        // Invalidate cache so next read reflects the new rows
+        invalidateCallLogsCache(ownerId);
+
+        // Return lastSyncedAt = max createdAt of accepted entries so the
+        // Android app can store it and only send calls AFTER this timestamp
+        // on the next sync — preventing full re-push on upgrade/restart.
+        const lastSyncedAt = Math.max(...accepted.map(e => e.createdAt || now));
+        return res.status(201).json({ success: true, created: txs.length, skipped, lastSyncedAt });
       }
 
-      // Single create — also dedup-guarded
-      const [leads, existingResult] = await Promise.all([
+      // Single create — also dedup-guarded via shared cache (48h window)
+      const DEDUP_WINDOW_MS = 48 * 60 * 60 * 1000;
+      const dedupSince = Date.now() - DEDUP_WINDOW_MS;
+      const [leads, existingLogs] = await Promise.all([
         getLeadsForOwner(ownerId),
-        db.query({ callLogs: { $: { where: { userId: ownerId } } } }),
+        getCallLogsForOwner(ownerId),
       ]);
       const cleanPhone = singleData.phone?.replace(/\D/g, '') || '';
       const matched = (leads || []).find(l => l.phone?.replace(/\D/g, '') === cleanPhone);
 
       const incomingFp = fingerprintCall(singleData);
-      const isDup = (existingResult.callLogs || []).some(l => fingerprintCall(l) === incomingFp);
+      const isDup = existingLogs
+        .filter(l => (l.createdAt || 0) >= dedupSince)
+        .some(l => fingerprintCall(l) === incomingFp);
       if (isDup) {
         return res.status(200).json({ success: true, skipped: 1, reason: 'duplicate' });
       }
 
       const newId = id();
+      const now = Date.now();
       await db.transact(tx.callLogs[newId].update({
         phone: singleData.phone || '',
         contactName: singleData.contactName || matched?.name || '',
@@ -194,12 +216,15 @@ export default async function handler(req, res) {
         staffName: singleData.staffName || '',
         userId: ownerId,
         actorId: singleData.actorId || ownerId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: now,
+        updatedAt: now,
         source: singleData.source || 'api',
       }));
 
-      return res.status(201).json({ success: true, id: newId });
+      // Invalidate cache so next read reflects the new row
+      invalidateCallLogsCache(ownerId);
+
+      return res.status(201).json({ success: true, id: newId, lastSyncedAt: now });
     }
 
     /* ── PATCH: Update ── */
