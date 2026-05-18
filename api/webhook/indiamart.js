@@ -212,13 +212,38 @@ export default async function handler(req, res) {
         // IndiaMART CRM Lead API
         const apiUrl = `https://mapi.indiamart.com/wservce/enquiry/listing/JEESSION_ID/KEY/${apiKey}/`;
         const apiRes = await fetch(apiUrl);
-        const apiData = await apiRes.json();
+
+        // Read as text first so we can include it in the diagnostic response
+        // if IndiaMART returns HTML / error string instead of JSON
+        const rawText = await apiRes.text();
+        let apiData;
+        try {
+          apiData = JSON.parse(rawText);
+        } catch (parseErr) {
+          console.error('IndiaMART API returned non-JSON:', rawText.slice(0, 500));
+          return res.status(200).json({
+            success: false,
+            message: 'IndiaMART API returned a non-JSON response. Check your API Key.',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400) },
+          });
+        }
 
         let leads = apiData?.RESPONSE || apiData?.leads || [];
         if (!Array.isArray(leads)) leads = [];
 
         if (leads.length === 0) {
-          return res.status(200).json({ success: true, message: 'No new leads found', added: 0, skipped: 0, total: 0 });
+          const sample = JSON.stringify(apiData).slice(0, 400);
+          return res.status(200).json({
+            success: true,
+            message: 'No new leads found',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: {
+              httpStatus: apiRes.status,
+              apiResponseKeys: Object.keys(apiData || {}),
+              apiResponseSample: sample,
+            },
+          });
         }
 
         // Fetch existing leads for dedup

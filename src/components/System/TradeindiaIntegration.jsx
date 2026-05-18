@@ -90,12 +90,23 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
     setSyncing(true);
     setSyncResults(null);
     try {
-      const res = await fetch(`${crmDomain}/api/webhook/tradeindia?userId=${ownerId}&action=sync`);
+      // Pass configIndex so the right config's lastSyncAt gets updated
+      const idx = editIndex !== null && editIndex !== undefined ? editIndex : 0;
+      const res = await fetch(
+        `${crmDomain}/api/webhook/tradeindia?userId=${ownerId}&action=sync&configIndex=${idx}`
+      );
       const data = await res.json();
       if (data.success) {
         setSyncResults(data);
-        toast(`Synced! ${data.added} new lead(s) added, ${data.skipped} skipped.`, 'success');
+        if ((data.added || 0) === 0 && (data.skipped || 0) === 0 && data.diagnostic) {
+          toast('API returned no leads — see diagnostic below the button', 'warning');
+          console.warn('[tradeindia sync] diagnostic:', data.diagnostic);
+        } else {
+          toast(`Synced! ${data.added} new lead(s) added, ${data.skipped} skipped.`, 'success');
+        }
       } else {
+        // Failed responses can still carry diagnostic info
+        setSyncResults(data);
         toast(data.message || 'Sync failed', 'error');
       }
     } catch (e) {
@@ -333,11 +344,68 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
           )}
 
           {syncResults && (
-            <div style={{ background: '#ecfdf5', border: '1px solid #10b981', borderRadius: 8, padding: '10px 14px', marginBottom: 15, fontSize: 11, color: '#065f46' }}>
+            <div style={{
+              background: syncResults.diagnostic ? '#fef3c7' : '#ecfdf5',
+              border: `1px solid ${syncResults.diagnostic ? '#f59e0b' : '#10b981'}`,
+              borderRadius: 8,
+              padding: '10px 14px',
+              marginBottom: 15,
+              fontSize: 12,
+              color: syncResults.diagnostic ? '#78350f' : '#065f46',
+            }}>
               <strong>Sync Results</strong>
               <div style={{ marginTop: 4 }}>
-                ✅ {syncResults.added} added · ⏭ {syncResults.skipped} skipped · {syncResults.errors > 0 ? `❌ ${syncResults.errors} errors · ` : ''}📊 {syncResults.total} total
+                ✅ {syncResults.added || 0} added · ⏭ {syncResults.skipped || 0} skipped · {(syncResults.errors || 0) > 0 ? `❌ ${syncResults.errors} errors · ` : ''}📊 {syncResults.total || 0} total
               </div>
+
+              {/* Raw API Response — always shown so user can debug */}
+              <details style={{ marginTop: 10 }} open={!!syncResults.diagnostic}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none' }}>
+                  📋 Raw API Response (click to {syncResults.diagnostic ? 'collapse' : 'expand'})
+                </summary>
+                <pre style={{
+                  marginTop: 8,
+                  background: '#1e293b',
+                  color: '#e2e8f0',
+                  padding: 12,
+                  borderRadius: 6,
+                  fontSize: 11,
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  overflow: 'auto',
+                  maxHeight: 400,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}>
+{JSON.stringify(syncResults, null, 2)}
+                </pre>
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard.writeText(JSON.stringify(syncResults, null, 2))}
+                  style={{
+                    marginTop: 6,
+                    padding: '4px 10px',
+                    background: '#475569',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    fontSize: 11,
+                  }}
+                >
+                  📋 Copy Full Response to Clipboard
+                </button>
+              </details>
+
+              {syncResults.diagnostic && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #fcd34d' }}>
+                  <strong>⚠️ Why 0 leads?</strong>
+                  <ul style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 11 }}>
+                    <li>If <code>apiResponseSample</code> shows an error message → wrong credentials</li>
+                    <li>If it shows an empty array <code>[]</code> → TradeIndia really has 0 new inquiries</li>
+                    <li>If it shows unfamiliar keys → API response format changed; share the response with us</li>
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>

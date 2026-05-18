@@ -219,13 +219,36 @@ export default async function handler(req, res) {
         // JustDial API endpoint — contact JustDial for your specific endpoint URL
         const apiUrl = `https://api.justdial.com/leads?key=${encodeURIComponent(apiKey)}`;
         const apiRes = await fetch(apiUrl);
-        const apiData = await apiRes.json();
 
-        let leads = apiData?.leads || apiData?.RESPONSE || [];
+        // Read raw text so we can show what JustDial returned even if it's not JSON
+        const rawText = await apiRes.text();
+        let apiData;
+        try {
+          apiData = JSON.parse(rawText);
+        } catch (parseErr) {
+          console.error('JustDial API returned non-JSON:', rawText.slice(0, 500));
+          return res.status(200).json({
+            success: false,
+            message: 'JustDial API returned a non-JSON response. Check your API Key.',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400) },
+          });
+        }
+
+        let leads = apiData?.leads || apiData?.RESPONSE || apiData?.data || (Array.isArray(apiData) ? apiData : []);
         if (!Array.isArray(leads)) leads = [];
 
         if (leads.length === 0) {
-          return res.status(200).json({ success: true, message: 'No new leads found', added: 0, skipped: 0, total: 0 });
+          return res.status(200).json({
+            success: true,
+            message: 'No new leads found',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: {
+              httpStatus: apiRes.status,
+              apiResponseKeys: Object.keys(apiData || {}),
+              apiResponseSample: JSON.stringify(apiData).slice(0, 400),
+            },
+          });
         }
 
         // Fetch existing leads for dedup
