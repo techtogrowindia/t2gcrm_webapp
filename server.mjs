@@ -10,7 +10,6 @@ import dataHandler from './api/data.js';
 import financeHandler from './api/finance.js';
 import notifyHandler from './api/notify.js';
 import callLogsHandler from './api/call-logs.js';
-import dedupeCallLogsHandler from './api/dedupe-call-logs.js';
 import leadCountsHandler from './api/lead-counts.js';
 import leadsPageHandler from './api/leads-page.js';
 import dashboardStatsHandler from './api/dashboard-stats.js';
@@ -59,7 +58,6 @@ app.all('/api/data/:module', (req, res) => {
 app.all('/api/auth', wrap(authHandler));
 app.all('/api/data', wrap(dataHandler));
 app.all('/api/call-logs', wrap(callLogsHandler));
-app.all('/api/dedupe-call-logs', wrap(dedupeCallLogsHandler));
 app.all('/api/lead-counts', wrap(leadCountsHandler));
 app.all('/api/leads-page', wrap(leadsPageHandler));
 app.all('/api/dashboard-stats', wrap(dashboardStatsHandler));

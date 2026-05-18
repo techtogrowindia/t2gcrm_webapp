@@ -52,7 +52,6 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const [groupRepeats, setGroupRepeats] = useState(() => {
     try { return localStorage.getItem(`callLogGroupRepeats_${user.email}`) !== 'false'; } catch { return true; }
   });
-  const [dedupRunning, setDedupRunning] = useState(false);
 
   // FIX 1: Split into critical (immediate) + deferred (background) queries
   // Critical data — callLogs + profile must load before table can render
@@ -341,26 +340,6 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     try { localStorage.setItem(`callLogGroupRepeats_${user.email}`, String(next)); } catch { /* ignore */ }
   };
 
-  const runDedupe = async () => {
-    if (!perms?.isOwner) { toast('Only the business owner can run cleanup', 'error'); return; }
-    if (!window.confirm('Scan and remove duplicate call log rows? This keeps the original entry and hard-deletes the duplicates.')) return;
-    setDedupRunning(true);
-    try {
-      const r = await fetch('/api/dedupe-call-logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ownerId }),
-      });
-      const json = await r.json();
-      if (json.error) throw new Error(json.error);
-      if (json.deleted === 0) toast('No duplicates found — your call logs are clean.', 'success');
-      else toast(`Removed ${json.deleted} duplicate row${json.deleted === 1 ? '' : 's'} from ${json.groups} group${json.groups === 1 ? '' : 's'}.`, 'success');
-    } catch (e) {
-      toast(`Dedupe failed: ${e.message}`, 'error');
-    } finally {
-      setDedupRunning(false);
-    }
-  };
 
   const openNew = () => { setForm(EMPTY_FORM); setEditData(null); setModal(true); };
   const openEdit = (log) => {
@@ -524,11 +503,6 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
             <input type="checkbox" checked={groupRepeats} onChange={toggleGroupRepeats} style={{ margin: 0 }} />
             Group repeats
           </label>
-          {perms?.isOwner && (
-            <button className="btn btn-secondary btn-sm" onClick={runDedupe} disabled={dedupRunning} title="Scan & hard-delete duplicate call log rows">
-              {dedupRunning ? '⏳ Cleaning…' : '🧹 Cleanup Duplicates'}
-            </button>
-          )}
           <button className="btn btn-secondary btn-sm" onClick={() => {
             setTempCols(activeCols);
             setTempPageSize(pageSize);
