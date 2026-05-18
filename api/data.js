@@ -127,22 +127,22 @@ export default async function handler(req, res) {
       // who hit it (the mobile app showed every team member the full 11k
       // dataset because it relies on this endpoint).
       if (module === 'leads') {
-        const { leads, userProfiles, teamMembers: teamFromDb } = await db.query({
+        // Strict rule for mobile: ONLY the admin/owner sees all leads. Any
+        // team member identity (resolved from actorId) is hard-restricted to
+        // leads assigned to them (or unassigned). The userProfiles
+        // `teamCanSeeAllLeads` flag is intentionally NOT honoured here —
+        // mobile is owner-only for full visibility.
+        const { leads, teamMembers: teamFromDb } = await db.query({
           leads: { $: { where: { userId: ownerId } } },
-          userProfiles: { $: { where: { userId: ownerId } } },
           teamMembers: { $: { where: { userId: ownerId } } },
         });
         let result = leads || [];
-        const profile = userProfiles?.[0] || {};
         const teamMembers = teamFromDb || [];
-        const teamCanSeeAllLeads = params.teamCanSeeAllLeads !== undefined
-          ? (params.teamCanSeeAllLeads === true || params.teamCanSeeAllLeads === 'true')
-          : (profile.teamCanSeeAllLeads !== false);
 
         // Auto-detect caller: owner vs team member
-        // - actorId === ownerId  → owner (sees all)
-        // - actorId matches a teamMember.id → team member identity resolved
-        // - else fall back to explicit isOwner / userEmail / myName params
+        //  - actorId absent or === ownerId → owner
+        //  - actorId matches a teamMembers[].id → identified team member
+        //  - else fall back to explicit isOwner / userEmail / myName params
         let isOwner = false;
         let userEmail = params.userEmail || '';
         let myName = params.myName || '';
@@ -158,13 +158,14 @@ export default async function handler(req, res) {
           }
         }
 
-        // Team visibility: if not owner AND workspace forbids team-wide view,
-        // limit to leads assigned to this user (or unassigned)
-        if (!isOwner && !teamCanSeeAllLeads) {
+        // Hard restriction for non-owners — admin-only sees all
+        if (!isOwner) {
           result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
         }
 
-        // Optional explicit filters (mirrors /api/leads-page)
+        // Optional explicit filters layered on top (mirrors /api/leads-page).
+        // Non-owners can still further narrow with staffFilter='unassigned'
+        // or staffFilter='my', but cannot expand beyond their assigned set.
         const { staffFilter = '', srcFilter = '', stgFilter = '' } = params;
         result = result.filter(l => {
           if (srcFilter && l.source !== srcFilter) return false;

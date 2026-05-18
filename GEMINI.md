@@ -640,28 +640,128 @@ call-logs → callLogs, attendance → attendance
 
 ## Scale Architecture — Server-Driven Pages (CRITICAL)
 
-The production workspace has **11,000+ leads**. InstantDB's `db.useQuery` WebSocket has a timeout that fails at this scale.
+The production workspace has **11,000+ leads** and similar-scale call logs / activity logs. InstantDB's `db.useQuery` WebSocket has a `handle-receive` timeout that fails at this scale — pages that subscribe to large collections will show a spinner forever or return truncated/0 counts.
 
-### Rule: Never subscribe to `leads` with a high limit
+### Rule: Never subscribe to large collections with a high limit
 
 ```javascript
-// ❌ WRONG — fails at 11k+ leads
+// ❌ WRONG — fails at 11k+ rows (returns 0, returns capped count, or hangs forever)
 const { data } = db.useQuery({ leads: { $: { where: { userId: ownerId }, limit: 10000 } } });
+const { data } = db.useQuery({ activityLogs: { $: { where: { userId: ownerId }, limit: 2000 } } });
+const { data } = db.useQuery({ callLogs: { $: { where: { userId: ownerId }, limit: 5000 } } });
 
-// ✅ CORRECT — use server-driven endpoint
+// ✅ CORRECT — server-driven endpoint, admin SDK over HTTP (no WebSocket timeout)
 const res = await fetch('/api/leads-page', { method: 'POST', body: JSON.stringify({...}) });
 ```
 
+**Critical sub-rule:** `db.useQuery({ collection: { $: { ..., limit: N } } })` has **no ordering guarantee** — it returns arbitrary N rows, often the oldest. So `activityLogs: { limit: 2000 }` on a busy workspace returns ancient logs that fall outside any "This Month" date filter, making every aggregate compute to 0. Always either (a) fetch via admin SDK server-side, or (b) ensure your client logic doesn't assume the returned rows are recent.
+
 ### Server-Driven Endpoints
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /api/leads-page` | Paginated lead list + date-tab counts for LeadsView |
-| `POST /api/dashboard-stats` | KPI aggregates for Dashboard |
-| `POST /api/lead-check-duplicate` | Dedup check across all leads + customers |
-| `POST /api/sync-won-leads` | Auto-sync Won-stage leads → customers collection |
+| Endpoint | Purpose | Caller |
+|---|---|---|
+| `POST /api/leads-page` | Paginated lead list + date-tab counts | Web LeadsView |
+| `POST /api/dashboard-stats` | KPI aggregates (totals, sources, hot leads, calendar) | Dashboard |
+| `POST /api/lead-check-duplicate` | Dedup check across leads + customers | Customers, LeadsView |
+| `POST /api/sync-won-leads` | Auto-sync Won-stage leads → customers collection | Customers (on mount) |
+| `POST /api/team-activity` | Activity logs filtered by date range (server-side) | TeamReports |
+| `GET /api/data?module=leads` | **Mobile-only.** Auto-filters by actorId | Mobile app |
 
-All four use **`api/_leads-cache.js`** — a shared per-owner in-memory cache (15s TTL).
+All share **`api/_leads-cache.js`** (per-owner 15s TTL cache). Endpoints that fetch the full lead set use `getLeadsForOwner(ownerId)` so concurrent calls reuse one InstantDB admin query.
+
+### Components Already Migrated
+
+| Component | Pattern |
+|---|---|
+| `LeadsView.jsx` | `/api/leads-page` server-driven pagination + counts |
+| `Dashboard.jsx` | `/api/dashboard-stats`, refreshes every 30s |
+| `Customers.jsx` | `/api/lead-check-duplicate` + `/api/sync-won-leads` on mount |
+| `Quotations.jsx`, `Invoices.jsx`, `POSBilling.jsx`, `Projects.jsx`, `AllTasks.jsx`, `AMC.jsx` | **Modal-lazy-fetch** (see below) |
+| `CallLogs.jsx` | `/api/leads-page` on mount + localStorage 5-min cache |
+| `Reports.jsx` | `/api/leads-page` only when leads tab is selected |
+| `TeamReports.jsx` | `/api/team-activity` filtered by date range |
+| `Campaigns.jsx` | `/api/leads-page` (up to 1000) on mount |
+
+### Modal-Lazy-Fetch Pattern
+
+Components that only need leads inside a create/edit modal (Quotations, Invoices, AMC, Projects, AllTasks, POSBilling) must lazy-fetch when the modal opens:
+
+```javascript
+const [modalLeads, setModalLeads] = useState([]);
+const fetchModalLeads = async () => {
+  if (modalLeads.length > 0) return;
+  const r = await fetch('/api/leads-page', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ownerId, mode: 'list', pageSize: 500, tab: 'all', page: 1,
+      isOwner: true, teamCanSeeAllLeads: true, boundaries: {}
+    }),
+  });
+  setModalLeads((await r.json()).items || []);
+};
+// Call inside every openCreate / openEdit
+```
+
+Use `modalLeads` in the dropdown and any `leads.find(name match)` on save.
+
+### Plan Limit Enforcement
+
+- `usePlanEnforcement.js` — `isModuleEnabled(key)` returns `true` ONLY if `modules[key] === true` (explicit). Missing keys = disabled.
+- `AdminPanel.jsx` — `savePlan` normalizes module/limit keys to `DEFAULT_*` baselines.
+- **`maxLeads` default in `ALL_MODULES` is `10000`** — set to `-1` (unlimited) per plan for bulk-import customers.
+- Bulk import (`performImport` in LeadsView) enforces `maxLeads`, trims to fit, asks user to confirm.
+
+### Mobile vs Web API split — STRICT MOBILE RULE
+
+- Web calls `/api/leads-page` and passes `isOwner` / `teamCanSeeAllLeads` / `userEmail` / `myName` explicitly.
+- Mobile calls `GET /api/data?module=leads`. Auto-detects caller from `actorId`:
+  - `actorId === ownerId` (or absent) → **owner → all leads**
+  - `actorId` matches a `teamMembers[].id` → **team member → ALWAYS restricted to leads assigned to them (or unassigned)**
+  - `userProfiles.teamCanSeeAllLeads` is **intentionally ignored** on this endpoint — admin-only sees all on mobile
+- Optional `staffFilter` / `srcFilter` / `stgFilter` can further narrow but cannot expand beyond the user's allowed set.
+- **Pre-fix gotcha:** raw `/api/data` was returning all leads to every caller. If you add a new module to `/api/data`, decide whether it needs the same assignee-only filtering (tasks, callLogs, appointments often do).
+
+### Symptoms of the Scale Bug (for diagnosis)
+
+- Dashboard shows "Total Leads: 0" or "9999" — subscription truncated
+- Page stuck on "Loading..." spinner — subscription handle-receive timeout
+- Date tab counts unchanged when staff filter changes — `staffFilter` not being sent server-side
+- Team Performance metrics show 0 across all date filters — activity logs subscription returning arbitrary rows outside the date window
+- Mobile shows all leads instead of "my" leads — `/api/data?module=leads` filter bypassed
+
+## Call Logs Integrity (CRITICAL)
+
+Call logs sync from the Android app via `/api/call-logs` POST batch.
+
+### Server-side dedup fingerprint
+
+Every POST builds a fingerprint per entry and skips duplicates:
+
+```
+fingerprint = `${last10digits(phone)}|${direction}|${floor(createdAt/60000)}|${duration||0}|${staffEmail||''}`
+```
+
+Minute-bucketing intentional — Android can re-send the same call with ms-level drift. Dedup runs against existing rows AND within the batch.
+
+### Duration is the only honest signal of "Connected"
+
+The Android sync sometimes sends `outcome: 'Connected'` on zero-duration calls. Codebase trusts duration alone:
+
+- Server `deriveOutcome`: `duration > 0` ⇒ `Connected`; `duration === 0` + `outcome === 'Connected'` ⇒ overridden to `No Answer`
+- UI row badge: `isConnected = duration > 0`
+- Team summary: `connected = filter(l => duration > 0)`, `notPicked = filter(l => duration === 0)`
+- Rollup grouping: `isUnpickedCall = (l) => !l.duration || Number(l.duration) === 0`
+
+If new code depends on connectedness, use duration — not `outcome === 'Connected'`.
+
+### UI rollup grouping
+
+Consecutive unpicked calls (duration 0) to the same `phone + direction + staffEmail` within 24 hours collapse into one synthetic row with `attemptCount`, `firstAttemptAt`, `lastAttemptAt`, `groupedIds`. Connected calls always render individually. Delete on grouped row deletes all `groupedIds`.
+
+### No manual cleanup buttons — one-shot migrations
+
+Data-quality bugs in production are fixed via **one-shot migration scripts** (e.g. `_migrate-call-logs.mjs` using `@instantdb/admin`), run locally with prod `.env`, then deleted. Commit only the prevent-recurrence guard (fingerprint dedup, hardened `deriveOutcome`). Don't ship one-time fixes as admin-panel buttons users have to find and click.
 
 ## Known Limitations
 
