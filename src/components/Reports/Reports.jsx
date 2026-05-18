@@ -386,6 +386,58 @@ export default function Reports({ user, perms, ownerId, profile }) {
     return { matrix, fromStages, toStages, total };
   }, [tab, stageLogs, fromDate, toDate]);
 
+  // Expense Report aggregates (category breakdown + month trend + status totals)
+  const expenseReport = useMemo(() => {
+    if (tab !== 'expenses') return null;
+    const all = filteredExp;
+    const byStatus = { Approved: 0, Pending: 0, Rejected: 0 };
+    all.forEach(e => { byStatus[e.status] = (byStatus[e.status] || 0) + (e.amount || 0); });
+    const totalApproved = byStatus.Approved || 0;
+    const totalPending = byStatus.Pending || 0;
+    const totalRejected = byStatus.Rejected || 0;
+    const grandTotal = totalApproved + totalPending + totalRejected;
+    const approvedCount = all.filter(e => e.status === 'Approved').length;
+    const avgPerExpense = approvedCount > 0 ? totalApproved / approvedCount : 0;
+
+    // Category breakdown (Approved only — Approved is what hit the books)
+    const byCat = {};
+    all.filter(e => e.status === 'Approved').forEach(e => {
+      const k = e.category || 'Uncategorised';
+      if (!byCat[k]) byCat[k] = { amount: 0, count: 0 };
+      byCat[k].amount += (e.amount || 0);
+      byCat[k].count += 1;
+    });
+    const byCategory = Object.entries(byCat)
+      .map(([category, v]) => ({
+        category,
+        amount: v.amount,
+        count: v.count,
+        share: totalApproved > 0 ? Math.round((v.amount / totalApproved) * 1000) / 10 : 0,
+      }))
+      .sort((a, b) => b.amount - a.amount);
+    const maxCatAmount = byCategory.reduce((m, c) => Math.max(m, c.amount), 0);
+
+    // Monthly trend
+    const months = {};
+    all.filter(e => e.status === 'Approved').forEach(e => {
+      const d = new Date(e.date);
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      months[k] = (months[k] || 0) + (e.amount || 0);
+    });
+    const monthly = Object.entries(months).sort((a, b) => a[0].localeCompare(b[0]));
+
+    // Detail rows sorted newest first
+    const detail = [...all].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    return {
+      totalApproved, totalPending, totalRejected, grandTotal,
+      approvedCount, avgPerExpense,
+      byCategory, maxCatAmount,
+      monthly,
+      detail,
+    };
+  }, [tab, filteredExp]);
+
   // Monthly GST Breakdown
   const gstBreakdown = useMemo(() => {
     const months = {};
@@ -482,6 +534,21 @@ export default function Reports({ user, perms, ownerId, profile }) {
       exportCSV(['Name', 'Leads Assigned', 'Tasks Total', 'Tasks Done', 'Completion %'], teamPerf.map(m => [m.name, m.leads, m.tasks, m.done, m.tasks ? Math.round((m.done / m.tasks) * 100) + '%' : '0%']), `Team_Perf_${fromDate}_to_${toDate}`);
     } else if (tab === 'leads') {
       exportCSV(['Stage', 'Count'], stageCount.map(s => [s.stage, s.count]), `Lead_Pipeline_${fromDate}_to_${toDate}`);
+    } else if (tab === 'expenses' && expenseReport) {
+      const rows = [
+        ['--- Category Breakdown (Approved only) ---'],
+        ['Category', 'Count', 'Amount', 'Share %'],
+        ...expenseReport.byCategory.map(c => [c.category, c.count, c.amount, c.share + '%']),
+        [''],
+        ['--- Monthly Trend (Approved) ---'],
+        ['Month', 'Amount'],
+        ...expenseReport.monthly.map(([m, v]) => [m, v]),
+        [''],
+        ['--- Detailed Expenses ---'],
+        ['Date', 'Category', 'Description', 'Status', 'Amount', 'Notes'],
+        ...expenseReport.detail.map(e => [fmtD(e.date), e.category || '', e.desc || '', e.status || '', e.amount || 0, e.notes || '']),
+      ];
+      exportCSV(rows[0], rows.slice(1), `Expense_Report_${fromDate}_to_${toDate}`);
     }
   };
 
@@ -534,6 +601,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--muted)', padding: '0 12px 12px', letterSpacing: '0.05em' }}>Report Types</div>
           {[
             ['pl', 'P&L Statement'],
+            ['expenses', 'Expense Report'],
             ['gst', 'GST Summary'],
             ['product-enquiry', 'Leads by Requirement'],
             ['customer-purchase', 'Customer Purchases'],
@@ -588,6 +656,120 @@ export default function Reports({ user, perms, ownerId, profile }) {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'expenses' && expenseReport && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* KPI cards */}
+          <div className="stat-grid">
+            <div className="stat-card sc-green"><div className="lbl">Approved</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)' }}>{fmt(expenseReport.totalApproved)}</div></div>
+            <div className="stat-card sc-yellow"><div className="lbl">Pending</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)' }}>{fmt(expenseReport.totalPending)}</div></div>
+            <div className="stat-card sc-red"><div className="lbl">Rejected</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)' }}>{fmt(expenseReport.totalRejected)}</div></div>
+            <div className="stat-card sc-blue"><div className="lbl">Approved Count</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)' }}>{expenseReport.approvedCount}</div></div>
+            <div className="stat-card sc-purple"><div className="lbl">Avg / Expense</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)' }}>{fmt(expenseReport.avgPerExpense)}</div></div>
+          </div>
+
+          {/* Category breakdown */}
+          <div className="tw">
+            <div className="tw-head"><h3>Category Breakdown (Approved)</h3></div>
+            {expenseReport.byCategory.length === 0 ? (
+              <div style={{ padding: 30, textAlign: 'center', color: 'var(--muted)' }}>No approved expenses in this period.</div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#fafafa', borderBottom: '1px solid #f0f0f0' }}>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600 }}>Category</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'center', fontSize: 12, fontWeight: 600 }}>Entries</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>Amount</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600, minWidth: 200 }}>Share</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenseReport.byCategory.map(c => (
+                      <tr key={c.category} style={{ borderBottom: '1px solid #f4f4f4' }}>
+                        <td style={{ padding: '10px 14px', fontWeight: 600 }}>{c.category}</td>
+                        <td style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--muted)' }}>{c.count}</td>
+                        <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700 }}>{fmt(c.amount)}</td>
+                        <td style={{ padding: '10px 14px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{ flex: 1, height: 8, background: '#f1f5f9', borderRadius: 6, overflow: 'hidden' }}>
+                              <div style={{ width: `${expenseReport.maxCatAmount ? (c.amount / expenseReport.maxCatAmount) * 100 : 0}%`, height: '100%', background: '#7c3aed', borderRadius: 6 }} />
+                            </div>
+                            <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 45, textAlign: 'right' }}>{c.share}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Monthly trend */}
+          {expenseReport.monthly.length > 0 && (
+            <div className="tw">
+              <div className="tw-head"><h3>Monthly Trend (Approved)</h3></div>
+              <div style={{ padding: '24px 20px', display: 'flex', alignItems: 'flex-end', gap: 12, height: 180, overflowX: 'auto' }}>
+                {(() => {
+                  const maxM = expenseReport.monthly.reduce((m, [, v]) => Math.max(m, v), 0);
+                  return expenseReport.monthly.map(([m, v]) => (
+                    <div key={m} style={{ minWidth: 48, flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 4 }}>{fmt(v)}</div>
+                      <div style={{ width: 28, height: `${maxM ? (v / maxM) * 130 : 4}px`, background: '#7c3aed', borderRadius: '6px 6px 0 0', minHeight: 4 }} />
+                      <div style={{ fontSize: 11, fontWeight: 600, marginTop: 6 }}>{m}</div>
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* Detailed list */}
+          <div className="tw">
+            <div className="tw-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3>Detailed Expenses</h3>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>{expenseReport.detail.length} entries</span>
+            </div>
+            {expenseReport.detail.length === 0 ? (
+              <div style={{ padding: 30, textAlign: 'center', color: 'var(--muted)' }}>No expenses in this period.</div>
+            ) : (
+              <div style={{ overflowX: 'auto', maxHeight: 500, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#fafafa', borderBottom: '1px solid #f0f0f0', position: 'sticky', top: 0, zIndex: 1 }}>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600 }}>Date</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600 }}>Category</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600 }}>Description</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 12, fontWeight: 600 }}>Status</th>
+                      <th style={{ padding: '10px 14px', textAlign: 'right', fontSize: 12, fontWeight: 600 }}>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenseReport.detail.map(e => (
+                      <tr key={e.id} style={{ borderBottom: '1px solid #f4f4f4' }}>
+                        <td style={{ padding: '10px 14px', fontSize: 13, whiteSpace: 'nowrap' }}>{fmtD(e.date)}</td>
+                        <td style={{ padding: '10px 14px' }}><span className="badge bg-gray" style={{ fontSize: 11 }}>{e.category || '—'}</span></td>
+                        <td style={{ padding: '10px 14px', fontSize: 13 }}>{e.desc || '—'}{e.notes && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{e.notes}</div>}</td>
+                        <td style={{ padding: '10px 14px' }}>
+                          <span className={`badge ${e.status === 'Approved' ? 'bg-green' : e.status === 'Rejected' ? 'bg-red' : 'bg-yellow'}`} style={{ fontSize: 11 }}>{e.status}</span>
+                        </td>
+                        <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>{fmt(e.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background: '#fafafa', borderTop: '2px solid #e2e8f0' }}>
+                      <td colSpan={4} style={{ padding: '12px 14px', fontWeight: 700, textAlign: 'right' }}>Approved Total</td>
+                      <td style={{ padding: '12px 14px', textAlign: 'right', fontWeight: 800, color: '#16a34a' }}>{fmt(expenseReport.totalApproved)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}
