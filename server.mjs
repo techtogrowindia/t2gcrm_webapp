@@ -25,6 +25,7 @@ import cronHandler from './api/cron/process-automations.js';
 import gsheetsHandler from './api/webhook/gsheets.js';
 import indiamartHandler from './api/webhook/indiamart.js';
 import justdialHandler from './api/webhook/justdial.js';
+import tradeindiaHandler from './api/webhook/tradeindia.js';
 import cleanupDuplicatesHandler from './api/cleanup-duplicates.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -78,6 +79,7 @@ app.all('/api/cron/process-automations', wrap(cronHandler));
 app.all('/api/webhook/gsheets', wrap(gsheetsHandler));
 app.all('/api/webhook/indiamart', wrap(indiamartHandler));
 app.all('/api/webhook/justdial', wrap(justdialHandler));
+app.all('/api/webhook/tradeindia', wrap(tradeindiaHandler));
 app.all('/api/cleanup-duplicates', wrap(cleanupDuplicatesHandler));
 
 // 2. STATIC FILES (Frontend)
