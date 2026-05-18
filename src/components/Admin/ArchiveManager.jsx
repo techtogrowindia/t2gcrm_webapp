@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import db from '../../instant';
 import { useToast } from '../../context/ToastContext';
+import SearchableSelect from '../UI/SearchableSelect';
 
 /**
  * Archive Manager — bullet-proof per-customer data export / delete / restore.
@@ -58,10 +59,6 @@ export default function ArchiveManager({ user }) {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  // Searchable customer picker state
-  const [customerSearch, setCustomerSearch] = useState('');
-  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
-
   // Fetch list of customers (businesses)
   const { data } = db.useQuery({ userProfiles: {} });
   const customers = data?.userProfiles || [];
@@ -75,27 +72,18 @@ export default function ArchiveManager({ user }) {
   const selectedCustomer = customersSorted.find(c => c.userId === ownerId);
   const selectedCollection = EXPORTABLE.find(c => c.value === collection);
 
-  // Filter customers by search query (email OR business name, case-insensitive)
-  const filteredCustomers = useMemo(() => {
-    const q = customerSearch.trim().toLowerCase();
-    if (!q) return customersSorted;
-    return customersSorted.filter(c =>
-      (c.email || '').toLowerCase().includes(q) ||
-      (c.bizName || '').toLowerCase().includes(q) ||
-      (c.fullName || '').toLowerCase().includes(q)
-    );
-  }, [customersSorted, customerSearch]);
-
-  const pickCustomer = (c) => {
-    setOwnerId(c.userId);
-    setCustomerSearch(`${c.email}${c.bizName ? ` (${c.bizName})` : ''}`);
-    setCustomerDropdownOpen(false);
-  };
-
-  // When ownerId clears, reset search box too
-  React.useEffect(() => {
-    if (!ownerId) setCustomerSearch('');
-  }, [ownerId]);
+  // Build options for SearchableSelect:
+  //   name = email (primary line)
+  //   code = "Business Name • Owner Name" (secondary line — searchable too)
+  //   userId = the value passed back to onChange
+  const customerOptions = useMemo(
+    () => customersSorted.map(c => ({
+      name: c.email || '(no email)',
+      userId: c.userId,
+      code: [c.bizName, c.fullName].filter(Boolean).join(' • ') || ' ',
+    })),
+    [customersSorted]
+  );
 
   // Reset preview when scope changes
   React.useEffect(() => {
@@ -449,76 +437,16 @@ export default function ArchiveManager({ user }) {
       {/* Customer + Collection picker (shared across tabs) */}
       <div style={card}>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 1fr 1fr', gap: 12 }}>
-          <div style={{ position: 'relative' }}>
+          <div>
             <label style={label}>Customer (Business)</label>
-            <input
-              type="text"
-              value={customerSearch}
-              onChange={e => {
-                setCustomerSearch(e.target.value);
-                setCustomerDropdownOpen(true);
-                if (ownerId && !e.target.value) setOwnerId('');
-              }}
-              onFocus={() => setCustomerDropdownOpen(true)}
-              onBlur={() => setTimeout(() => setCustomerDropdownOpen(false), 200)}
-              placeholder="Search by email, business, or name…"
-              style={input}
-              autoComplete="off"
+            <SearchableSelect
+              options={customerOptions}
+              value={ownerId}
+              onChange={setOwnerId}
+              placeholder="Select a customer…"
+              displayKey="name"
+              returnKey="userId"
             />
-            {customerDropdownOpen && filteredCustomers.length > 0 && (
-              <div style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                background: 'var(--card)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                marginTop: 2,
-                maxHeight: 240,
-                overflowY: 'auto',
-                zIndex: 10,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-              }}>
-                {filteredCustomers.map(c => (
-                  <div
-                    key={c.id}
-                    onMouseDown={() => pickCustomer(c)}
-                    style={{
-                      padding: '8px 12px',
-                      cursor: 'pointer',
-                      borderBottom: '1px solid var(--border)',
-                      background: ownerId === c.userId ? 'var(--bg)' : 'transparent',
-                    }}
-                  >
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>{c.email}</div>
-                    {(c.bizName || c.fullName) && (
-                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-                        {[c.bizName, c.fullName].filter(Boolean).join(' • ')}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-            {customerDropdownOpen && filteredCustomers.length === 0 && customerSearch && (
-              <div style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                background: 'var(--card)',
-                border: '1px solid var(--border)',
-                borderRadius: 6,
-                marginTop: 2,
-                padding: '12px',
-                fontSize: 13,
-                color: 'var(--muted)',
-                zIndex: 10,
-              }}>
-                No customers match "{customerSearch}"
-              </div>
-            )}
           </div>
           <div>
             <label style={label}>Collection</label>
