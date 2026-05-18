@@ -209,7 +209,7 @@ export default function Integrations({ user, ownerId }) {
       setCooldownEnd(end);
       localStorage.setItem('tc_sync_cooldown', String(end));
 
-      setSyncResults({ total: dataRows.length, added, skipped, errors, configName: config.configName });
+      setSyncResults({ type: 'gsheets', total: dataRows.length, added, skipped, errors, configName: config.configName });
       toast(`Synced! ${added} new lead(s) added, ${skipped} skipped.`, 'success');
     } catch (e) {
       console.error('Sync Error:', e);
@@ -324,6 +324,7 @@ export default function Integrations({ user, ownerId }) {
       localStorage.setItem('tc_sync_cooldown', String(end));
 
       setSyncResults({
+        type,  // ← tag which integration this result is for, so we only render under that card
         configName: cfg?.configName || type,
         added: json.added || 0,
         skipped: json.skipped || 0,
@@ -465,7 +466,7 @@ export default function Integrations({ user, ownerId }) {
                     </div>
                   </div>
                 ))}
-                {syncResults && (
+                {syncResults && syncResults.type === 'gsheets' && (
                   <div style={{ background: '#ecfdf5', border: '1px solid #10b981', borderRadius: 8, padding: '10px 14px', marginTop: 10, fontSize: 11, color: '#065f46' }}>
                     <strong>Last Sync: {syncResults.configName}</strong>
                     <div style={{ marginTop: 4 }}>
@@ -510,7 +511,8 @@ export default function Integrations({ user, ownerId }) {
                     )}
                   </div>
                 ))}
-                {syncResults && syncing === null && (
+                {/* Only show the sync result under the integration that was actually synced */}
+                {syncResults && syncResults.type === item.id && syncing === null && (
                   <div style={{
                     background: syncResults.diagnostic ? '#fef3c7' : '#ecfdf5',
                     border: `1px solid ${syncResults.diagnostic ? '#f59e0b' : '#10b981'}`,
