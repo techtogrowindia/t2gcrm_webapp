@@ -1317,7 +1317,42 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   }
 
   return (
-    <div>
+    <div style={{ position: 'relative' }}>
+      {/* Refetch overlay — only shown during subsequent fetches (filter/search/
+          pagination/date change). Initial load is handled by the page-spinner
+          guard above so users don't see two spinners stacked. */}
+      {pageLoading && pageData && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255, 255, 255, 0.6)',
+            backdropFilter: 'blur(1px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            zIndex: 10,
+            pointerEvents: 'all',
+          }}
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              border: '3px solid #e2e8f0',
+              borderTopColor: 'var(--accent, #16a34a)',
+              borderRadius: '50%',
+              animation: 'tr-spin 0.7s linear infinite',
+            }}
+          />
+          <div style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>Loading leads…</div>
+        </div>
+      )}
+      <style>{`@keyframes tr-spin { to { transform: rotate(360deg); } }`}</style>
       {/* Header */}
       <div className="sh">
         <div><h2>Leads</h2><div className="sub">Manage and track all leads</div></div>
