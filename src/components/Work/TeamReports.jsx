@@ -38,6 +38,7 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
   // ordering guarantee) and at scale also hit the InstantDB WebSocket timeout,
   // which is why every metric in this page was rendering as 0.
   const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const team = data?.teamMembers || [];
   const allTasks = data?.tasks || [];
   // Leads fetched via server — replaced unlimited subscription that hung at 11k
@@ -130,6 +131,7 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
   // Pull activity logs scoped to the selected date range
   useEffect(() => {
     if (!ownerId) return;
+    setLogsLoading(true);
     fetch('/api/team-activity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -137,7 +139,8 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
     })
       .then(r => r.json())
       .then(json => setLogs(json.logs || []))
-      .catch(() => setLogs([]));
+      .catch(() => setLogs([]))
+      .finally(() => setLogsLoading(false));
   }, [ownerId, dateRange.start, dateRange.end]);
 
   // Set of team-member emails to distinguish owner's logs from team members'
@@ -381,7 +384,39 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
   if (isLoading) return <div className="p-xl">Loading Performance Data...</div>;
 
   return (
-    <div className="reports-container">
+    <div className="reports-container" style={{ position: 'relative' }}>
+      {logsLoading && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255, 255, 255, 0.6)',
+            backdropFilter: 'blur(1px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            zIndex: 10,
+            pointerEvents: 'all',
+          }}
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              border: '3px solid #e2e8f0',
+              borderTopColor: 'var(--accent, #16a34a)',
+              borderRadius: '50%',
+              animation: 'tr-spin 0.7s linear infinite',
+            }}
+          />
+          <div style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>Loading metrics…</div>
+        </div>
+      )}
+      <style>{`@keyframes tr-spin { to { transform: rotate(360deg); } }`}</style>
       <div className="sh" style={{ marginBottom: 20 }}>
         <div>
           <h2 style={{ fontSize: 24, margin: 0, fontWeight: 700 }}>Team Performance</h2>
@@ -393,9 +428,9 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
           </button>
           <div className="tabs" style={{ marginBottom: 0, border: 'none' }}>
             {DATE_FILTERS.map(f => (
-              <div 
-                key={f} 
-                className={`tab ${filter === f ? 'active' : ''}`} 
+              <div
+                key={f}
+                className={`tab ${filter === f ? 'active' : ''}`}
                 onClick={() => setFilter(f)}
                 style={{ padding: '6px 12px', fontSize: 12 }}
               >
