@@ -13,6 +13,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const [prodSearch, setProdSearch] = useState('');
   const [prodSortBy, setProdSortBy] = useState('revenue'); // revenue | units | name
   const prodPageSize = 50;
+  const [catFilter, setCatFilter] = useState('');
   useEffect(() => {
     if (dateFilter === 'Custom Range') return;
     const today = new Date();
@@ -42,9 +43,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
     }
   }, [dateFilter]);
 
-  // Reset pagination when tab changes
+  // Reset pagination + category filter when tab changes
   useEffect(() => {
     setProdPage(1);
+    setCatFilter('');
   }, [tab]);
 
   // Core: always needed for pl, gst, rev-src, funnel tabs
@@ -136,6 +138,12 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
   const filteredInv = filteredInvoicesAtSource.filter(inv => inRange(inv.date) && inv.status !== 'Draft');
   const filteredExp = filteredExpensesAtSource.filter(e => inRange(e.date));
+
+  // Category filter for Expense Report — options from profile.expCats (user-configured, not hardcoded)
+  const expCats = profile?.expCats || [];
+  const filteredExpByCat = catFilter
+    ? filteredExp.filter(e => (e.category || 'Uncategorised') === catFilter)
+    : filteredExp;
 
   const getInvTax = (inv) => {
     if (typeof inv.taxAmt === 'number') return inv.taxAmt;
@@ -389,7 +397,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // Expense Report aggregates (category breakdown + month trend + status totals)
   const expenseReport = useMemo(() => {
     if (tab !== 'expenses') return null;
-    const all = filteredExp;
+    const all = filteredExpByCat;
     const byStatus = { Approved: 0, Pending: 0, Rejected: 0 };
     all.forEach(e => { byStatus[e.status] = (byStatus[e.status] || 0) + (e.amount || 0); });
     const totalApproved = byStatus.Approved || 0;
@@ -436,7 +444,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       monthly,
       detail,
     };
-  }, [tab, filteredExp]);
+  }, [tab, filteredExpByCat]);
 
   // Monthly GST Breakdown
   const gstBreakdown = useMemo(() => {
@@ -662,6 +670,33 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
       {tab === 'expenses' && expenseReport && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* Category filter — options from profile.expCats (user-configured) */}
+          {expCats.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: '#fff', padding: '12px 16px', borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>Filter by Category:</span>
+              <select
+                value={catFilter}
+                onChange={e => setCatFilter(e.target.value)}
+                style={{ padding: '6px 10px', border: '1.5px solid var(--border)', borderRadius: 7, fontSize: 12, fontFamily: 'inherit', minWidth: 160 }}
+              >
+                <option value="">All Categories</option>
+                {expCats.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              {catFilter && (
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setCatFilter('')}
+                  style={{ fontSize: 12 }}
+                >✕ Clear</button>
+              )}
+              {catFilter && (
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  Showing {filteredExpByCat.length} of {filteredExp.length} entries
+                </span>
+              )}
+            </div>
+          )}
+
           {/* KPI cards */}
           <div className="stat-grid">
             <div className="stat-card sc-green"><div className="lbl">Approved</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)' }}>{fmt(expenseReport.totalApproved)}</div></div>
