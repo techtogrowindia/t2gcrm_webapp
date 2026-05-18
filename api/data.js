@@ -122,6 +122,68 @@ export default async function handler(req, res) {
 
     /* ──────────── READ (GET) ──────────── */
     if (method === 'GET') {
+      // Special handling for `leads`: apply staff visibility + assignee
+      // filtering. Previously this endpoint returned ALL leads to anyone
+      // who hit it (the mobile app showed every team member the full 11k
+      // dataset because it relies on this endpoint).
+      if (module === 'leads') {
+        const { leads, userProfiles, teamMembers: teamFromDb } = await db.query({
+          leads: { $: { where: { userId: ownerId } } },
+          userProfiles: { $: { where: { userId: ownerId } } },
+          teamMembers: { $: { where: { userId: ownerId } } },
+        });
+        let result = leads || [];
+        const profile = userProfiles?.[0] || {};
+        const teamMembers = teamFromDb || [];
+        const teamCanSeeAllLeads = params.teamCanSeeAllLeads !== undefined
+          ? (params.teamCanSeeAllLeads === true || params.teamCanSeeAllLeads === 'true')
+          : (profile.teamCanSeeAllLeads !== false);
+
+        // Auto-detect caller: owner vs team member
+        // - actorId === ownerId  → owner (sees all)
+        // - actorId matches a teamMember.id → team member identity resolved
+        // - else fall back to explicit isOwner / userEmail / myName params
+        let isOwner = false;
+        let userEmail = params.userEmail || '';
+        let myName = params.myName || '';
+        if (!actorId || actorId === ownerId) {
+          isOwner = true;
+        } else {
+          const tm = teamMembers.find(t => t.id === actorId);
+          if (tm) {
+            userEmail = userEmail || tm.email || '';
+            myName = myName || tm.name || '';
+          } else if (params.isOwner === true || params.isOwner === 'true') {
+            isOwner = true;
+          }
+        }
+
+        // Team visibility: if not owner AND workspace forbids team-wide view,
+        // limit to leads assigned to this user (or unassigned)
+        if (!isOwner && !teamCanSeeAllLeads) {
+          result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
+        }
+
+        // Optional explicit filters (mirrors /api/leads-page)
+        const { staffFilter = '', srcFilter = '', stgFilter = '' } = params;
+        result = result.filter(l => {
+          if (srcFilter && l.source !== srcFilter) return false;
+          if (stgFilter && l.stage !== stgFilter) return false;
+          if (staffFilter) {
+            if (staffFilter === 'unassigned') {
+              if (l.assign) return false;
+            } else if (staffFilter === 'my') {
+              if (l.assign !== userEmail && l.assign !== myName) return false;
+            } else if (l.assign !== staffFilter) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+        return res.status(200).json({ success: true, data: result, count: result.length });
+      }
+
       const query = { [collection]: { $: { where: { userId: ownerId } } } };
       const result = await db.query(query);
       return res.status(200).json({ success: true, data: result[collection] || [] });
