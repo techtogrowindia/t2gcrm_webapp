@@ -329,8 +329,20 @@ export default function Integrations({ user, ownerId }) {
         skipped: json.skipped || 0,
         errors: json.errors || 0,
         total: json.total || (json.added || 0) + (json.skipped || 0),
+        diagnostic: json.diagnostic || null,
       });
-      toast(`Synced! ${json.added || 0} new lead(s), ${json.skipped || 0} skipped.`, 'success');
+
+      // If 0 added AND 0 skipped, the API likely returned no leads —
+      // surface the diagnostic so the user can debug auth / response format.
+      if ((json.added || 0) === 0 && (json.skipped || 0) === 0 && json.diagnostic) {
+        toast(
+          `${type}: API returned no leads. Check Console / sync card for details.`,
+          'warning'
+        );
+        console.warn(`[${type} sync] diagnostic:`, json.diagnostic);
+      } else {
+        toast(`Synced! ${json.added || 0} new lead(s), ${json.skipped || 0} skipped.`, 'success');
+      }
     } catch (e) {
       toast(`Sync failed: ${e.message}`, 'error');
     } finally {
@@ -499,11 +511,32 @@ export default function Integrations({ user, ownerId }) {
                   </div>
                 ))}
                 {syncResults && syncing === null && (
-                  <div style={{ background: '#ecfdf5', border: '1px solid #10b981', borderRadius: 8, padding: '10px 14px', marginTop: 6, fontSize: 11, color: '#065f46' }}>
+                  <div style={{
+                    background: syncResults.diagnostic ? '#fef3c7' : '#ecfdf5',
+                    border: `1px solid ${syncResults.diagnostic ? '#f59e0b' : '#10b981'}`,
+                    borderRadius: 8,
+                    padding: '10px 14px',
+                    marginTop: 6,
+                    fontSize: 11,
+                    color: syncResults.diagnostic ? '#78350f' : '#065f46',
+                  }}>
                     <strong>Last Sync: {syncResults.configName}</strong>
                     <div style={{ marginTop: 4 }}>
                       ✅ {syncResults.added} added · ⏭ {syncResults.skipped} skipped · ❌ {syncResults.errors} errors
                     </div>
+                    {syncResults.diagnostic && (
+                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #fcd34d' }}>
+                        <strong>⚠️ Diagnostic — API returned no leads</strong>
+                        <div style={{ marginTop: 4, fontFamily: 'monospace', fontSize: 10 }}>
+                          HTTP: {syncResults.diagnostic.httpStatus}<br/>
+                          Keys: {(syncResults.diagnostic.apiResponseKeys || []).join(', ') || '(none)'}<br/>
+                          Sample: <span style={{ wordBreak: 'break-all' }}>{(syncResults.diagnostic.apiResponseSample || syncResults.diagnostic.responseSample || '').slice(0, 200)}</span>
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                          Likely cause: wrong API credentials, or TradeIndia has no new inquiries. Verify credentials in Edit.
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -96,16 +96,16 @@ export default async function handler(req, res) {
       return res.status(404).json({ success: false, message: 'User profile not found' });
     }
 
-    const tradeidiaConfigs = profile.tradeindia || [];
-    if (tradeidiaConfigs.length === 0) {
+    const tradeindiaConfigs = profile.tradeindia || [];
+    if (tradeindiaConfigs.length === 0) {
       return res.status(400).json({ success: false, message: 'No TradeIndia integration configured for this user' });
     }
 
-    if (configIndex < 0 || configIndex >= tradeidiaConfigs.length) {
-      return res.status(400).json({ success: false, message: `configIndex ${configIndex} out of range (have ${tradeidiaConfigs.length} configs)` });
+    if (configIndex < 0 || configIndex >= tradeindiaConfigs.length) {
+      return res.status(400).json({ success: false, message: `configIndex ${configIndex} out of range (have ${tradeindiaConfigs.length} configs)` });
     }
 
-    const activeConfig = tradeidiaConfigs[configIndex];
+    const activeConfig = tradeindiaConfigs[configIndex];
     if (activeConfig.disabled) {
       return res.status(200).json({ success: true, message: 'Sync skipped: Integration is disabled' });
     }
@@ -214,14 +214,43 @@ export default async function handler(req, res) {
         // TradeIndia My Inquiry API
         const apiUrl = `https://www.tradeindia.com/utils/my_inquiry.html?userid=${encodeURIComponent(tiUserId)}&profile_id=${encodeURIComponent(tiProfileId)}&key=${encodeURIComponent(apiKey)}`;
         const apiRes = await fetch(apiUrl);
-        const apiData = await apiRes.json();
+
+        // Read as text first so we can include it in the diagnostic response
+        // if TradeIndia returns HTML / error string instead of JSON
+        const rawText = await apiRes.text();
+        let apiData;
+        try {
+          apiData = JSON.parse(rawText);
+        } catch (parseErr) {
+          console.error('TradeIndia API returned non-JSON:', rawText.slice(0, 500));
+          return res.status(200).json({
+            success: false,
+            message: 'TradeIndia API returned a non-JSON response. Check your User ID / Profile ID / API Key.',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400) },
+          });
+        }
 
         // TradeIndia typically returns an array of inquiry objects
-        let leads = Array.isArray(apiData) ? apiData : (apiData?.leads || apiData?.RESPONSE || apiData?.inquiries || []);
+        let leads = Array.isArray(apiData)
+          ? apiData
+          : (apiData?.leads || apiData?.RESPONSE || apiData?.inquiries || apiData?.data || []);
         if (!Array.isArray(leads)) leads = [];
 
         if (leads.length === 0) {
-          return res.status(200).json({ success: true, message: 'No new leads found', added: 0, skipped: 0, total: 0 });
+          // Return what TradeIndia actually sent so you can see if it's an
+          // auth error / empty payload / unrecognised format.
+          const sample = JSON.stringify(apiData).slice(0, 400);
+          return res.status(200).json({
+            success: true,
+            message: 'No new leads found',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: {
+              httpStatus: apiRes.status,
+              apiResponseKeys: Object.keys(apiData || {}),
+              apiResponseSample: sample,
+            },
+          });
         }
 
         // Fetch existing leads for dedup
@@ -277,7 +306,7 @@ export default async function handler(req, res) {
         }
 
         // Update lastSyncAt
-        const updatedConfigs = tradeidiaConfigs.map((c, i) =>
+        const updatedConfigs = tradeindiaConfigs.map((c, i) =>
           i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
         );
         await db.transact(db.tx.userProfiles[profile.id].update({ tradeindia: updatedConfigs }));
