@@ -762,18 +762,24 @@ Use `modalLeads` in the dropdown options and in any `leads.find(name match)` on 
 - **Bulk import (`performImport` in LeadsView)** enforces `maxLeads`: calculates remaining slots, trims the import to fit, asks the user to confirm. `-1` = unlimited, no check.
 - **Pre-fix gotcha (now fixed):** the single-lead-form `isWithinLimit` check used `leads.length` which was capped at 500 by the old subscription — so the limit was silently bypassed. Now reads `pageData.counts.total` from the server.
 
-### Mobile vs Web API split — STRICT MOBILE RULE
+### Mobile vs Web API split — ROLE-AWARE MOBILE VISIBILITY
 
-The web calls `/api/leads-page` (always passes `isOwner`, `teamCanSeeAllLeads`, `userEmail`, `myName` explicitly). The Flutter mobile app calls `GET /api/data?module=leads`. That endpoint now **auto-detects** the caller from `actorId` AND **applies a stricter rule than the web**:
+The web calls `/api/leads-page` (always passes `isOwner`, `teamCanSeeAllLeads`, `userEmail`, `myName` explicitly). The Flutter mobile app calls `GET /api/data?module=leads`. That endpoint **auto-detects** the caller from `actorId` and applies **role-tier visibility** that mirrors `usePermissions.js`:
 
-- `actorId === ownerId` (or absent) → **owner → returns all leads**
-- `actorId` matches a `teamMembers[].id` → **team member → ALWAYS restricted to leads where `assign === their email/name` (or unassigned)**
-- `teamCanSeeAllLeads` in the workspace profile is intentionally **ignored** on this endpoint — admin-only sees all on mobile, regardless of the web's team-visibility toggle
-- Optional `staffFilter`, `srcFilter`, `stgFilter` query params can further narrow but **cannot expand beyond the user's allowed set**
+| Caller | Sees |
+|---|---|
+| Owner (`actorId === ownerId` or absent) | All leads |
+| Team member, role contains `"admin"` (case-insensitive) | All leads |
+| Team member, role contains `"manager"` (case-insensitive) | All leads |
+| Any other team-member role | **Only leads where `assign === their email/name` (or unassigned)** |
 
-**Pre-fix gotcha (now fixed):** previously `/api/data?module=leads` was a raw `where: { userId: ownerId }` — every team member saw every lead. Same kind of bug can recur if you add another module to `/api/data` and don't propagate the assignee restriction.
+- The workspace's `userProfiles.teamCanSeeAllLeads` flag is intentionally **ignored** on this endpoint — mobile visibility is derived strictly from role, never from the web's team toggle.
+- Optional `staffFilter` / `srcFilter` / `stgFilter` query params can further narrow but **cannot expand beyond the user's allowed set**.
+- Role matching uses `member.role.toLowerCase().includes('admin' | 'manager')` — identical substring logic to `usePermissions.js`, so a role named "Sales Manager" qualifies as manager-tier.
 
-**If you add a new module to `/api/data`:** decide whether it needs a similar assignee-only restriction for non-owners (tasks, callLogs, appointments often do). The default raw query is not safe for any module with per-user assignment.
+**Pre-fix gotcha (now fixed):** previously `/api/data?module=leads` was a raw `where: { userId: ownerId }` — every team member saw every lead. Same kind of bug can recur if you add another module to `/api/data` and don't propagate this filter.
+
+**If you add a new module to `/api/data`:** decide whether it needs role-tier visibility too (tasks, callLogs, appointments often do). The default raw query is not safe for any module with per-user assignment.
 
 ### Symptoms of the Scale Bug (for diagnosis)
 

@@ -712,15 +712,22 @@ Use `modalLeads` in the dropdown and any `leads.find(name match)` on save.
 - **`maxLeads` default in `ALL_MODULES` is `10000`** — set to `-1` (unlimited) per plan for bulk-import customers.
 - Bulk import (`performImport` in LeadsView) enforces `maxLeads`, trims to fit, asks user to confirm.
 
-### Mobile vs Web API split — STRICT MOBILE RULE
+### Mobile vs Web API split — ROLE-AWARE MOBILE VISIBILITY
 
 - Web calls `/api/leads-page` and passes `isOwner` / `teamCanSeeAllLeads` / `userEmail` / `myName` explicitly.
-- Mobile calls `GET /api/data?module=leads`. Auto-detects caller from `actorId`:
-  - `actorId === ownerId` (or absent) → **owner → all leads**
-  - `actorId` matches a `teamMembers[].id` → **team member → ALWAYS restricted to leads assigned to them (or unassigned)**
-  - `userProfiles.teamCanSeeAllLeads` is **intentionally ignored** on this endpoint — admin-only sees all on mobile
-- Optional `staffFilter` / `srcFilter` / `stgFilter` can further narrow but cannot expand beyond the user's allowed set.
-- **Pre-fix gotcha:** raw `/api/data` was returning all leads to every caller. If you add a new module to `/api/data`, decide whether it needs the same assignee-only filtering (tasks, callLogs, appointments often do).
+- Mobile calls `GET /api/data?module=leads`. Auto-detects caller from `actorId` and applies role-tier visibility (mirrors `usePermissions.js`):
+
+| Caller | Sees |
+|---|---|
+| Owner (`actorId === ownerId` or absent) | All leads |
+| Team member, role contains `"admin"` | All leads |
+| Team member, role contains `"manager"` | All leads |
+| Any other team-member role | Only leads assigned to them (or unassigned) |
+
+- `userProfiles.teamCanSeeAllLeads` is **ignored** on this endpoint — mobile visibility is strictly role-derived.
+- Optional `staffFilter` / `srcFilter` / `stgFilter` can narrow further but cannot expand beyond the user's allowed set.
+- Role substring match uses the same `toLowerCase().includes(...)` logic as `usePermissions.js`, so "Sales Manager" counts as manager-tier.
+- **Pre-fix gotcha:** raw `/api/data` was returning all leads to every caller. If you add a new module to `/api/data`, decide whether it needs role-tier filtering too (tasks, callLogs, appointments often do).
 
 ### Symptoms of the Scale Bug (for diagnosis)
 

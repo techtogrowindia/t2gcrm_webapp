@@ -127,11 +127,17 @@ export default async function handler(req, res) {
       // who hit it (the mobile app showed every team member the full 11k
       // dataset because it relies on this endpoint).
       if (module === 'leads') {
-        // Strict rule for mobile: ONLY the admin/owner sees all leads. Any
-        // team member identity (resolved from actorId) is hard-restricted to
-        // leads assigned to them (or unassigned). The userProfiles
-        // `teamCanSeeAllLeads` flag is intentionally NOT honoured here —
-        // mobile is owner-only for full visibility.
+        // Role-aware visibility for mobile. Mirrors usePermissions.js tiers:
+        //   1. Owner (actorId === ownerId)                       → all leads
+        //   2. Team member with role containing "admin"          → all leads
+        //   3. Team member with role containing "manager"        → all leads
+        //   4. Any other role                                    → ONLY leads
+        //                                                          assigned to them
+        //                                                          (or unassigned)
+        //
+        // `userProfiles.teamCanSeeAllLeads` is intentionally ignored — mobile
+        // visibility is derived strictly from role, never from the web's
+        // team-toggle setting.
         const { leads, teamMembers: teamFromDb } = await db.query({
           leads: { $: { where: { userId: ownerId } } },
           teamMembers: { $: { where: { userId: ownerId } } },
@@ -139,11 +145,9 @@ export default async function handler(req, res) {
         let result = leads || [];
         const teamMembers = teamFromDb || [];
 
-        // Auto-detect caller: owner vs team member
-        //  - actorId absent or === ownerId → owner
-        //  - actorId matches a teamMembers[].id → identified team member
-        //  - else fall back to explicit isOwner / userEmail / myName params
+        // Resolve caller identity + role from actorId
         let isOwner = false;
+        let memberRole = '';
         let userEmail = params.userEmail || '';
         let myName = params.myName || '';
         if (!actorId || actorId === ownerId) {
@@ -153,13 +157,18 @@ export default async function handler(req, res) {
           if (tm) {
             userEmail = userEmail || tm.email || '';
             myName = myName || tm.name || '';
+            memberRole = (tm.role || '').toLowerCase();
           } else if (params.isOwner === true || params.isOwner === 'true') {
             isOwner = true;
           }
         }
 
-        // Hard restriction for non-owners — admin-only sees all
-        if (!isOwner) {
+        const hasFullVisibility = isOwner
+          || memberRole.includes('admin')
+          || memberRole.includes('manager');
+
+        // Restrict non-admin/non-manager team members to their own leads
+        if (!hasFullVisibility) {
           result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
         }
 
