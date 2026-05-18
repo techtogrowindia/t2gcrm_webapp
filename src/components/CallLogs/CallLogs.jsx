@@ -53,20 +53,31 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     try { return localStorage.getItem(`callLogGroupRepeats_${user.email}`) !== 'false'; } catch { return true; }
   });
 
-  // FIX 1: Split into critical (immediate) + deferred (background) queries
-  // Critical data — callLogs + profile must load before table can render
+  // Profile + team via lightweight subscriptions. callLogs are NOT subscribed —
+  // they come from /api/call-logs-page (server-driven pagination + counts +
+  // teamStats) which is the only thing that scales to 100k+ rows.
   const { data: coreData, isLoading: coreLoading } = db.useQuery({
-    callLogs: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
   });
 
-  // Deferred data — team only; leads moved to server fetch below
   const { data: deferredData } = db.useQuery({
     teamMembers: { $: { where: { userId: ownerId } } },
   });
 
-  const callLogs = useMemo(() => (coreData?.callLogs || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), [coreData?.callLogs]);
   const profile = coreData?.userProfiles?.[0];
+
+  // Server-driven page state — { items, totalFiltered, totalUngrouped, counts, teamStats }
+  const [pageData, setPageData] = useState(null);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [refetchCounter, setRefetchCounter] = useState(0);
+  const refetchPage = () => setRefetchCounter(c => c + 1);
+
+  // Debounce search input by 300ms so we don't refetch per keystroke
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   // Leads: localStorage cache (5-min TTL) + server fetch on mount.
   // Replaced the limit:10000 subscription that timed out at 11k leads.
@@ -225,6 +236,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
       ]);
       toast('Lead created and call log linked', 'success');
       setAddLeadModal(false);
+      refetchPage();
     } catch (e) { toast(e.message, 'error'); }
     finally { setSavingLead(false); }
   };
@@ -242,97 +254,51 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
           ? `Up to ${dateTo}`
           : `Today (${today})`;
 
-  const teamCallStats = useMemo(() => {
-    return team.map(m => {
-      const allMemberLogs = callLogs.filter(l => l.staffEmail === m.email);
-      // Apply date filter if set, otherwise default to today
-      const memberLogs = allMemberLogs.filter(l => {
-        const d = l.createdAt ? new Date(l.createdAt).toISOString().split('T')[0] : null;
-        if (!d) return false;
-        if (dateFrom || dateTo) {
-          if (dateFrom && d < dateFrom) return false;
-          if (dateTo && d > dateTo) return false;
-          return true;
-        }
-        return d === today;
-      });
-      return {
-        name: m.name,
-        email: m.email,
-        total: memberLogs.length,
-        // Duration is the only honest signal — outcome label is unreliable
-        connected: memberLogs.filter(l => l.duration && Number(l.duration) > 0).length,
-        toLeads: memberLogs.filter(l => l.leadId).length,
-        toUnknown: memberLogs.filter(l => !l.leadId).length,
-        outgoing: memberLogs.filter(l => l.direction === 'Outgoing').length,
-        incoming: memberLogs.filter(l => l.direction === 'Incoming').length,
-        missed: memberLogs.filter(l => l.direction === 'Missed').length,
-        notPicked: memberLogs.filter(l => l.direction === 'Outgoing' && (!l.duration || Number(l.duration) === 0)).length,
-      };
-    });
-  }, [team, callLogs, today, dateFrom, dateTo]);
+  // Server-driven values — replaces local filtered/grouped/paged/teamCallStats
+  const paged = pageData?.items || [];
+  const totalFiltered = pageData?.totalFiltered || 0;     // grouped count (rows shown)
+  const totalUngrouped = pageData?.totalUngrouped || 0;   // raw call count (for the "X records" label)
+  const teamCallStats = pageData?.teamStats || [];
+  const totalPages = pageSize === 'all' ? 1 : Math.max(1, Math.ceil(totalFiltered / (Number(pageSize) || 25)));
 
-  // Filtered logs
-  const filtered = useMemo(() => {
-    let list = callLogs;
-    if (search) {
-      const s = search.toLowerCase();
-      list = list.filter(l => (l.phone || '').toLowerCase().includes(s) || (l.contactName || '').toLowerCase().includes(s) || (l.notes || '').toLowerCase().includes(s));
-    }
-    if (dirFilter) list = list.filter(l => l.direction === dirFilter);
-    if (staffFilter) list = list.filter(l => l.staffEmail === staffFilter);
-    if (dateFrom) list = list.filter(l => l.createdAt && new Date(l.createdAt).toISOString().split('T')[0] >= dateFrom);
-    if (dateTo) list = list.filter(l => l.createdAt && new Date(l.createdAt).toISOString().split('T')[0] <= dateTo);
-    setCurrentPage(1);
-    return list;
-  }, [callLogs, search, dirFilter, staffFilter, dateFrom, dateTo]);
+  // Reset to page 1 on any filter / pageSize change
+  useEffect(() => { setCurrentPage(1); }, [debouncedSearch, dirFilter, staffFilter, dateFrom, dateTo, pageSize, groupRepeats]);
 
-  // Collapse consecutive unpicked attempts to the same number/staff/direction
-  // within 24h into a single synthetic row with an attemptCount. Connected
-  // calls always stay as individual rows.
-  const grouped = useMemo(() => {
-    if (!groupRepeats) return filtered;
-    const result = [];
-    let i = 0;
-    while (i < filtered.length) {
-      const log = filtered[i];
-      if (!isUnpickedCall(log)) { result.push(log); i++; continue; }
-      const phone = normalize(log.phone);
-      const group = [log];
-      let j = i + 1;
-      while (j < filtered.length) {
-        const next = filtered[j];
-        if (!isUnpickedCall(next)) break;
-        if (normalize(next.phone) !== phone) break;
-        if ((next.staffEmail || '') !== (log.staffEmail || '')) break;
-        if ((next.direction || '') !== (log.direction || '')) break;
-        const last = group[group.length - 1];
-        if (Math.abs((last.createdAt || 0) - (next.createdAt || 0)) > REPEAT_GROUP_WINDOW_MS) break;
-        group.push(next);
-        j++;
-      }
-      if (group.length === 1) {
-        result.push(log);
-      } else {
-        result.push({
-          ...log,
-          attemptCount: group.length,
-          firstAttemptAt: Math.min(...group.map(g => g.createdAt || 0)),
-          lastAttemptAt: Math.max(...group.map(g => g.createdAt || 0)),
-          groupedIds: group.map(g => g.id),
+  // Fetch the current page from the server whenever filters, page, or group toggle change
+  useEffect(() => {
+    if (!ownerId) return;
+    setPageLoading(true);
+    let cancelled = false;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const body = {
+          ownerId,
+          page: currentPage,
+          pageSize,
+          search: debouncedSearch,
+          dirFilter,
+          staffFilter,
+          dateFrom,
+          dateTo,
+          groupRepeats,
+          summaryDate: new Date().toISOString().split('T')[0],
+          team: team.map(t => ({ email: t.email, name: t.name })),
+        };
+        const r = await fetch('/api/call-logs-page', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
         });
-      }
-      i = j;
-    }
-    return result;
-  }, [filtered, groupRepeats]);
-
-  const totalPages = pageSize === 'all' ? 1 : Math.ceil(grouped.length / pageSize);
-  const paged = useMemo(() => {
-    if (pageSize === 'all') return grouped;
-    const start = (currentPage - 1) * pageSize;
-    return grouped.slice(start, start + pageSize);
-  }, [grouped, currentPage, pageSize]);
+        const json = await r.json();
+        if (!cancelled) setPageData(json);
+      } catch { /* keep previous pageData so UI doesn't flash */ }
+      finally { if (!cancelled) setPageLoading(false); }
+    })();
+    return () => { cancelled = true; controller.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerId, currentPage, pageSize, debouncedSearch, dirFilter, staffFilter, dateFrom, dateTo, groupRepeats, refetchCounter, team.length]);
 
   const toggleGroupRepeats = () => {
     const next = !groupRepeats;
@@ -373,6 +339,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
         toast('Call logged', 'success');
       }
       setModal(false);
+      refetchPage();
     } catch (e) { toast(e.message, 'error'); }
   };
 
@@ -386,14 +353,48 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
       // so the rows disappear atomically.
       await db.transact(ids.map(id => db.tx.callLogs[id].delete()));
       toast(ids.length === 1 ? 'Call log deleted' : `${ids.length} attempts deleted`, 'success');
+      refetchPage();
     } catch (e) { toast(e.message, 'error'); }
   };
 
-  // Only block render on critical data (callLogs + profile), not on leads/team
-  if (coreLoading) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ width: 20, height: 20, margin: '0 auto' }} /><p style={{ color: 'var(--muted)', marginTop: 8 }}>Loading call logs...</p></div>;
+  // Block initial render on profile + first server-side page fetch
+  if (coreLoading || (pageLoading && !pageData)) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ width: 20, height: 20, margin: '0 auto' }} /><p style={{ color: 'var(--muted)', marginTop: 8 }}>Loading call logs...</p></div>;
 
   return (
-    <div style={{ padding: '20px 24px', maxWidth: 1200 }}>
+    <div style={{ padding: '20px 24px', maxWidth: 1200, position: 'relative' }}>
+      {/* Refetch overlay — shown during filter / page / search changes */}
+      {pageLoading && pageData && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255, 255, 255, 0.6)',
+            backdropFilter: 'blur(1px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            zIndex: 10,
+            pointerEvents: 'all',
+          }}
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              border: '3px solid #e2e8f0',
+              borderTopColor: 'var(--accent, #16a34a)',
+              borderRadius: '50%',
+              animation: 'tr-spin 0.7s linear infinite',
+            }}
+          />
+          <div style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>Loading call logs…</div>
+        </div>
+      )}
+      <style>{`@keyframes tr-spin { to { transform: rotate(360deg); } }`}</style>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
@@ -494,9 +495,9 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-            {filtered.length} record{filtered.length !== 1 ? 's' : ''}
-            {groupRepeats && grouped.length !== filtered.length && (
-              <> · <strong>{grouped.length}</strong> rows (grouped)</>
+            {totalUngrouped} record{totalUngrouped !== 1 ? 's' : ''}
+            {groupRepeats && totalFiltered !== totalUngrouped && (
+              <> · <strong>{totalFiltered}</strong> rows (grouped)</>
             )}
           </span>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }} title="Collapse consecutive unanswered calls to the same number into one row">
@@ -572,15 +573,16 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
             <tbody>
               {paged.length === 0 && (
                 <tr><td colSpan={activeCols.length + 2} style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
-                  {filtered.length === 0 && callLogs.length === 0 ? 'No call logs yet. Click "Log Call" to add one.' : 'No matching records.'}
+                  {totalUngrouped === 0 && !search && !dirFilter && !staffFilter && !dateFrom && !dateTo ? 'No call logs yet. Click "Log Call" to add one.' : 'No matching records.'}
                 </td></tr>
               )}
               {paged.map((log, i) => {
                 const di = directionIcon(log.direction);
-                // FIX 2: O(1) index lookups instead of O(n) array scans
-                const matchedLead = log.leadId
-                  ? (leadIdIndex[log.leadId] || matchLead(log.phone))
-                  : matchLead(log.phone);
+                // Server enriched each row with matchedLeadId / matchedLeadName.
+                // Fall back to local index for any client-side lookup needs.
+                const matchedLead = log.matchedLeadId
+                  ? { id: log.matchedLeadId, name: log.matchedLeadName }
+                  : (log.leadId ? leadIdIndex[log.leadId] : matchLead(log.phone));
                 const rowNum = (currentPage - 1) * (pageSize === 'all' ? 0 : pageSize) + i + 1;
                 return (
                   <tr key={log.id} style={{ borderBottom: '1px solid var(--border)' }}>
@@ -666,7 +668,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
         {pageSize !== 'all' && totalPages > 1 && (
           <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', background: 'var(--bg)', flexWrap: 'wrap', gap: 15 }}>
             <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-              Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to <strong>{Math.min(currentPage * pageSize, filtered.length)}</strong> of <strong>{filtered.length}</strong> records
+              Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to <strong>{Math.min(currentPage * pageSize, totalFiltered)}</strong> of <strong>{totalFiltered}</strong> rows
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
               <button className="btn btn-secondary btn-sm" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} style={{ padding: '4px 10px' }}>Prev</button>

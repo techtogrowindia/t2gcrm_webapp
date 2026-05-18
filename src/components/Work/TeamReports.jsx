@@ -128,10 +128,28 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
     return { start: start.getTime(), end: end.getTime() };
   }, [filter, customRange]);
 
-  // Pull activity logs scoped to the selected date range
+  // Pre-aggregated per-member stats via /api/team-stats — the heavy
+  // aggregation that used to run client-side over 50k+ activity logs now
+  // happens server-side once per (ownerId, date-range) and is cached for 15s.
+  const [serverStats, setServerStats] = useState(null);
   useEffect(() => {
     if (!ownerId) return;
     setLogsLoading(true);
+    fetch('/api/team-stats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, startMs: dateRange.start, endMs: dateRange.end }),
+    })
+      .then(r => r.json())
+      .then(json => setServerStats(json))
+      .catch(() => setServerStats(null))
+      .finally(() => setLogsLoading(false));
+  }, [ownerId, dateRange.start, dateRange.end]);
+
+  // Raw activity logs — fetched lazily ONLY when a member is selected, so
+  // the page doesn't pull 50k rows just to render the summary table.
+  useEffect(() => {
+    if (!ownerId || !selectedId) { setLogs([]); return; }
     fetch('/api/team-activity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -139,9 +157,8 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
     })
       .then(r => r.json())
       .then(json => setLogs(json.logs || []))
-      .catch(() => setLogs([]))
-      .finally(() => setLogsLoading(false));
-  }, [ownerId, dateRange.start, dateRange.end]);
+      .catch(() => setLogs([]));
+  }, [ownerId, selectedId, dateRange.start, dateRange.end]);
 
   // Set of team-member emails to distinguish owner's logs from team members'
   const teamEmails = useMemo(() => new Set(team.map(t => (t.email || '').toLowerCase()).filter(Boolean)), [team]);
@@ -183,87 +200,16 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
            !(log.text || '').includes('🤖');
   };
 
+  // Server returns the pre-aggregated array. Also enrich each row with
+  // `tasksAssigned` which is cheap to compute client-side from the small
+  // tasks subscription.
   const performanceData = useMemo(() => {
-    return members.map(m => {
-      const leadsAssigned = allLeads.filter(l => l.assign === m.name).length;
-      const tasksAssigned = allTasks.filter(t => t.assignTo === m.name).length;
-
-      // Filter logs for this member using email fallback
-      const userLogs = logs.filter(l => 
-        isLogByMember(l, m) && 
-        l.createdAt >= dateRange.start && 
-        l.createdAt <= dateRange.end &&
-        isHumanLog(l)
-      );
-
-      const totalActivities = userLogs.length;
-
-      // Derive all metrics from activity logs (single source of truth)
-      // Accept both singular and plural entityType for backward compat with old log formats
-      const isTypeLog = (l, t) => l.entityType === t || l.entityType === `${t}s`;
-      const uniqueByEntity = (filterFn) =>
-        new Set(userLogs.filter(filterFn).map(l => l.entityId)).size;
-
-      // Per-module distinct entity counts (e.g. "5 leads worked" = 5 different leads)
-      const leadsWorked = uniqueByEntity(l => isTypeLog(l, 'lead'));
-      const tasksWorked = uniqueByEntity(l => isTypeLog(l, 'task'));
-      const customersWorked = uniqueByEntity(l => isTypeLog(l, 'customer'));
-      const quotesWorked = uniqueByEntity(l => isTypeLog(l, 'quotation'));
-      const invoicesWorked = uniqueByEntity(l => isTypeLog(l, 'invoice'));
-      const amcWorked = uniqueByEntity(l => isTypeLog(l, 'amc'));
-      const projectsWorked = uniqueByEntity(l => isTypeLog(l, 'project'));
-      const appointmentsWorked = uniqueByEntity(l => isTypeLog(l, 'appointment'));
-
-      // Tasks completed: structured action='completed' OR text contains "completed"
-      const tasksCompleted = uniqueByEntity(l =>
-        isTypeLog(l, 'task') && (l.action === 'completed' || (l.text || '').toLowerCase().includes('completed'))
-      );
-
-      // Leads won: stage-change → wonStage OR action='converted' OR text contains won/converted
-      const leadsWon = uniqueByEntity(l =>
-        isTypeLog(l, 'lead') && (
-          (l.action === 'stage-change' && l.toStage === wonStage) ||
-          l.action === 'converted' ||
-          (l.text || '').toLowerCase().includes('won') ||
-          (l.text || '').toLowerCase().includes('converted')
-        )
-      );
-
-      // Stage changes (any stage move counts as pipeline activity)
-      const stageChanges = userLogs.filter(l => isTypeLog(l, 'lead') && l.action === 'stage-change').length;
-
-      // Misc = logs from other tracked modules (expense, purchase order, product, vendor, campaign, etc.)
-      const knownTypes = new Set(['lead', 'leads', 'task', 'tasks', 'customer', 'customers', 'quotation', 'quotations', 'invoice', 'invoices', 'amc', 'project', 'projects', 'appointment', 'appointments']);
-      const otherWorks = userLogs.filter(l => !knownTypes.has(l.entityType)).length;
-
-      // Calls made (from callLogs collection) in date range
-      const callsMade = allCallLogs.filter(cl =>
-        isCallByMember(cl, m) &&
-        (cl.createdAt || 0) >= dateRange.start &&
-        (cl.createdAt || 0) <= dateRange.end
-      ).length;
-
-      return {
-        ...m,
-        leadsAssigned,
-        tasksAssigned,
-        tasksCompleted,
-        tasksWorked,
-        leadsWorked,
-        leadsWon,
-        customersWorked,
-        quotesWorked,
-        invoicesWorked,
-        amcWorked,
-        projectsWorked,
-        appointmentsWorked,
-        stageChanges,
-        otherWorks,
-        callsMade,
-        totalActivities
-      };
-    }).sort((a, b) => b.totalActivities - a.totalActivities);
-  }, [members, logs, dateRange, allLeads, allTasks, allCallLogs, teamEmails, ownerId, wonStage]);
+    const fromServer = serverStats?.members || [];
+    return fromServer.map(m => ({
+      ...m,
+      tasksAssigned: allTasks.filter(t => t.assignTo === m.name).length,
+    }));
+  }, [serverStats, allTasks]);
 
   const selectedMember = useMemo(() => performanceData.find(m => m.id === selectedId), [performanceData, selectedId]);
 
