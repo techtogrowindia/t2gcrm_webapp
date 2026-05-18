@@ -33,14 +33,11 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
     callLogs: { $: { where: { userId: ownerId }, limit: 5000 } }
   });
 
-  // Fetch activity logs for all team members at once.
-  // NOTE: InstantDB where-clause range filters ($gte) are unreliable on non-indexed fields;
-  // we fetch recent logs (limit 2000) and filter by date in React.
-  const { data: logData } = db.useQuery({
-    activityLogs: { $: { where: { userId: ownerId }, limit: 2000 } }
-  });
-
-  const logs = logData?.activityLogs || [];
+  // Activity logs are now server-driven (filtered by date range server-side).
+  // The previous db.useQuery with limit:2000 returned arbitrary rows (no
+  // ordering guarantee) and at scale also hit the InstantDB WebSocket timeout,
+  // which is why every metric in this page was rendering as 0.
+  const [logs, setLogs] = useState([]);
   const team = data?.teamMembers || [];
   const allTasks = data?.tasks || [];
   // Leads fetched via server — replaced unlimited subscription that hung at 11k
@@ -129,6 +126,19 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
     
     return { start: start.getTime(), end: end.getTime() };
   }, [filter, customRange]);
+
+  // Pull activity logs scoped to the selected date range
+  useEffect(() => {
+    if (!ownerId) return;
+    fetch('/api/team-activity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, startMs: dateRange.start, endMs: dateRange.end }),
+    })
+      .then(r => r.json())
+      .then(json => setLogs(json.logs || []))
+      .catch(() => setLogs([]));
+  }, [ownerId, dateRange.start, dateRange.end]);
 
   // Set of team-member emails to distinguish owner's logs from team members'
   const teamEmails = useMemo(() => new Set(team.map(t => (t.email || '').toLowerCase()).filter(Boolean)), [team]);
