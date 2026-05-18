@@ -300,10 +300,12 @@ All integrations:
 ### Adding a New Lead Source
 
 1. Create `/api/webhook/newsource.js` handler (POST webhook + GET pull sync, dedup by phone/email)
-2. Add route in `server.mjs` and `vite.config.js`
+2. **Add import + route in `server.mjs`** — `vite.config.js` resolves dynamically so dev works without this, but **production returns 404 until `server.mjs` is updated**. This is the most common gotcha when adding a new webhook. Always add both the `import` line and the `app.all(...)` line.
 3. Create `/src/components/System/NewsourceIntegration.jsx` component (field mapping UI)
 4. Add to `src/components/System/Integrations.jsx` (add integration card + routing + all conditional checks)
 5. Update `src/utils/helpers.js` DEFAULT_SOURCES array
+
+> **Real bug (May 2026):** TradeIndia webhook (`/api/webhook/tradeindia`) existed in `api/` and worked in dev but returned 404 in production for months because `server.mjs` was never updated. Always verify the route is in `server.mjs` after creating any new API file.
 
 ### Adding a New Module/Feature
 
