@@ -421,12 +421,12 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                 <tr style={{ background: 'var(--bg)' }}>
                   <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>Member</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Total</th>
-                  <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Connected</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>To Leads</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Unknown</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Outgoing</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Incoming</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Missed</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Connected</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Not Picked</th>
                 </tr>
               </thead>
@@ -440,12 +440,12 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                       </div>
                     </td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>{m.total}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 600 }}>{m.connected}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#8b5cf6', fontWeight: 600 }}>{m.toLeads}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f59e0b', fontWeight: 600 }}>{m.toUnknown}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#2563eb' }}>{m.outgoing}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a' }}>{m.incoming}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#ef4444' }}>{m.missed}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 600 }}>{m.connected}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f97316', fontWeight: 600 }}>{m.notPicked}</td>
                   </tr>
                 ))}
@@ -453,12 +453,12 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                 <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg)', fontWeight: 700 }}>
                   <td style={{ padding: '8px 12px', fontWeight: 700 }}>Total</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.total, 0)}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.connected, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#8b5cf6', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.toLeads, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f59e0b', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.toUnknown, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#2563eb', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.outgoing, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.incoming, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#ef4444', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.missed, 0)}</td>
+                  <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.connected, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f97316', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.notPicked, 0)}</td>
                 </tr>
               </tbody>
