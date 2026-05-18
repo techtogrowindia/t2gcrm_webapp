@@ -16,6 +16,7 @@ import { useToast } from '../../context/ToastContext';
  */
 
 const EXPORTABLE = [
+  { value: 'all-logs', label: '🗂️ All Log Collections (combined)', deletable: true, group: true },
   { value: 'callLogs', label: 'Call Logs', deletable: true },
   { value: 'activityLogs', label: 'Activity Logs', deletable: true },
   { value: 'executedAutomations', label: 'Executed Automations', deletable: true },
@@ -27,6 +28,9 @@ const EXPORTABLE = [
   { value: 'quotes', label: 'Quotes (export only)', deletable: false },
   { value: 'appointments', label: 'Appointments (export only)', deletable: false },
 ];
+
+// Members of the "all-logs" group — every collection iterated when user picks "all-logs"
+const ALL_LOG_COLLECTIONS = ['callLogs', 'activityLogs', 'executedAutomations', 'outbox', 'attendance'];
 
 export default function ArchiveManager({ user }) {
   const toast = useToast();
@@ -54,6 +58,10 @@ export default function ArchiveManager({ user }) {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Searchable customer picker state
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+
   // Fetch list of customers (businesses)
   const { data } = db.useQuery({ userProfiles: {} });
   const customers = data?.userProfiles || [];
@@ -66,6 +74,28 @@ export default function ArchiveManager({ user }) {
 
   const selectedCustomer = customersSorted.find(c => c.userId === ownerId);
   const selectedCollection = EXPORTABLE.find(c => c.value === collection);
+
+  // Filter customers by search query (email OR business name, case-insensitive)
+  const filteredCustomers = useMemo(() => {
+    const q = customerSearch.trim().toLowerCase();
+    if (!q) return customersSorted;
+    return customersSorted.filter(c =>
+      (c.email || '').toLowerCase().includes(q) ||
+      (c.bizName || '').toLowerCase().includes(q) ||
+      (c.fullName || '').toLowerCase().includes(q)
+    );
+  }, [customersSorted, customerSearch]);
+
+  const pickCustomer = (c) => {
+    setOwnerId(c.userId);
+    setCustomerSearch(`${c.email}${c.bizName ? ` (${c.bizName})` : ''}`);
+    setCustomerDropdownOpen(false);
+  };
+
+  // When ownerId clears, reset search box too
+  React.useEffect(() => {
+    if (!ownerId) setCustomerSearch('');
+  }, [ownerId]);
 
   // Reset preview when scope changes
   React.useEffect(() => {
@@ -90,19 +120,58 @@ export default function ArchiveManager({ user }) {
     setPreviewLoading(true);
     setPreview(null);
     try {
-      const r = await callApi({
-        action: 'preview',
-        ownerId,
-        collection,
-        fromDate: fromDate || undefined,
-        toDate: toDate || undefined,
-      });
-      setPreview(r);
+      if (collection === 'all-logs') {
+        // Fan out across every log collection, sum counts
+        const results = await Promise.all(
+          ALL_LOG_COLLECTIONS.map(coll =>
+            callApi({
+              action: 'preview',
+              ownerId,
+              collection: coll,
+              fromDate: fromDate || undefined,
+              toDate: toDate || undefined,
+            }).then(r => ({ coll, ...r })).catch(() => ({ coll, count: 0, estimatedSizeMB: 0, totalForOwner: 0 }))
+          )
+        );
+        const totalCount = results.reduce((s, r) => s + (r.count || 0), 0);
+        const totalSize = results.reduce((s, r) => s + (r.estimatedSizeMB || 0), 0);
+        const totalForOwner = results.reduce((s, r) => s + (r.totalForOwner || 0), 0);
+        const dates = results.flatMap(r => [r.oldestDate, r.newestDate].filter(Boolean));
+        setPreview({
+          count: totalCount,
+          totalForOwner,
+          estimatedSizeMB: totalSize.toFixed(2),
+          oldestDate: dates.length ? Math.min(...dates) : null,
+          newestDate: dates.length ? Math.max(...dates) : null,
+          breakdown: results,
+        });
+      } else {
+        const r = await callApi({
+          action: 'preview',
+          ownerId,
+          collection,
+          fromDate: fromDate || undefined,
+          toDate: toDate || undefined,
+        });
+        setPreview(r);
+      }
     } catch (e) {
       toast(e.message, 'error');
     } finally {
       setPreviewLoading(false);
     }
+  };
+
+  const triggerDownload = (payload, filename) => {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const doExport = async () => {
@@ -112,44 +181,70 @@ export default function ArchiveManager({ user }) {
 
     setActionLoading(true);
     try {
-      const r = await callApi({
-        action: 'export',
-        ownerId,
-        collection,
-        fromDate: fromDate || undefined,
-        toDate: toDate || undefined,
-        actorId: user?.id,
-      });
-
-      // Build JSON blob and trigger download
-      const blob = new Blob([JSON.stringify({
-        meta: {
-          archiveId: r.archiveId,
-          collection: r.collection,
-          ownerId,
-          ownerEmail: selectedCustomer?.email || '',
-          fromDate: r.fromDate,
-          toDate: r.toDate,
-          exportedAt: r.exportedAt,
-          recordCount: r.count,
-        },
-        records: r.records,
-      }, null, 2)], { type: 'application/json' });
-
       const dateStr = new Date().toISOString().split('T')[0];
       const safeEmail = (selectedCustomer?.email || ownerId).replace(/[^a-z0-9]/gi, '_');
-      const filename = `archive_${collection}_${safeEmail}_${dateStr}.json`;
 
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      if (collection === 'all-logs') {
+        // Fan out across every log collection, build a combined JSON
+        const results = await Promise.all(
+          ALL_LOG_COLLECTIONS.map(coll =>
+            callApi({
+              action: 'export',
+              ownerId,
+              collection: coll,
+              fromDate: fromDate || undefined,
+              toDate: toDate || undefined,
+              actorId: user?.id,
+            }).catch(err => ({ records: [], count: 0, error: err.message, collection: coll }))
+          )
+        );
+        const data = {};
+        let total = 0;
+        results.forEach(r => {
+          data[r.collection] = r.records || [];
+          total += r.count || 0;
+        });
 
-      toast(`✓ Exported ${r.count} record(s) → ${filename}`, 'success');
+        const filename = `archive_all-logs_${safeEmail}_${dateStr}.json`;
+        triggerDownload({
+          meta: {
+            collection: 'all-logs',
+            ownerId,
+            ownerEmail: selectedCustomer?.email || '',
+            fromDate: fromDate || null,
+            toDate: toDate || null,
+            exportedAt: Date.now(),
+            recordCount: total,
+          },
+          data,
+        }, filename);
+
+        toast(`✓ Exported ${total} record(s) across ${ALL_LOG_COLLECTIONS.length} collections → ${filename}`, 'success');
+      } else {
+        const r = await callApi({
+          action: 'export',
+          ownerId,
+          collection,
+          fromDate: fromDate || undefined,
+          toDate: toDate || undefined,
+          actorId: user?.id,
+        });
+        const filename = `archive_${collection}_${safeEmail}_${dateStr}.json`;
+        triggerDownload({
+          meta: {
+            archiveId: r.archiveId,
+            collection: r.collection,
+            ownerId,
+            ownerEmail: selectedCustomer?.email || '',
+            fromDate: r.fromDate,
+            toDate: r.toDate,
+            exportedAt: r.exportedAt,
+            recordCount: r.count,
+          },
+          records: r.records,
+        }, filename);
+        toast(`✓ Exported ${r.count} record(s) → ${filename}`, 'success');
+      }
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -176,16 +271,40 @@ export default function ArchiveManager({ user }) {
 
     setActionLoading(true);
     try {
-      const r = await callApi({
-        action: 'delete',
-        ownerId,
-        collection,
-        fromDate: fromDate || undefined,
-        toDate,
-        confirm: 'DELETE',
-        actorId: user?.id,
-      });
-      toast(`✓ Deleted ${r.deleted} record(s)`, 'success');
+      if (collection === 'all-logs') {
+        // Fan out delete across every log collection
+        const results = await Promise.all(
+          ALL_LOG_COLLECTIONS.map(coll =>
+            callApi({
+              action: 'delete',
+              ownerId,
+              collection: coll,
+              fromDate: fromDate || undefined,
+              toDate,
+              confirm: 'DELETE',
+              actorId: user?.id,
+            }).catch(err => ({ deleted: 0, error: err.message, collection: coll }))
+          )
+        );
+        const total = results.reduce((s, r) => s + (r.deleted || 0), 0);
+        const errors = results.filter(r => r.error);
+        if (errors.length > 0) {
+          toast(`✓ Deleted ${total} record(s) — ${errors.length} collection(s) had errors`, 'warning');
+        } else {
+          toast(`✓ Deleted ${total} record(s) across ${ALL_LOG_COLLECTIONS.length} collections`, 'success');
+        }
+      } else {
+        const r = await callApi({
+          action: 'delete',
+          ownerId,
+          collection,
+          fromDate: fromDate || undefined,
+          toDate,
+          confirm: 'DELETE',
+          actorId: user?.id,
+        });
+        toast(`✓ Deleted ${r.deleted} record(s)`, 'success');
+      }
       setPreview(null);
       setConfirmText('');
     } catch (e) {
@@ -205,10 +324,25 @@ export default function ArchiveManager({ user }) {
     reader.onload = (evt) => {
       try {
         const parsed = JSON.parse(evt.target.result);
-        // Support both wrapped { meta, records } and raw [records] formats
         const meta = parsed.meta || {};
-        const records = Array.isArray(parsed) ? parsed : (parsed.records || []);
-        setRestorePreview({ meta, records, recordCount: records.length });
+
+        // Three formats supported:
+        // 1. Multi-collection (all-logs export): { meta, data: { callLogs: [...], activityLogs: [...] } }
+        // 2. Single collection (wrapped):        { meta, records: [...] }
+        // 3. Single collection (raw array):      [ ...records ]
+        if (parsed.data && typeof parsed.data === 'object') {
+          // Multi-collection
+          const totalCount = Object.values(parsed.data).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
+          setRestorePreview({
+            meta,
+            multi: true,
+            data: parsed.data,
+            recordCount: totalCount,
+          });
+        } else {
+          const records = Array.isArray(parsed) ? parsed : (parsed.records || []);
+          setRestorePreview({ meta, records, recordCount: records.length });
+        }
       } catch (err) {
         toast('Invalid JSON file: ' + err.message, 'error');
         setRestoreFile(null);
@@ -223,26 +357,53 @@ export default function ArchiveManager({ user }) {
       return toast('No records in the file', 'error');
     }
 
-    const targetCollection = restorePreview.meta?.collection || collection;
-    if (!EXPORTABLE.find(c => c.value === targetCollection)) {
-      return toast(`Collection "${targetCollection}" is not supported`, 'error');
-    }
-
     if (!window.confirm(
-      `Restore ${restorePreview.recordCount} record(s) to ${targetCollection} for ${selectedCustomer?.email}?\n\n` +
+      `Restore ${restorePreview.recordCount} record(s) for ${selectedCustomer?.email}?\n\n` +
       `Duplicate records (same id) will be skipped — your existing data is safe.`
     )) return;
 
     setActionLoading(true);
     try {
-      const r = await callApi({
-        action: 'restore',
-        ownerId,
-        collection: targetCollection,
-        records: restorePreview.records,
-        actorId: user?.id,
-      });
-      toast(r.message || `Restored ${r.inserted}, skipped ${r.skipped}`, 'success');
+      if (restorePreview.multi) {
+        // Multi-collection restore — call API once per collection
+        let totalInserted = 0;
+        let totalSkipped = 0;
+        const errors = [];
+        for (const [coll, records] of Object.entries(restorePreview.data)) {
+          if (!Array.isArray(records) || records.length === 0) continue;
+          try {
+            const r = await callApi({
+              action: 'restore',
+              ownerId,
+              collection: coll,
+              records,
+              actorId: user?.id,
+            });
+            totalInserted += r.inserted || 0;
+            totalSkipped += r.skipped || 0;
+          } catch (err) {
+            errors.push(`${coll}: ${err.message}`);
+          }
+        }
+        if (errors.length > 0) {
+          toast(`Restored ${totalInserted}, skipped ${totalSkipped} — errors: ${errors.join('; ')}`, 'warning');
+        } else {
+          toast(`✓ Restored ${totalInserted} record(s), skipped ${totalSkipped} duplicate(s)`, 'success');
+        }
+      } else {
+        const targetCollection = restorePreview.meta?.collection || collection;
+        if (!EXPORTABLE.find(c => c.value === targetCollection) || targetCollection === 'all-logs') {
+          return toast(`Collection "${targetCollection}" is not supported for single-collection restore`, 'error');
+        }
+        const r = await callApi({
+          action: 'restore',
+          ownerId,
+          collection: targetCollection,
+          records: restorePreview.records,
+          actorId: user?.id,
+        });
+        toast(r.message || `Restored ${r.inserted}, skipped ${r.skipped}`, 'success');
+      }
       setRestoreFile(null);
       setRestorePreview(null);
     } catch (e) {
@@ -288,14 +449,76 @@ export default function ArchiveManager({ user }) {
       {/* Customer + Collection picker (shared across tabs) */}
       <div style={card}>
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 1fr 1fr', gap: 12 }}>
-          <div>
+          <div style={{ position: 'relative' }}>
             <label style={label}>Customer (Business)</label>
-            <select value={ownerId} onChange={e => setOwnerId(e.target.value)} style={input}>
-              <option value="">— Select a customer —</option>
-              {customersSorted.map(c => (
-                <option key={c.id} value={c.userId}>{c.email}{c.bizName ? ` (${c.bizName})` : ''}</option>
-              ))}
-            </select>
+            <input
+              type="text"
+              value={customerSearch}
+              onChange={e => {
+                setCustomerSearch(e.target.value);
+                setCustomerDropdownOpen(true);
+                if (ownerId && !e.target.value) setOwnerId('');
+              }}
+              onFocus={() => setCustomerDropdownOpen(true)}
+              onBlur={() => setTimeout(() => setCustomerDropdownOpen(false), 200)}
+              placeholder="Search by email, business, or name…"
+              style={input}
+              autoComplete="off"
+            />
+            {customerDropdownOpen && filteredCustomers.length > 0 && (
+              <div style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                background: 'var(--card)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                marginTop: 2,
+                maxHeight: 240,
+                overflowY: 'auto',
+                zIndex: 10,
+                boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+              }}>
+                {filteredCustomers.map(c => (
+                  <div
+                    key={c.id}
+                    onMouseDown={() => pickCustomer(c)}
+                    style={{
+                      padding: '8px 12px',
+                      cursor: 'pointer',
+                      borderBottom: '1px solid var(--border)',
+                      background: ownerId === c.userId ? 'var(--bg)' : 'transparent',
+                    }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{c.email}</div>
+                    {(c.bizName || c.fullName) && (
+                      <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                        {[c.bizName, c.fullName].filter(Boolean).join(' • ')}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {customerDropdownOpen && filteredCustomers.length === 0 && customerSearch && (
+              <div style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                background: 'var(--card)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                marginTop: 2,
+                padding: '12px',
+                fontSize: 13,
+                color: 'var(--muted)',
+                zIndex: 10,
+              }}>
+                No customers match "{customerSearch}"
+              </div>
+            )}
           </div>
           <div>
             <label style={label}>Collection</label>
@@ -367,6 +590,16 @@ export default function ArchiveManager({ user }) {
               {preview.oldestDate && (
                 <div>Date range: {new Date(preview.oldestDate).toLocaleDateString()} → {new Date(preview.newestDate).toLocaleDateString()}</div>
               )}
+              {preview.breakdown && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+                  <strong>Breakdown:</strong>
+                  {preview.breakdown.map(b => (
+                    <div key={b.coll} style={{ marginLeft: 12, fontSize: 12 }}>
+                      • {b.coll}: <strong>{b.count}</strong> record(s)
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -412,6 +645,16 @@ export default function ArchiveManager({ user }) {
               <div>Total in collection for this customer: {preview.totalForOwner}</div>
               {preview.oldestDate && (
                 <div>Date range to delete: {new Date(preview.oldestDate).toLocaleDateString()} → {new Date(preview.newestDate).toLocaleDateString()}</div>
+              )}
+              {preview.breakdown && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+                  <strong>Breakdown:</strong>
+                  {preview.breakdown.map(b => (
+                    <div key={b.coll} style={{ marginLeft: 12, fontSize: 12 }}>
+                      • {b.coll}: <strong>{b.count}</strong> record(s)
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}
