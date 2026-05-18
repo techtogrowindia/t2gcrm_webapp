@@ -18,11 +18,13 @@ const directionIcon = (dir) => {
 
 const EMPTY_FORM = { phone: '', contactName: '', direction: 'Outgoing', outcome: 'Connected', duration: '', notes: '', leadId: '' };
 
-// Repeat-attempt rollup: consecutive unpicked outgoing calls to the same number
-// by the same staff member within 24 hours are collapsed into one row showing
-// "× N attempts". Connected calls always stay as individual rows.
+// Repeat-attempt rollup: consecutive unpicked calls to the same number by the
+// same staff within 24 hours collapse into one row showing "× N". A call is
+// "not picked" when its duration is 0 — the only reliable signal, since the
+// mobile app sometimes labels unpicked calls as outcome='Connected'. Calls
+// with real duration always render as individual rows.
 const REPEAT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
-const isUnpickedCall = (l) => l.outcome !== 'Connected' && (!l.duration || Number(l.duration) === 0);
+const isUnpickedCall = (l) => !l.duration || Number(l.duration) === 0;
 
 export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const canCreate = perms?.can('CallLogs', 'create') === true;
