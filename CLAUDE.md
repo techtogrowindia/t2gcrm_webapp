@@ -200,6 +200,7 @@ Plans are stored in `globalSettings.plans` and define:
 - `tasks` - Todos and task tracking
 - `appointments` - Booking system (date, time, customer, status)
 - `callLogs` - Call records (direction, duration, outcome, assigned staff)
+- `callLogSyncState` - Per-device sync checkpoint (deviceId, ownerId, lastSyncedAt, totalSynced) — prevents duplicate floods on app reinstall/upgrade
 - `attendance` - Staff check-in/out
 
 **Business:**
@@ -897,14 +898,21 @@ Minute-bucketing the timestamp is intentional — the Android app can send the s
 
 **Performance rule — 48h dedup window:** Fingerprints are built from the **last 48 hours of existing logs only** (not all 27k+). Duplicates never arrive more than 48h after the original call. Scanning the full history on every batch POST would grow unbounded over time. The shared `_call-logs-cache.js` is used (never a fresh `db.query`) — fingerprinting costs zero extra DB calls.
 
-**`lastSyncedAt` contract:** Every successful POST response includes `lastSyncedAt` = max `createdAt` of accepted entries. The Android app **must** store this value per `ownerId` and on the next sync only send calls where `deviceLog.createdAt > lastSyncedAt`. This prevents full re-push on app upgrade/reinstall — which is what caused the 448-duplicate incident on 18 May 2026.
+**Device sync state (`callLogSyncState` collection):** The server tracks the last successful sync timestamp **per device per owner**. Fields: `deviceId`, `ownerId`, `staffEmail`, `staffName`, `lastSyncedAt`, `lastSyncAt`, `totalSynced`. This is the authoritative record — survives app reinstalls, upgrades, and cache clears on the device.
 
 ```
 Android sync flow (correct):
-  1. read stored lastSyncedAt (default 0 = first sync)
-  2. POST only calls where call.createdAt > lastSyncedAt
-  3. on 201 response: store response.lastSyncedAt for next time
+  1. GET /api/call-logs?ownerId=x&action=sync-state&deviceId=x
+     → { nextSyncFrom: 1716030000000 }   (0 = first sync ever)
+  2. POST { ownerId, deviceId, batch: calls.filter(c => c.createdAt > nextSyncFrom) }
+     → { created, skipped, nextSyncFrom: 1716033600000 }
+  3. Store nextSyncFrom for next time (optional — server is the source of truth)
 ```
+
+**Three-layer dedup on batch POST (in order of cheapness):**
+1. `createdAt <= deviceLastSyncedAt` → skip instantly (O(1), no fingerprint needed)
+2. Fingerprint match in last 48h existing logs → skip (cache hit, no DB query)
+3. Duplicate within same batch → skip
 
 **Cache invalidation:** After every successful write (batch or single), `invalidateCallLogsCache(ownerId)` is called so the next `call-logs-page` request reflects the new rows immediately.
 
