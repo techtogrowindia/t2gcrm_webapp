@@ -27,6 +27,7 @@ import indiamartHandler from './api/webhook/indiamart.js';
 import justdialHandler from './api/webhook/justdial.js';
 import tradeindiaHandler from './api/webhook/tradeindia.js';
 import cleanupDuplicatesHandler from './api/cleanup-duplicates.js';
+import adminArchiveHandler from './api/admin/archive.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,6 +82,7 @@ app.all('/api/webhook/indiamart', wrap(indiamartHandler));
 app.all('/api/webhook/justdial', wrap(justdialHandler));
 app.all('/api/webhook/tradeindia', wrap(tradeindiaHandler));
 app.all('/api/cleanup-duplicates', wrap(cleanupDuplicatesHandler));
+app.all('/api/admin/archive', wrap(adminArchiveHandler));
 
 // 2. STATIC FILES (Frontend)
 app.use(express.static(path.join(__dirname, 'dist')));

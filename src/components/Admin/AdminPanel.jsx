@@ -3,6 +3,7 @@ import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmt, fmtD } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
+import ArchiveManager from './ArchiveManager';
 
 const FALLBACK_PLANS = [
   { id: 'trial', name: 'Trial', duration: 7, price: 0, maxLeads: 50, maxUsers: 1, features: 'Leads, Quotations' },
@@ -380,6 +381,7 @@ export default function AdminPanel({ user }) {
           ['coupons', 'Coupons'], 
           ['transactions', 'Transactions'], 
           ['analytics', '📊 Business Report'],
+          ['archive', '📦 Archive Manager'],
           ['settings', 'Platform Branding']
         ].map(([t, l]) => (
           <div key={t} className={`tab${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>{l}</div>
@@ -581,6 +583,11 @@ export default function AdminPanel({ user }) {
             </table>
           </div>
         </div>
+      )}
+
+      {/* ── ARCHIVE MANAGER ── */}
+      {tab === 'archive' && (
+        <ArchiveManager user={user} />
       )}
 
       {/* ── PLATFORM BRANDING SETTINGS ── */}
