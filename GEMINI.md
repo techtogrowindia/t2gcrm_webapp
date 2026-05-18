@@ -696,13 +696,20 @@ const res = await fetch('/api/leads-page', { method: 'POST', body: JSON.stringif
 | Endpoint | Purpose | Caller |
 |---|---|---|
 | `POST /api/leads-page` | Paginated lead list + date-tab counts | Web LeadsView |
-| `POST /api/dashboard-stats` | KPI aggregates (totals, sources, hot leads, calendar) | Dashboard |
+| `POST /api/dashboard-stats` | KPI aggregates | Dashboard |
 | `POST /api/lead-check-duplicate` | Dedup check across leads + customers | Customers, LeadsView |
-| `POST /api/sync-won-leads` | Auto-sync Won-stage leads → customers collection | Customers (on mount) |
-| `POST /api/team-activity` | Activity logs filtered by date range (server-side) | TeamReports |
-| `GET /api/data?module=leads` | **Mobile-only.** Auto-filters by actorId | Mobile app |
+| `POST /api/sync-won-leads` | Auto-sync Won-stage leads → customers | Customers (on mount) |
+| `POST /api/call-logs-page` | Paginated call logs + rollup grouping + per-member team stats | Web CallLogs |
+| `POST /api/team-stats` | Pre-aggregated per-member metrics | TeamReports |
+| `POST /api/team-activity` | Raw activity logs (member drilldown only) | TeamReports (lazy) |
+| `GET /api/data?module=leads` | **Mobile-only.** Permission-driven filter by actorId | Mobile app |
 
-All share **`api/_leads-cache.js`** (per-owner 15s TTL cache). Endpoints that fetch the full lead set use `getLeadsForOwner(ownerId)` so concurrent calls reuse one InstantDB admin query.
+Shared caches:
+- `api/_leads-cache.js` (15s TTL) — `getLeadsForOwner(ownerId)`.
+- `api/_call-logs-cache.js` (30s TTL) — `getCallLogsForOwner(ownerId)`.
+- Internal activity-log caches inside `team-stats.js` and `team-activity.js`.
+
+**Rule:** any new endpoint that needs the full set of a large collection MUST use a shared cache helper.
 
 ### Components Already Migrated
 
@@ -712,9 +719,9 @@ All share **`api/_leads-cache.js`** (per-owner 15s TTL cache). Endpoints that fe
 | `Dashboard.jsx` | `/api/dashboard-stats`, refreshes every 30s |
 | `Customers.jsx` | `/api/lead-check-duplicate` + `/api/sync-won-leads` on mount |
 | `Quotations.jsx`, `Invoices.jsx`, `POSBilling.jsx`, `Projects.jsx`, `AllTasks.jsx`, `AMC.jsx` | **Modal-lazy-fetch** (see below) |
-| `CallLogs.jsx` | `/api/leads-page` on mount + localStorage 5-min cache |
+| `CallLogs.jsx` | Full server-driven via `/api/call-logs-page` (items + counts + teamStats) |
 | `Reports.jsx` | `/api/leads-page` only when leads tab is selected |
-| `TeamReports.jsx` | `/api/team-activity` filtered by date range |
+| `TeamReports.jsx` | Pre-aggregated `/api/team-stats`; `/api/team-activity` lazy on drilldown |
 | `Campaigns.jsx` | `/api/leads-page` (up to 1000) on mount |
 
 ### Modal-Lazy-Fetch Pattern
