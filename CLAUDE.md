@@ -575,6 +575,43 @@ const stageOptions = (profile?.stages || DEFAULT_STAGES).map(s => <option key={s
 - Where user can add/edit/remove custom values
 - Stored in: `userProfiles.[ fieldName ]` array
 
+### Known customizable `userProfiles` fields (use these — never hardcode)
+
+| Field | Used for | Default fallback |
+|---|---|---|
+| `userProfiles.stages` | Lead stages | `DEFAULT_STAGES` from `utils/helpers.js` |
+| `userProfiles.leadStages` | Subset of stages visible in Leads module | falls back to all `stages` |
+| `userProfiles.disabledStages` | Stages hidden from UI but kept in DB | `[]` |
+| `userProfiles.wonStage` / `lostStage` | Which stage = Won / Lost | last stage / `'Lost'` |
+| `userProfiles.sources` | Lead sources | `DEFAULT_SOURCES` |
+| `userProfiles.requirements` | Lead requirement / product interest | `DEFAULT_REQUIREMENTS` |
+| `userProfiles.productCats` | Product categories | none — show "All" |
+| `userProfiles.expCats` | **Expense categories** (used in Expenses + Expense Report filter) | none — hide the filter |
+| `userProfiles.customFields` | Per-business custom lead/customer fields | `[]` |
+| `userProfiles.roles` | Team roles + per-module action perms | `DEFAULT_ROLES` from `Teams.jsx` |
+
+If you add a new customizable list, register it here.
+
+### Rule extends to reports, filters, breakdowns, and exports
+
+This isn't only about create/edit forms. **Any** dropdown, filter, group-by selector, breakdown table, chart legend, or CSV column that represents a business-defined category must read from `userProfiles`. Common offenders:
+
+- ❌ Hardcoded category filter in a Report tab (`['Travel','Food','Office',...]`)
+- ❌ Hardcoded source list in a Marketing campaign targeter
+- ❌ Hardcoded stage list in a Kanban column header
+- ✅ Filter dropdown options come from `profile.expCats` / `profile.sources` / `profile.stages`
+- ✅ If the field is empty for a business, **hide the control** — don't fall back to a hardcoded list
+
+**Real bug (May 2026):** First version of the Expense Report tab in `Reports.jsx` shipped without a category filter. When added, the dropdown was almost wired to a static array — caught and corrected to read `profile.expCats` instead. The fix: derive options from `profile.expCats`, render the filter only when it has entries, and filter all KPIs/breakdown/trend/detail consistently. Pattern to follow for any future filter.
+
+### Checklist before adding any dropdown / filter / breakdown
+
+- [ ] Is the list of options business-specific? → must come from `userProfiles`
+- [ ] If `userProfiles.<field>` is empty / missing, what happens? (Prefer: hide the control; never show a hardcoded fallback in production UI)
+- [ ] If a default is genuinely needed for first-run UX, it lives in `utils/helpers.js` as `DEFAULT_*` and is overridable by the saved profile
+- [ ] The same source of truth is used everywhere this list appears (form, filter, report, export header)
+- [ ] If it's a new customizable field, the row is added to the table above in `CLAUDE.md`
+
 ---
 
 ## CRITICAL: Roles & Permissions — MANDATORY RULE

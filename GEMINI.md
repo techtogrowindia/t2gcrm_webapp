@@ -477,6 +477,32 @@ const STAGES = ['New', 'Contacted', 'Won', 'Lost'];
 const stages = (profile?.stages || DEFAULT_STAGES).map(s => <option key={s}>{s}</option>);
 ```
 
+### Known customizable `userProfiles` fields (use these — never hardcode)
+
+| Field | Used for |
+|---|---|
+| `stages` / `leadStages` / `disabledStages` / `wonStage` / `lostStage` | Lead pipeline configuration |
+| `sources` | Lead sources |
+| `requirements` | Lead requirement / product interest |
+| `productCats` | Product categories |
+| `expCats` | **Expense categories** (Expenses + Expense Report filter) |
+| `customFields` | Per-business custom lead/customer fields |
+| `roles` | Team roles + per-module action perms |
+
+### Rule extends to reports, filters, breakdowns, and exports
+
+Any dropdown, filter, group-by selector, breakdown table, chart legend, or CSV column that represents a business-defined category must read from `userProfiles`. If the field is empty for a business, **hide the control** — do not fall back to a hardcoded list in production UI.
+
+**Real bug (May 2026):** Expense Report tab in `Reports.jsx` needed a category filter. It was wired correctly to `profile.expCats` after the user flagged that categories are a custom field. Pattern: derive options from the profile field, render the filter only when entries exist, and filter all KPIs / breakdown / trend / detail consistently.
+
+### Checklist before adding any dropdown / filter / breakdown
+
+- [ ] Options come from `userProfiles.<field>` — not from a hardcoded array
+- [ ] If the field is empty, the control is hidden (no hardcoded fallback)
+- [ ] First-run defaults live in `utils/helpers.js` as `DEFAULT_*`, overridable by the saved profile
+- [ ] Same source of truth is used everywhere this list appears (form, filter, report, export header)
+- [ ] New customizable fields added to the table above
+
 ## CRITICAL: Roles & Permissions — MANDATORY RULE
 
 **Every component that performs CRUD operations MUST check permissions before allowing the action. Every page MUST be gated by plan enforcement. Never skip these checks.**
