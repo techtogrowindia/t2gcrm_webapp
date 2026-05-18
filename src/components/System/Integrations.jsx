@@ -292,6 +292,52 @@ export default function Integrations({ user, ownerId }) {
     handlePlatformAction(item.id, 'connect');
   };
 
+  // Manual sync for IndiaMART / JustDial / TradeIndia configs.
+  // Calls the server webhook endpoint which:
+  //   1. Pulls from third-party API (using lastSyncAt to filter where supported)
+  //   2. Dedups by phone + email + sourceLeadId
+  //   3. Inserts only NEW leads (never updates existing — so stage changes are preserved)
+  //   4. Updates that config's lastSyncAt
+  const syncIntegration = async (type, configIndex) => {
+    if (isCoolingDown) {
+      return toast(`Please wait ${cooldownMinutes} min before syncing again.`, 'warning');
+    }
+    const cfg = (profile?.[type] || [])[configIndex];
+    if (cfg?.disabled) {
+      return toast('Integration is disabled. Please enable it first.', 'warning');
+    }
+
+    setSyncing(`${type}-${configIndex}`);
+    setSyncResults(null);
+    try {
+      const url = `/api/webhook/${type}?action=sync&ownerId=${encodeURIComponent(ownerId)}&configIndex=${configIndex}`;
+      const r = await fetch(url, { method: 'GET' });
+      const json = await r.json();
+
+      if (!r.ok || !json.success) {
+        throw new Error(json.message || `HTTP ${r.status}`);
+      }
+
+      // Start cooldown
+      const end = Date.now() + COOLDOWN_MS;
+      setCooldownEnd(end);
+      localStorage.setItem('tc_sync_cooldown', String(end));
+
+      setSyncResults({
+        configName: cfg?.configName || type,
+        added: json.added || 0,
+        skipped: json.skipped || 0,
+        errors: json.errors || 0,
+        total: json.total || (json.added || 0) + (json.skipped || 0),
+      });
+      toast(`Synced! ${json.added || 0} new lead(s), ${json.skipped || 0} skipped.`, 'success');
+    } catch (e) {
+      toast(`Sync failed: ${e.message}`, 'error');
+    } finally {
+      setSyncing(null);
+    }
+  };
+
   const handleToggleIntConfig = async (type, index) => {
     const configs = profile[type] || [];
     const updated = configs.map((c, i) => i === index ? { ...c, disabled: !c.disabled } : c);
@@ -433,11 +479,33 @@ export default function Integrations({ user, ownerId }) {
                       >
                         {cfg.disabled ? 'Enable' : 'Disable'}
                       </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }}
+                        onClick={() => syncIntegration(item.id, idx)}
+                        disabled={syncing !== null || isCoolingDown || cfg.disabled}
+                        title={cfg.lastSyncAt ? `Last synced: ${new Date(cfg.lastSyncAt).toLocaleString()}` : 'Never synced'}
+                      >
+                        {syncing === `${item.id}-${idx}` ? '⟳ Syncing...' : isCoolingDown ? `⏳ ${cooldownMinutes}m` : '⟳ Sync'}
+                      </button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setShowConfig({ type: item.id, index: idx })}>Edit</button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10, color: '#ef4444' }} onClick={() => handleDeleteIntConfig(item.id, idx)}>Disconnect</button>
                     </div>
+                    {cfg.lastSyncAt && (
+                      <div style={{ marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
+                        Last synced: {new Date(cfg.lastSyncAt).toLocaleString()}
+                      </div>
+                    )}
                   </div>
                 ))}
+                {syncResults && syncing === null && (
+                  <div style={{ background: '#ecfdf5', border: '1px solid #10b981', borderRadius: 8, padding: '10px 14px', marginTop: 6, fontSize: 11, color: '#065f46' }}>
+                    <strong>Last Sync: {syncResults.configName}</strong>
+                    <div style={{ marginTop: 4 }}>
+                      ✅ {syncResults.added} added · ⏭ {syncResults.skipped} skipped · ❌ {syncResults.errors} errors
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {item.id === 'gsheets' && gsheets.length > 0 ? (

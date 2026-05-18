@@ -85,10 +85,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    const userId = req.query?.userId || req.body?.userId;
+    const userId = req.query?.userId || req.query?.ownerId || req.body?.userId || req.body?.ownerId;
+    const configIndex = req.query?.configIndex != null ? parseInt(req.query.configIndex, 10) : 0;
 
     if (!userId) {
-      return res.status(400).json({ success: false, message: 'Missing userId parameter' });
+      return res.status(400).json({ success: false, message: 'Missing userId / ownerId parameter' });
     }
 
     // Fetch user profile
@@ -106,7 +107,11 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, message: 'No JustDial integration configured for this user' });
     }
 
-    const activeConfig = justdialConfigs[0];
+    if (configIndex < 0 || configIndex >= justdialConfigs.length) {
+      return res.status(400).json({ success: false, message: `configIndex ${configIndex} out of range (have ${justdialConfigs.length} configs)` });
+    }
+
+    const activeConfig = justdialConfigs[configIndex];
     if (activeConfig.disabled) {
       return res.status(200).json({ success: true, message: 'Sync skipped: Integration is disabled' });
     }
@@ -127,6 +132,9 @@ export default async function handler(req, res) {
       const allLeads = leadsRes.leads || [];
       const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
       const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));
+      const sourceIdSet = new Set(
+        allLeads.filter(l => l.sourceLeadId).map(l => String(l.sourceLeadId))
+      );
 
       let added = 0, skipped = 0, errors = 0;
       const txs = [];
@@ -137,16 +145,19 @@ export default async function handler(req, res) {
           lead.userId = userId;
           lead.actorId = null;
           lead.createdAt = Date.now();
+          const uniqueId = incomingLead.leadid || incomingLead.lead_id;
+          if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
           if (!lead.name || !lead.name.trim()) {
             lead.name = 'New Lead via JustDial';
           }
 
-          // Dedup check
+          // Triple-layer dedup: sourceLeadId (strongest) > email > phone
+          const dupSource = lead.sourceLeadId && sourceIdSet.has(lead.sourceLeadId);
           const dupEmail = lead.email && emailSet.has(lead.email.toLowerCase());
           const dupPhone = lead.phone && phoneSet.has(lead.phone);
 
-          if (dupEmail || dupPhone) {
+          if (dupSource || dupEmail || dupPhone) {
             const existingLead = allLeads.find(l =>
               (lead.email && l.email && l.email.toLowerCase() === lead.email.toLowerCase()) ||
               (lead.phone && l.phone && l.phone === lead.phone)
@@ -173,6 +184,7 @@ export default async function handler(req, res) {
           // Add to dedup sets
           if (lead.email) emailSet.add(lead.email.toLowerCase());
           if (lead.phone) phoneSet.add(lead.phone);
+          if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
           const leadId = crypto.randomUUID();
           txs.push(db.tx.leads[leadId].update(lead));
@@ -221,6 +233,9 @@ export default async function handler(req, res) {
         const allLeads = leadsRes.leads || [];
         const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
         const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));
+        const sourceIdSet = new Set(
+          allLeads.filter(l => l.sourceLeadId).map(l => String(l.sourceLeadId))
+        );
 
         let added = 0, skipped = 0, errors = 0;
         const txs = [];
@@ -231,21 +246,25 @@ export default async function handler(req, res) {
             lead.userId = userId;
             lead.actorId = null;
             lead.createdAt = Date.now();
+            const uniqueId = incomingLead.leadid || incomingLead.lead_id;
+            if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
             if (!lead.name || !lead.name.trim()) {
               lead.name = 'New Lead via JustDial';
             }
 
+            const dupSource = lead.sourceLeadId && sourceIdSet.has(lead.sourceLeadId);
             const dupEmail = lead.email && emailSet.has(lead.email.toLowerCase());
             const dupPhone = lead.phone && phoneSet.has(lead.phone);
 
-            if (dupEmail || dupPhone) {
+            if (dupSource || dupEmail || dupPhone) {
               skipped++;
               continue;
             }
 
             if (lead.email) emailSet.add(lead.email.toLowerCase());
             if (lead.phone) phoneSet.add(lead.phone);
+            if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
             const leadId = crypto.randomUUID();
             txs.push(db.tx.leads[leadId].update(lead));
@@ -263,7 +282,7 @@ export default async function handler(req, res) {
 
         // Update lastSyncAt
         const updatedConfigs = justdialConfigs.map((c, i) =>
-          i === 0 ? { ...c, lastSyncAt: Date.now() } : c
+          i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
         );
         await db.transact(db.tx.userProfiles[profile.id].update({ justdial: updatedConfigs }));
 

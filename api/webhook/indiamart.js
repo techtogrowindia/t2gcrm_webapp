@@ -75,10 +75,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const userId = req.query?.userId || req.body?.userId;
+    // Accept either userId (legacy) or ownerId (new). Caller picks one.
+    const userId = req.query?.userId || req.query?.ownerId || req.body?.userId || req.body?.ownerId;
+    // Which config index to sync. Default 0 for backward compat with old webhook senders.
+    const configIndex = req.query?.configIndex != null ? parseInt(req.query.configIndex, 10) : 0;
 
     if (!userId) {
-      return res.status(400).json({ success: false, message: 'Missing userId parameter' });
+      return res.status(400).json({ success: false, message: 'Missing userId / ownerId parameter' });
     }
 
     // Fetch user profile
@@ -95,8 +98,11 @@ export default async function handler(req, res) {
     if (indiamartConfigs.length === 0) {
       return res.status(400).json({ success: false, message: 'No IndiaMART integration configured for this user' });
     }
+    if (configIndex < 0 || configIndex >= indiamartConfigs.length) {
+      return res.status(400).json({ success: false, message: `configIndex ${configIndex} out of range (have ${indiamartConfigs.length} configs)` });
+    }
 
-    const activeConfig = indiamartConfigs[0];
+    const activeConfig = indiamartConfigs[configIndex];
     if (activeConfig.disabled) {
       return res.status(200).json({ success: true, message: 'Sync skipped: Integration is disabled' });
     }
@@ -117,6 +123,9 @@ export default async function handler(req, res) {
       const allLeads = leadsRes.leads || [];
       const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
       const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));
+      const sourceIdSet = new Set(
+        allLeads.filter(l => l.sourceLeadId).map(l => String(l.sourceLeadId))
+      );
 
       let added = 0, skipped = 0, errors = 0;
       const txs = [];
@@ -127,16 +136,19 @@ export default async function handler(req, res) {
           lead.userId = userId;
           lead.actorId = null;
           lead.createdAt = Date.now();
+          const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
+          if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
           if (!lead.name || !lead.name.trim()) {
             lead.name = 'New Lead via IndiaMART';
           }
 
-          // Dedup check
+          // Triple-layer dedup: sourceLeadId (strongest) > email > phone
+          const dupSource = lead.sourceLeadId && sourceIdSet.has(lead.sourceLeadId);
           const dupEmail = lead.email && emailSet.has(lead.email.toLowerCase());
           const dupPhone = lead.phone && phoneSet.has(lead.phone);
 
-          if (dupEmail || dupPhone) {
+          if (dupSource || dupEmail || dupPhone) {
             // Find existing lead for activity log
             const existingLead = allLeads.find(l =>
               (lead.email && l.email && l.email.toLowerCase() === lead.email.toLowerCase()) ||
@@ -164,6 +176,7 @@ export default async function handler(req, res) {
           // Add to dedup sets
           if (lead.email) emailSet.add(lead.email.toLowerCase());
           if (lead.phone) phoneSet.add(lead.phone);
+          if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
           const leadId = crypto.randomUUID();
           txs.push(db.tx.leads[leadId].update(lead));
@@ -213,6 +226,11 @@ export default async function handler(req, res) {
         const allLeads = leadsRes.leads || [];
         const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
         const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));
+        // sourceLeadId set — IndiaMART's UNIQUE_QUERY_ID. Bulletproof dedup:
+        // even if phone/email change, the same UNIQUE_QUERY_ID = same enquiry.
+        const sourceIdSet = new Set(
+          allLeads.filter(l => l.sourceLeadId).map(l => String(l.sourceLeadId))
+        );
 
         let added = 0, skipped = 0, errors = 0;
         const txs = [];
@@ -223,21 +241,27 @@ export default async function handler(req, res) {
             lead.userId = userId;
             lead.actorId = null;
             lead.createdAt = Date.now();
+            // Record the source's unique ID for future syncs
+            const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
+            if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
             if (!lead.name || !lead.name.trim()) {
               lead.name = 'New Lead via IndiaMART';
             }
 
+            // Triple-layer dedup: sourceLeadId (strongest) > email > phone
+            const dupSource = lead.sourceLeadId && sourceIdSet.has(lead.sourceLeadId);
             const dupEmail = lead.email && emailSet.has(lead.email.toLowerCase());
             const dupPhone = lead.phone && phoneSet.has(lead.phone);
 
-            if (dupEmail || dupPhone) {
+            if (dupSource || dupEmail || dupPhone) {
               skipped++;
               continue;
             }
 
             if (lead.email) emailSet.add(lead.email.toLowerCase());
             if (lead.phone) phoneSet.add(lead.phone);
+            if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
             const leadId = crypto.randomUUID();
             txs.push(db.tx.leads[leadId].update(lead));
@@ -253,9 +277,9 @@ export default async function handler(req, res) {
           }
         }
 
-        // Update lastSyncAt
+        // Update lastSyncAt — only the synced config, not always [0]
         const updatedConfigs = indiamartConfigs.map((c, i) =>
-          i === 0 ? { ...c, lastSyncAt: Date.now() } : c
+          i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
         );
         await db.transact(db.tx.userProfiles[profile.id].update({ indiamart: updatedConfigs }));
 
