@@ -261,13 +261,14 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
         name: m.name,
         email: m.email,
         total: memberLogs.length,
-        connected: memberLogs.filter(l => (l.duration && Number(l.duration) > 0) || l.outcome === 'Connected').length,
+        // Duration is the only honest signal — outcome label is unreliable
+        connected: memberLogs.filter(l => l.duration && Number(l.duration) > 0).length,
         toLeads: memberLogs.filter(l => l.leadId).length,
         toUnknown: memberLogs.filter(l => !l.leadId).length,
         outgoing: memberLogs.filter(l => l.direction === 'Outgoing').length,
         incoming: memberLogs.filter(l => l.direction === 'Incoming').length,
         missed: memberLogs.filter(l => l.direction === 'Missed').length,
-        notPicked: memberLogs.filter(l => l.direction === 'Outgoing' && (!l.duration || Number(l.duration) === 0) && l.outcome !== 'Connected').length,
+        notPicked: memberLogs.filter(l => l.direction === 'Outgoing' && (!l.duration || Number(l.duration) === 0)).length,
       };
     });
   }, [team, callLogs, today, dateFrom, dateTo]);
@@ -641,9 +642,10 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                     {activeCols.includes('Outcome') && (
                       <td style={{ padding: '10px 12px' }}>
                         {(() => {
-                          const isConnected = log.outcome === 'Connected' || (log.duration && Number(log.duration) > 0);
-                          const isNotPicked = !isConnected && log.direction === 'Outgoing' && log.outcome !== 'Connected';
-                          const label = isConnected ? 'Connected' : isNotPicked ? 'Not Picked' : log.outcome || '-';
+                          // Duration is the source of truth — outcome label is unreliable
+                          const isConnected = log.duration && Number(log.duration) > 0;
+                          const isNotPicked = !isConnected && log.direction === 'Outgoing';
+                          const label = isConnected ? 'Connected' : isNotPicked ? 'Not Picked' : log.outcome || 'No Answer';
                           const bg = isConnected ? '#f0fdf4' : (isNotPicked || log.outcome === 'No Answer' || log.direction === 'Missed') ? '#fef2f2' : '#f8fafc';
                           const fg = isConnected ? '#16a34a' : (isNotPicked || log.outcome === 'No Answer' || log.direction === 'Missed') ? '#ef4444' : '#64748b';
                           return <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: bg, color: fg, fontWeight: 500 }}>{label}</span>;

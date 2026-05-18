@@ -26,15 +26,23 @@ function fingerprintCall(entry) {
  *   PATCH  /api/call-logs                                - Update a call log
  *   DELETE /api/call-logs                                - Delete a call log
  */
-/** Derive call outcome from available data — don't blindly default to 'Connected' */
+/** Derive call outcome — duration is the only honest signal of "connected".
+ * The Android sync sometimes sends outcome='Connected' even on zero-duration
+ * (unpicked) calls. We override that lie: no duration = not connected.
+ * Specific non-connected reasons from mobile (Busy, Voicemail, Wrong Number,
+ * Callback Requested) are preserved because they carry information beyond
+ * "didn't answer".
+ */
 function deriveOutcome(entry) {
-  // Trust explicit outcome from mobile/caller if present
+  const dur = entry.duration ? Number(entry.duration) : 0;
+  // Real duration → definitely connected, override whatever label was sent
+  if (dur > 0) return 'Connected';
+  // Zero duration but outcome says 'Connected' — that's the bad label, fix it
+  if (entry.outcome === 'Connected') return entry.direction === 'Missed' ? 'No Answer' : 'No Answer';
+  // Preserve specific non-connected reasons from the caller
   if (entry.outcome && entry.outcome !== '') return entry.outcome;
-  // Derive from duration: if > 0 then connected
-  if (entry.duration && Number(entry.duration) > 0) return 'Connected';
-  // Missed calls
+  // Missed direction → No Answer
   if (entry.direction === 'Missed') return 'No Answer';
-  // Default for outgoing/incoming with no duration
   return 'No Answer';
 }
 
