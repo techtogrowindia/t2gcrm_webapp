@@ -314,38 +314,42 @@ export default function Integrations({ user, ownerId }) {
       const r = await fetch(url, { method: 'GET' });
       const json = await r.json();
 
-      if (!r.ok || !json.success) {
-        throw new Error(json.message || `HTTP ${r.status}`);
-      }
-
-      // Start cooldown
+      // Start cooldown regardless of success/failure
       const end = Date.now() + COOLDOWN_MS;
       setCooldownEnd(end);
       localStorage.setItem('tc_sync_cooldown', String(end));
 
       setSyncResults({
-        type,  // ← tag which integration this result is for, so we only render under that card
+        type,
         configName: cfg?.configName || type,
         added: json.added || 0,
         skipped: json.skipped || 0,
         errors: json.errors || 0,
         total: json.total || (json.added || 0) + (json.skipped || 0),
         diagnostic: json.diagnostic || null,
-        raw: json,  // full API response for raw expandable
+        raw: json,
+        failed: !json.success,
+        failMessage: json.success ? null : (json.message || `HTTP ${r.status}`),
       });
 
-      // If 0 added AND 0 skipped, the API likely returned no leads —
-      // surface the diagnostic so the user can debug auth / response format.
-      if ((json.added || 0) === 0 && (json.skipped || 0) === 0 && json.diagnostic) {
-        toast(
-          `${type}: API returned no leads. Check Console / sync card for details.`,
-          'warning'
-        );
+      if (!json.success) {
+        toast(`Sync failed: ${json.message || 'Unknown error'}`, 'error');
+      } else if ((json.added || 0) === 0 && (json.skipped || 0) === 0 && json.diagnostic) {
+        toast(`${type}: API returned no leads — see result below the card.`, 'warning');
         console.warn(`[${type} sync] diagnostic:`, json.diagnostic);
       } else {
         toast(`Synced! ${json.added || 0} new lead(s), ${json.skipped || 0} skipped.`, 'success');
       }
     } catch (e) {
+      // Network-level failure — still show inline so it doesn't just vanish
+      setSyncResults({
+        type,
+        configName: cfg?.configName || type,
+        added: 0, skipped: 0, errors: 0, total: 0,
+        diagnostic: null, raw: null,
+        failed: true,
+        failMessage: e.message || 'Unknown error',
+      });
       toast(`Sync failed: ${e.message}`, 'error');
     } finally {
       setSyncing(null);
@@ -515,51 +519,58 @@ export default function Integrations({ user, ownerId }) {
                 {/* Only show the sync result under the integration that was actually synced */}
                 {syncResults && syncResults.type === item.id && syncing === null && (
                   <div style={{
-                    background: syncResults.diagnostic ? '#fef3c7' : '#ecfdf5',
-                    border: `1px solid ${syncResults.diagnostic ? '#f59e0b' : '#10b981'}`,
+                    background: syncResults.failed ? '#fef2f2' : syncResults.diagnostic ? '#fef3c7' : '#ecfdf5',
+                    border: `1px solid ${syncResults.failed ? '#ef4444' : syncResults.diagnostic ? '#f59e0b' : '#10b981'}`,
                     borderRadius: 8,
                     padding: '10px 14px',
                     marginTop: 6,
                     fontSize: 11,
-                    color: syncResults.diagnostic ? '#78350f' : '#065f46',
+                    color: syncResults.failed ? '#7f1d1d' : syncResults.diagnostic ? '#78350f' : '#065f46',
                   }}>
-                    <strong>Sync Result: {syncResults.configName}</strong>
-                    <div style={{ marginTop: 4 }}>
-                      ✅ {syncResults.added} added · ⏭ {syncResults.skipped} skipped
-                      {syncResults.errors > 0 ? ` · ❌ ${syncResults.errors} errors` : ''}
-                      {' '}· 📊 {syncResults.total} total
-                    </div>
+                    <strong>{syncResults.failed ? '❌ Sync Failed' : 'Sync Result'}: {syncResults.configName}</strong>
 
-                    {/* Raw API Response — always available, auto-open when diagnostic */}
-                    <details style={{ marginTop: 8 }} open={!!syncResults.diagnostic}>
-                      <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none', fontSize: 11 }}>
-                        📋 Raw API Response (click to {syncResults.diagnostic ? 'collapse' : 'expand'})
-                      </summary>
-                      <pre style={{
-                        marginTop: 6,
-                        background: '#1e293b',
-                        color: '#e2e8f0',
-                        padding: 10,
-                        borderRadius: 6,
-                        fontSize: 10,
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                        overflow: 'auto',
-                        maxHeight: 300,
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                      }}>
+                    {syncResults.failed ? (
+                      <div style={{ marginTop: 4 }}>{syncResults.failMessage}</div>
+                    ) : (
+                      <div style={{ marginTop: 4 }}>
+                        ✅ {syncResults.added} added · ⏭ {syncResults.skipped} skipped
+                        {syncResults.errors > 0 ? ` · ❌ ${syncResults.errors} errors` : ''}
+                        {' '}· 📊 {syncResults.total} total
+                      </div>
+                    )}
+
+                    {/* Raw API Response — always available, auto-open on failure or diagnostic */}
+                    {syncResults.raw && (
+                      <details style={{ marginTop: 8 }} open={!!(syncResults.failed || syncResults.diagnostic)}>
+                        <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none', fontSize: 11 }}>
+                          📋 Raw API Response (click to expand/collapse)
+                        </summary>
+                        <pre style={{
+                          marginTop: 6,
+                          background: '#1e293b',
+                          color: '#e2e8f0',
+                          padding: 10,
+                          borderRadius: 6,
+                          fontSize: 10,
+                          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                          overflow: 'auto',
+                          maxHeight: 300,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                        }}>
 {JSON.stringify(syncResults.raw, null, 2)}
-                      </pre>
-                      <button
-                        type="button"
-                        onClick={() => navigator.clipboard.writeText(JSON.stringify(syncResults.raw, null, 2))}
-                        style={{ marginTop: 5, padding: '3px 8px', background: '#475569', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}
-                      >
-                        📋 Copy
-                      </button>
-                    </details>
+                        </pre>
+                        <button
+                          type="button"
+                          onClick={() => navigator.clipboard.writeText(JSON.stringify(syncResults.raw, null, 2))}
+                          style={{ marginTop: 5, padding: '3px 8px', background: '#475569', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}
+                        >
+                          📋 Copy
+                        </button>
+                      </details>
+                    )}
 
-                    {syncResults.diagnostic && (
+                    {syncResults.diagnostic && !syncResults.failed && (
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #fcd34d' }}>
                         <strong>⚠️ Why 0 leads?</strong>
                         <ul style={{ margin: '4px 0 0 16px', padding: 0, fontSize: 10 }}>
