@@ -372,45 +372,35 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
                 ✅ {syncResults.added || 0} added · ⏭ {syncResults.skipped || 0} skipped · {(syncResults.errors || 0) > 0 ? `❌ ${syncResults.errors} errors · ` : ''}📊 {syncResults.total || 0} total
               </div>
 
-              <details style={{ marginTop: 10 }} open={!!syncResults.diagnostic}>
-                <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none' }}>
-                  📋 Raw API Response (click to {syncResults.diagnostic ? 'collapse' : 'expand'})
-                </summary>
-                <pre style={{
-                  marginTop: 8,
-                  background: '#1e293b',
-                  color: '#e2e8f0',
-                  padding: 12,
-                  borderRadius: 6,
-                  fontSize: 11,
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  overflow: 'auto',
-                  maxHeight: 400,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                }}>
-{JSON.stringify(syncResults, null, 2)}
-                </pre>
-                <button
-                  type="button"
-                  onClick={() => navigator.clipboard.writeText(JSON.stringify(syncResults, null, 2))}
-                  style={{
-                    marginTop: 6, padding: '4px 10px', background: '#475569',
-                    color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11,
-                  }}
-                >
-                  📋 Copy Full Response
-                </button>
-              </details>
-
-              {syncResults.diagnostic && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #fcd34d' }}>
-                  <strong>⚠️ Why 0 leads?</strong>
-                  <ul style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 11 }}>
-                    <li>If <code>apiResponseSample</code> shows an error message → wrong API Key</li>
-                    <li>If it shows an empty array → JustDial really has 0 new enquiries</li>
-                    <li>If it shows unfamiliar keys → API response format changed</li>
-                  </ul>
+              {(syncResults.diagnostic?.requestUrl || syncResults.diagnostic?.responseSample || syncResults.diagnostic?.apiResponseSample) && (
+                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {syncResults.diagnostic?.requestUrl && (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>URL</div>
+                      <div style={{ background: '#1e293b', color: '#93c5fd', padding: 8, borderRadius: 6, fontSize: 11, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
+                        {syncResults.diagnostic.requestUrl}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>Response</div>
+                    <pre style={{
+                      margin: 0, background: '#1e293b', color: '#e2e8f0', padding: 8,
+                      borderRadius: 6, fontSize: 11, fontFamily: 'ui-monospace, monospace',
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 220, overflow: 'auto',
+                    }}>
+{syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || '(empty)'}
+                    </pre>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText(
+                      `URL: ${syncResults.diagnostic.requestUrl || ''}\n\nResponse: ${syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || ''}`
+                    )}
+                    style={{ alignSelf: 'flex-start', padding: '4px 10px', background: '#475569', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
+                  >
+                    📋 Copy
+                  </button>
                 </div>
               )}
             </div>
