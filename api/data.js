@@ -148,8 +148,9 @@ export default async function handler(req, res) {
         // accepted for forward compatibility if a business explicitly opts
         // into it as a separate permission later.
         //
-        // userProfiles.teamCanSeeAllLeads is intentionally ignored — mobile
-        // visibility is strictly role-permission-derived.
+        // userProfiles.teamCanSeeAllLeads is respected here (default: true).
+        // When true all team members see all leads, matching web behaviour.
+        // When false, visibility falls back to role-permission-derived rules.
         const { leads, teamMembers: teamFromDb, userProfiles } = await db.query({
           leads: { $: { where: { userId: ownerId } } },
           teamMembers: { $: { where: { userId: ownerId } } },
@@ -187,10 +188,12 @@ export default async function handler(req, res) {
         }
 
         const leadsPerms = (rolePerms && rolePerms.Leads) || [];
-        const hasFullVisibility = isOwner
+        const teamCanSeeAll = profile.teamCanSeeAllLeads !== false; // default true
+        const hasFullVisibility = isOwner || teamCanSeeAll
           || (Array.isArray(leadsPerms) && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll')));
 
-        // Restrict non-elevated team members to their own leads
+        // Restrict team members to their own leads only when teamCanSeeAllLeads
+        // is explicitly disabled AND they don't have elevated role permissions.
         if (!hasFullVisibility) {
           result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
         }
