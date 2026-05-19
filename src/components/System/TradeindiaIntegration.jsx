@@ -42,6 +42,18 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
     followup: { type: 'fixed', value: '' }
   };
 
+  const fmtDateInput = (ts) => {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const defaultFrom = fmtDateInput(
+    existingConfig?.lastSyncAt
+      ? Math.max(existingConfig.lastSyncAt, Date.now() - THIRTY_DAYS_MS)
+      : Date.now() - THIRTY_DAYS_MS
+  );
+  const defaultTo = fmtDateInput(Date.now());
+
   const [configName, setConfigName] = useState(existingConfig?.configName || '');
   const [tiUserId, setTiUserId] = useState(existingConfig?.tiUserId || '');
   const [profileId, setProfileId] = useState(existingConfig?.profileId || '');
@@ -49,6 +61,8 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
   const [disabled, setDisabled] = useState(existingConfig?.disabled || false);
   const [syncing, setSyncing] = useState(false);
   const [syncResults, setSyncResults] = useState(null);
+  const [syncFrom, setSyncFrom] = useState(defaultFrom);
+  const [syncTo, setSyncTo] = useState(defaultTo);
   const [mapping, setMapping] = useState(() => {
     let m = existingConfig?.mapping ? { ...existingConfig.mapping } : { ...DEFAULT_MAPPING };
     return { ...DEFAULT_MAPPING, ...m };
@@ -87,13 +101,15 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
 
   const handleSync = async () => {
     if (!apiKey || !tiUserId || !profileId) return toast('Please enter all API credentials first', 'error');
+    if (!syncFrom || !syncTo) return toast('Please select a date range', 'error');
+    if (syncFrom > syncTo) return toast('From date cannot be after To date', 'error');
     setSyncing(true);
     setSyncResults(null);
     try {
       // Pass configIndex so the right config's lastSyncAt gets updated
       const idx = editIndex !== null && editIndex !== undefined ? editIndex : 0;
       const res = await fetch(
-        `${crmDomain}/api/webhook/tradeindia?userId=${ownerId}&action=sync&configIndex=${idx}`
+        `${crmDomain}/api/webhook/tradeindia?userId=${ownerId}&action=sync&configIndex=${idx}&from_date=${syncFrom}&to_date=${syncTo}`
       );
       const data = await res.json();
       if (data.success) {
@@ -331,15 +347,38 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
           </div>
 
           {existingConfig && (
-            <div style={{ display: 'flex', gap: 10, marginBottom: 15 }}>
+            <div style={{ marginBottom: 15 }}>
+              <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>From Date</label>
+                  <input
+                    type="date"
+                    value={syncFrom}
+                    onChange={e => setSyncFrom(e.target.value)}
+                    style={{ width: '100%', padding: '8px 10px', border: '1.5px solid var(--border)', borderRadius: 8, fontSize: 13 }}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>To Date</label>
+                  <input
+                    type="date"
+                    value={syncTo}
+                    onChange={e => setSyncTo(e.target.value)}
+                    style={{ width: '100%', padding: '8px 10px', border: '1.5px solid var(--border)', borderRadius: 8, fontSize: 13 }}
+                  />
+                </div>
+              </div>
               <button
                 className="btn btn-primary btn-sm"
                 onClick={handleSync}
                 disabled={syncing}
-                style={{ flex: 1 }}
+                style={{ width: '100%' }}
               >
-                {syncing ? '⟳ Syncing...' : '⟳ Sync Now (Pull Latest Leads)'}
+                {syncing ? '⟳ Syncing...' : '⟳ Sync Now (Pull Leads for Selected Range)'}
               </button>
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 5 }}>
+                Manual date range sync will not move the auto-sync checkpoint. Dedup still prevents re-importing existing leads.
+              </div>
             </div>
           )}
 

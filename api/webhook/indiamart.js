@@ -208,6 +208,12 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, message: 'No API key configured for IndiaMART' });
       }
 
+      // Manual sync: caller passes from_date/to_date → don't update lastSyncAt
+      const isManualSync = !!(req.query.from_date && req.query.to_date);
+      const syncDateRange = isManualSync
+        ? { from: req.query.from_date, to: req.query.to_date }
+        : null;
+
       try {
         // IndiaMART CRM Lead API
         const apiUrl = `https://mapi.indiamart.com/wservce/enquiry/listing/JEESSION_ID/KEY/${apiKey}/`;
@@ -302,16 +308,19 @@ export default async function handler(req, res) {
           }
         }
 
-        // Update lastSyncAt — only the synced config, not always [0]
-        const updatedConfigs = indiamartConfigs.map((c, i) =>
-          i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
-        );
-        await db.transact(db.tx.userProfiles[profile.id].update({ indiamart: updatedConfigs }));
+        // Update lastSyncAt only for auto sync (not manual date-range pulls)
+        if (!isManualSync) {
+          const updatedConfigs = indiamartConfigs.map((c, i) =>
+            i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
+          );
+          await db.transact(db.tx.userProfiles[profile.id].update({ indiamart: updatedConfigs }));
+        }
 
         return res.status(200).json({
           success: true,
           message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors`,
-          added, skipped, errors, total: leads.length
+          added, skipped, errors, total: leads.length,
+          ...(syncDateRange ? { dateRange: syncDateRange, isManualSync: true } : {}),
         });
       } catch (e) {
         console.error('IndiaMART Sync Error:', e);

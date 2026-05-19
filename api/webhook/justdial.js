@@ -215,6 +215,12 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, message: 'No API key configured for JustDial. Pull sync requires an API key.' });
       }
 
+      // Manual sync: caller passes from_date/to_date → don't update lastSyncAt
+      const isManualSync = !!(req.query.from_date && req.query.to_date);
+      const syncDateRange = isManualSync
+        ? { from: req.query.from_date, to: req.query.to_date }
+        : null;
+
       try {
         // JustDial API endpoint — contact JustDial for your specific endpoint URL
         const apiUrl = `https://api.justdial.com/leads?key=${encodeURIComponent(apiKey)}`;
@@ -303,16 +309,19 @@ export default async function handler(req, res) {
           }
         }
 
-        // Update lastSyncAt
-        const updatedConfigs = justdialConfigs.map((c, i) =>
-          i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
-        );
-        await db.transact(db.tx.userProfiles[profile.id].update({ justdial: updatedConfigs }));
+        // Update lastSyncAt only for auto sync (not manual date-range pulls)
+        if (!isManualSync) {
+          const updatedConfigs = justdialConfigs.map((c, i) =>
+            i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
+          );
+          await db.transact(db.tx.userProfiles[profile.id].update({ justdial: updatedConfigs }));
+        }
 
         return res.status(200).json({
           success: true,
           message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors`,
-          added, skipped, errors, total: leads.length
+          added, skipped, errors, total: leads.length,
+          ...(syncDateRange ? { dateRange: syncDateRange, isManualSync: true } : {}),
         });
       } catch (e) {
         console.error('JustDial Sync Error:', e);

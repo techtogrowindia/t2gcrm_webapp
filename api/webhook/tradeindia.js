@@ -215,18 +215,27 @@ export default async function handler(req, res) {
         // Required params: userid, profile_id, key, from_date, to_date (YYYY-MM-DD).
         // Without from_date/to_date TradeIndia returns:
         //   "Sorry! Please provide all the required parameters."
-        // Default window: last 30 days (or since lastSyncAt, whichever is more recent).
-        const fmtDate = (ts) => {
-          const d = new Date(ts);
-          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        };
-        const now = Date.now();
-        const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-        const fromTs = activeConfig.lastSyncAt
-          ? Math.max(activeConfig.lastSyncAt, now - THIRTY_DAYS)
-          : (now - THIRTY_DAYS);
-        const fromDate = fmtDate(fromTs);
-        const toDate = fmtDate(now);
+        // Manual sync: caller passes from_date/to_date as query params → use directly,
+        //   don't update lastSyncAt (it's a targeted re-pull, not an auto-checkpoint).
+        // Auto sync: compute window from lastSyncAt (or last 30 days), update lastSyncAt.
+        const isManualSync = !!(req.query.from_date && req.query.to_date);
+        let fromDate, toDate;
+        if (isManualSync) {
+          fromDate = req.query.from_date;
+          toDate = req.query.to_date;
+        } else {
+          const fmtDate = (ts) => {
+            const d = new Date(ts);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          };
+          const now = Date.now();
+          const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+          const fromTs = activeConfig.lastSyncAt
+            ? Math.max(activeConfig.lastSyncAt, now - THIRTY_DAYS)
+            : (now - THIRTY_DAYS);
+          fromDate = fmtDate(fromTs);
+          toDate = fmtDate(now);
+        }
 
         const apiUrl =
           `https://www.tradeindia.com/utils/my_inquiry.html` +
@@ -334,16 +343,20 @@ export default async function handler(req, res) {
           }
         }
 
-        // Update lastSyncAt
-        const updatedConfigs = tradeindiaConfigs.map((c, i) =>
-          i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
-        );
-        await db.transact(db.tx.userProfiles[profile.id].update({ tradeindia: updatedConfigs }));
+        // Update lastSyncAt only for auto sync (not manual date-range pulls)
+        if (!isManualSync) {
+          const updatedConfigs = tradeindiaConfigs.map((c, i) =>
+            i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
+          );
+          await db.transact(db.tx.userProfiles[profile.id].update({ tradeindia: updatedConfigs }));
+        }
 
         return res.status(200).json({
           success: true,
           message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors`,
-          added, skipped, errors, total: leads.length
+          added, skipped, errors, total: leads.length,
+          dateRange: { from: fromDate, to: toDate },
+          isManualSync,
         });
       } catch (e) {
         console.error('TradeIndia Sync Error:', e);
