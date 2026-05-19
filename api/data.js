@@ -214,6 +214,7 @@ export default async function handler(req, res) {
           return true;
         });
 
+        result.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         return res.status(200).json({ success: true, data: result, count: result.length });
       }
 
