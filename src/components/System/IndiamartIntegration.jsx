@@ -34,7 +34,7 @@ export default function IndiamartIntegration({ user, ownerId, onBack, existingCo
     name: { type: 'column', value: 'SENDER_NAME' },
     email: { type: 'column', value: 'SENDER_EMAIL' },
     phone: { type: 'column', value: 'SENDER_MOBILE' },
-    requirement: { type: 'fixed', value: requirements[0] || '' },
+    requirement: { type: 'fixed', value: '' },  // user picks — never hardcode a category
     stage: { type: 'fixed', value: stages[0] || '' },
     source: { type: 'fixed', value: 'IndiaMART' },
     assign: { type: 'fixed', value: '' },

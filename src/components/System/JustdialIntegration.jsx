@@ -32,7 +32,7 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
     name: { type: 'column', value: 'name' },
     email: { type: 'column', value: 'email' },
     phone: { type: 'column', value: 'mobile' },
-    requirement: { type: 'fixed', value: requirements[0] || '' },
+    requirement: { type: 'fixed', value: '' },  // user picks — never hardcode a category
     stage: { type: 'fixed', value: stages[0] || '' },
     source: { type: 'fixed', value: 'JustDial' },
     assign: { type: 'fixed', value: '' },

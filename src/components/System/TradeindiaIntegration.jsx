@@ -34,8 +34,8 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
     name: { type: 'column', value: 'sender_name' },
     email: { type: 'column', value: 'sender_email' },
     phone: { type: 'column', value: 'sender_mobile' },
-    requirement: { type: 'fixed', value: requirements[0] || '' },
-    stage: { type: 'fixed', value: stages[0] || '' },
+    requirement: { type: 'fixed', value: '' },  // user picks — never hardcode a category
+    stage: { type: 'fixed', value: stages[0] || '' },  // first stage required so leads enter the pipeline
     source: { type: 'fixed', value: 'TradeIndia' },
     assign: { type: 'fixed', value: '' },
     notes: { type: 'column', value: 'query_message' },
