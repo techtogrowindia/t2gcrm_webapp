@@ -748,7 +748,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           {expenseReport.monthly.length > 0 && (
             <div className="tw">
               <div className="tw-head"><h3>Monthly Trend (Approved)</h3></div>
-              <div style={{ padding: '24px 20px', display: 'flex', alignItems: 'flex-end', gap: 12, height: 180, overflowX: 'auto' }}>
+              <div style={{ padding: '24px 20px 0', paddingTop: 36, display: 'flex', alignItems: 'flex-end', gap: 12, height: 200, overflowX: 'auto', overflowY: 'visible' }}>
                 {(() => {
                   const maxM = expenseReport.monthly.reduce((m, [, v]) => Math.max(m, v), 0);
                   return expenseReport.monthly.map(([m, v]) => (
