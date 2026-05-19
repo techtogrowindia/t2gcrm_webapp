@@ -211,8 +211,30 @@ export default async function handler(req, res) {
       }
 
       try {
-        // TradeIndia My Inquiry API
-        const apiUrl = `https://www.tradeindia.com/utils/my_inquiry.html?userid=${encodeURIComponent(tiUserId)}&profile_id=${encodeURIComponent(tiProfileId)}&key=${encodeURIComponent(apiKey)}`;
+        // TradeIndia My Inquiry API.
+        // Required params: userid, profile_id, key, from_date, to_date (YYYY-MM-DD).
+        // Without from_date/to_date TradeIndia returns:
+        //   "Sorry! Please provide all the required parameters."
+        // Default window: last 30 days (or since lastSyncAt, whichever is more recent).
+        const fmtDate = (ts) => {
+          const d = new Date(ts);
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        };
+        const now = Date.now();
+        const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+        const fromTs = activeConfig.lastSyncAt
+          ? Math.max(activeConfig.lastSyncAt, now - THIRTY_DAYS)
+          : (now - THIRTY_DAYS);
+        const fromDate = fmtDate(fromTs);
+        const toDate = fmtDate(now);
+
+        const apiUrl =
+          `https://www.tradeindia.com/utils/my_inquiry.html` +
+          `?userid=${encodeURIComponent(tiUserId)}` +
+          `&profile_id=${encodeURIComponent(tiProfileId)}` +
+          `&key=${encodeURIComponent(apiKey)}` +
+          `&from_date=${encodeURIComponent(fromDate)}` +
+          `&to_date=${encodeURIComponent(toDate)}`;
         const apiRes = await fetch(apiUrl);
 
         // Read as text first so we can include it in the diagnostic response
@@ -227,7 +249,12 @@ export default async function handler(req, res) {
             success: false,
             message: 'TradeIndia API returned a non-JSON response. Check your User ID / Profile ID / API Key.',
             added: 0, skipped: 0, total: 0,
-            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400) },
+            diagnostic: {
+              httpStatus: apiRes.status,
+              responseSample: rawText.slice(0, 400),
+              requestUrl: apiUrl.replace(apiKey, '***'),  // mask the key for safety
+              dateRange: { from: fromDate, to: toDate },
+            },
           });
         }
 
@@ -249,6 +276,8 @@ export default async function handler(req, res) {
               httpStatus: apiRes.status,
               apiResponseKeys: Object.keys(apiData || {}),
               apiResponseSample: sample,
+              requestUrl: apiUrl.replace(apiKey, '***'),
+              dateRange: { from: fromDate, to: toDate },
             },
           });
         }
