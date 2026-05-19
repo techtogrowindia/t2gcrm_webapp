@@ -213,80 +213,127 @@ export default async function handler(req, res) {
       try {
         // TradeIndia My Inquiry API.
         // Required params: userid, profile_id, key, from_date, to_date (YYYY-MM-DD).
-        // Without from_date/to_date TradeIndia returns:
-        //   "Sorry! Please provide all the required parameters."
-        // Manual sync: caller passes from_date/to_date as query params → use directly,
-        //   don't update lastSyncAt (it's a targeted re-pull, not an auto-checkpoint).
-        // Auto sync: compute window from lastSyncAt (or last 30 days), update lastSyncAt.
+        // CRITICAL: TradeIndia rejects ranges > 24 hours with the plain-text error
+        //   "greather than 24 hours not allowed for inquiries" (non-JSON).
+        // So we chunk any requested range into 1-day windows, call the API once
+        // per day, and aggregate the results before dedup + insert.
+        const fmtDate = (ts) => {
+          const d = new Date(ts);
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        };
+
         const isManualSync = !!(req.query.from_date && req.query.to_date);
         let fromDate, toDate;
         if (isManualSync) {
           fromDate = req.query.from_date;
           toDate = req.query.to_date;
         } else {
-          const fmtDate = (ts) => {
-            const d = new Date(ts);
-            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-          };
           const now = Date.now();
-          const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+          const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
           const fromTs = activeConfig.lastSyncAt
-            ? Math.max(activeConfig.lastSyncAt, now - THIRTY_DAYS)
-            : (now - THIRTY_DAYS);
+            ? Math.max(activeConfig.lastSyncAt, now - SEVEN_DAYS)
+            : (now - SEVEN_DAYS);
           fromDate = fmtDate(fromTs);
           toDate = fmtDate(now);
         }
 
-        const apiUrl =
+        // Build list of 1-day chunks between fromDate and toDate (inclusive)
+        const ONE_DAY = 24 * 60 * 60 * 1000;
+        const startMs = new Date(fromDate + 'T00:00:00').getTime();
+        const endMs = new Date(toDate + 'T00:00:00').getTime();
+        const chunks = [];
+        for (let t = startMs; t <= endMs; t += ONE_DAY) {
+          chunks.push(fmtDate(t));
+        }
+        if (chunks.length === 0) chunks.push(fromDate);
+        if (chunks.length > 31) {
+          return res.status(400).json({
+            success: false,
+            message: `Date range too large (${chunks.length} days). TradeIndia only allows 24h per API call. Please sync at most 31 days at a time.`,
+            added: 0, skipped: 0, total: 0,
+            diagnostic: { dateRange: { from: fromDate, to: toDate }, chunks: chunks.length },
+          });
+        }
+
+        // Build the URL for a given single-day window (used for both fetch + diagnostic)
+        const buildUrl = (day) =>
           `https://www.tradeindia.com/utils/my_inquiry.html` +
           `?userid=${encodeURIComponent(tiUserId)}` +
           `&profile_id=${encodeURIComponent(tiProfileId)}` +
           `&key=${encodeURIComponent(apiKey)}` +
-          `&from_date=${encodeURIComponent(fromDate)}` +
-          `&to_date=${encodeURIComponent(toDate)}`;
-        const apiRes = await fetch(apiUrl);
+          `&from_date=${encodeURIComponent(day)}` +
+          `&to_date=${encodeURIComponent(day)}`;
 
-        // Read as text first so we can include it in the diagnostic response
-        // if TradeIndia returns HTML / error string instead of JSON
-        const rawText = await apiRes.text();
-        let apiData;
-        try {
-          apiData = JSON.parse(rawText);
-        } catch (parseErr) {
-          console.error('TradeIndia API returned non-JSON:', rawText.slice(0, 500));
+        // Fetch each 1-day window sequentially. Collect leads + per-chunk errors.
+        let aggregatedLeads = [];
+        const chunkErrors = [];
+        let firstRequestUrl = null;
+        let firstResponseSample = null;
+        let firstHttpStatus = null;
+        let firstApiResponseKeys = null;
+
+        for (const day of chunks) {
+          const apiUrl = buildUrl(day);
+          if (!firstRequestUrl) firstRequestUrl = apiUrl.replace(apiKey, '***');
+          try {
+            const apiRes = await fetch(apiUrl);
+            const rawText = await apiRes.text();
+            if (firstHttpStatus == null) firstHttpStatus = apiRes.status;
+            if (!firstResponseSample) firstResponseSample = rawText.slice(0, 400);
+            let apiData;
+            try {
+              apiData = JSON.parse(rawText);
+            } catch {
+              chunkErrors.push({ day, sample: rawText.slice(0, 200) });
+              continue;
+            }
+            if (!firstApiResponseKeys) firstApiResponseKeys = Object.keys(apiData || {});
+            let dayLeads = Array.isArray(apiData)
+              ? apiData
+              : (apiData?.leads || apiData?.RESPONSE || apiData?.inquiries || apiData?.data || []);
+            if (!Array.isArray(dayLeads)) dayLeads = [];
+            aggregatedLeads = aggregatedLeads.concat(dayLeads);
+          } catch (e) {
+            chunkErrors.push({ day, sample: e.message || String(e) });
+          }
+          // Light throttle when looping more than 3 chunks to avoid rate-limit
+          if (chunks.length > 3) await new Promise(r => setTimeout(r, 200));
+        }
+
+        // All chunks failed → return diagnostic with the actual API response
+        if (aggregatedLeads.length === 0 && chunkErrors.length === chunks.length) {
           return res.status(200).json({
             success: false,
-            message: 'TradeIndia API returned a non-JSON response. Check your User ID / Profile ID / API Key.',
+            message: chunks.length === 1
+              ? 'TradeIndia API returned an error. Check credentials and date.'
+              : `All ${chunks.length} daily API calls failed. Check credentials and dates.`,
             added: 0, skipped: 0, total: 0,
             diagnostic: {
-              httpStatus: apiRes.status,
-              responseSample: rawText.slice(0, 400),
-              requestUrl: apiUrl.replace(apiKey, '***'),  // mask the key for safety
+              httpStatus: firstHttpStatus,
+              responseSample: firstResponseSample,
+              requestUrl: firstRequestUrl,
               dateRange: { from: fromDate, to: toDate },
+              chunksAttempted: chunks.length,
+              chunksFailed: chunkErrors.length,
+              firstChunkError: chunkErrors[0]?.sample,
             },
           });
         }
 
-        // TradeIndia typically returns an array of inquiry objects
-        let leads = Array.isArray(apiData)
-          ? apiData
-          : (apiData?.leads || apiData?.RESPONSE || apiData?.inquiries || apiData?.data || []);
-        if (!Array.isArray(leads)) leads = [];
-
+        const leads = aggregatedLeads;
         if (leads.length === 0) {
-          // Return what TradeIndia actually sent so you can see if it's an
-          // auth error / empty payload / unrecognised format.
-          const sample = JSON.stringify(apiData).slice(0, 400);
           return res.status(200).json({
             success: true,
-            message: 'No new leads found',
+            message: 'No new leads found in this period',
             added: 0, skipped: 0, total: 0,
             diagnostic: {
-              httpStatus: apiRes.status,
-              apiResponseKeys: Object.keys(apiData || {}),
-              apiResponseSample: sample,
-              requestUrl: apiUrl.replace(apiKey, '***'),
+              httpStatus: firstHttpStatus,
+              apiResponseKeys: firstApiResponseKeys || [],
+              apiResponseSample: firstResponseSample,
+              requestUrl: firstRequestUrl,
               dateRange: { from: fromDate, to: toDate },
+              chunksAttempted: chunks.length,
+              chunksFailed: chunkErrors.length,
             },
           });
         }
@@ -353,9 +400,11 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
           success: true,
-          message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors`,
+          message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors (${chunks.length} day${chunks.length > 1 ? 's' : ''})`,
           added, skipped, errors, total: leads.length,
           dateRange: { from: fromDate, to: toDate },
+          chunksAttempted: chunks.length,
+          chunksFailed: chunkErrors.length,
           isManualSync,
         });
       } catch (e) {
