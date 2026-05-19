@@ -22,6 +22,7 @@ import attendanceHandler from './api/attendance.js';
 import bookHandler from './api/appointments/book.js';
 import checkoutHandler from './api/ecom/checkout.js';
 import cronHandler from './api/cron/process-automations.js';
+import processIntegrationsHandler from './api/cron/process-integrations.js';
 import gsheetsHandler from './api/webhook/gsheets.js';
 import indiamartHandler from './api/webhook/indiamart.js';
 import justdialHandler from './api/webhook/justdial.js';
@@ -77,6 +78,7 @@ app.all('/api/notify', wrap(notifyHandler));
 app.all('/api/appointments/book', wrap(bookHandler));
 app.all('/api/ecom/checkout', wrap(checkoutHandler));
 app.all('/api/cron/process-automations', wrap(cronHandler));
+app.all('/api/cron/process-integrations', wrap(processIntegrationsHandler));
 app.all('/api/webhook/gsheets', wrap(gsheetsHandler));
 app.all('/api/webhook/indiamart', wrap(indiamartHandler));
 app.all('/api/webhook/justdial', wrap(justdialHandler));
@@ -103,3 +105,28 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
+
+// Auto-sync scheduler for lead integrations.
+// Runs every 5 minutes; the handler itself decides which configs are due
+// based on each config's autoSyncInterval + lastAutoSyncAt.
+let integrationsRunning = false;
+const runIntegrationsCron = async () => {
+  if (integrationsRunning) return;
+  integrationsRunning = true;
+  try {
+    const mockReq = { method: 'POST', query: {}, body: {} };
+    const mockRes = {
+      setHeader: () => {},
+      status: () => ({ json: () => {}, end: () => {} }),
+      json: () => {},
+      end: () => {},
+    };
+    await processIntegrationsHandler(mockReq, mockRes);
+  } catch (e) {
+    console.error('[integrations-cron] tick failed:', e?.message || e);
+  } finally {
+    integrationsRunning = false;
+  }
+};
+setInterval(runIntegrationsCron, 5 * 60 * 1000);   // every 5 minutes
+setTimeout(runIntegrationsCron, 10 * 1000);        // first run 10s after boot

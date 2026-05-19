@@ -63,6 +63,11 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
   const [syncResults, setSyncResults] = useState(null);
   const [syncFrom, setSyncFrom] = useState(defaultFrom);
   const [syncTo, setSyncTo] = useState(defaultTo);
+  // Auto-sync schedule: 0 = off, 30 / 60 / 120 / 360 / 720 / 1440 minutes
+  // Existing configs without this field default to 24h via server-side migration.
+  const [autoSyncInterval, setAutoSyncInterval] = useState(
+    existingConfig?.autoSyncInterval !== undefined ? existingConfig.autoSyncInterval : 1440
+  );
   const [mapping, setMapping] = useState(() => {
     let m = existingConfig?.mapping ? { ...existingConfig.mapping } : { ...DEFAULT_MAPPING };
     return { ...DEFAULT_MAPPING, ...m };
@@ -77,7 +82,7 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
     if (!profileId) return toast('Please enter your TradeIndia Profile ID', 'error');
     if (!apiKey) return toast('Please enter your TradeIndia API Key', 'error');
 
-    const config = { configName, tiUserId, profileId, apiKey, mapping, customMappings, columns, disabled, updatedAt: Date.now() };
+    const config = { configName, tiUserId, profileId, apiKey, mapping, customMappings, columns, disabled, autoSyncInterval, updatedAt: Date.now() };
     const current = profile.tradeindia || [];
     let updated;
     if (editIndex !== null && editIndex !== undefined) {
@@ -288,7 +293,7 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
             style={{ width: '100%', marginBottom: 15 }}
           />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, padding: '10px 15px', background: 'var(--bg-soft)', borderRadius: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: '10px 15px', background: 'var(--bg-soft)', borderRadius: 8 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>Enable Integration</div>
               <div style={{ fontSize: 11, color: 'var(--muted)' }}>Turn off to temporarily stop receiving leads from TradeIndia.</div>
@@ -297,6 +302,39 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
               <button className={!disabled ? 'active' : ''} onClick={() => setDisabled(false)}>Enabled</button>
               <button className={disabled ? 'active' : ''} onClick={() => setDisabled(true)} style={{ color: disabled ? '#ef4444' : '' }}>Disabled</button>
             </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, padding: '10px 15px', background: 'var(--bg-soft)', borderRadius: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>⏰ Auto-Sync Schedule</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                Automatically pull new leads at the chosen interval (runs on the server, no browser needed).
+              </div>
+              {existingConfig?.lastAutoSyncAt && (
+                <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
+                  Last auto-sync: {new Date(existingConfig.lastAutoSyncAt).toLocaleString()}
+                  {existingConfig.autoSyncLastResult ? ` · ${existingConfig.autoSyncLastResult}` : ''}
+                </div>
+              )}
+              {existingConfig?.autoSyncLastError && (
+                <div style={{ fontSize: 10, color: '#dc2626', marginTop: 4 }}>
+                  ❌ Last error: {String(existingConfig.autoSyncLastError).slice(0, 200)}
+                </div>
+              )}
+            </div>
+            <select
+              value={autoSyncInterval}
+              onChange={e => setAutoSyncInterval(parseInt(e.target.value, 10))}
+              style={{ padding: '6px 10px', border: '1.5px solid var(--border)', borderRadius: 8, fontSize: 12, fontWeight: 600, background: '#fff' }}
+            >
+              <option value={0}>Off</option>
+              <option value={30}>Every 30 minutes</option>
+              <option value={60}>Every 1 hour</option>
+              <option value={120}>Every 2 hours</option>
+              <option value={360}>Every 6 hours</option>
+              <option value={720}>Every 12 hours</option>
+              <option value={1440}>Every 24 hours</option>
+            </select>
           </div>
 
           <label>TradeIndia User ID</label>
