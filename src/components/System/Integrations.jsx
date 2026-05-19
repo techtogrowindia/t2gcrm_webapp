@@ -15,24 +15,32 @@ export default function Integrations({ user, ownerId }) {
   const [syncResults, setSyncResults] = useState(null);
   const [showConfig, setShowConfig] = useState(null);
   const [activeTab, setActiveTab] = useState('all');
-  const [cooldownEnd, setCooldownEnd] = useState(() => {
-    const stored = localStorage.getItem('tc_sync_cooldown');
-    return stored ? parseInt(stored, 10) : 0;
+
+  // Cooldowns are scoped per integration config (key = `${type}-${idx}`)
+  // so syncing TradeIndia doesn't block IndiaMART / JustDial / GSheets.
+  const [cooldowns, setCooldowns] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('tc_sync_cooldowns') || '{}'); }
+    catch { return {}; }
   });
-  const [cooldownLeft, setCooldownLeft] = useState(0);
+  const [, setNowTick] = useState(0);
 
   useEffect(() => {
-    const tick = () => {
-      const remaining = Math.max(0, cooldownEnd - Date.now());
-      setCooldownLeft(remaining);
-    };
-    tick();
-    const interval = setInterval(tick, 1000);
+    const interval = setInterval(() => setNowTick(t => t + 1), 1000);
     return () => clearInterval(interval);
-  }, [cooldownEnd]);
+  }, []);
 
-  const isCoolingDown = cooldownLeft > 0;
-  const cooldownMinutes = Math.ceil(cooldownLeft / 60000);
+  const cooldownLeftFor = (key) => Math.max(0, (cooldowns[key] || 0) - Date.now());
+  const isCoolingDownFor = (key) => cooldownLeftFor(key) > 0;
+  const cooldownMinutesFor = (key) => Math.ceil(cooldownLeftFor(key) / 60000);
+
+  const startCooldown = (key) => {
+    const end = Date.now() + COOLDOWN_MS;
+    setCooldowns(prev => {
+      const next = { ...prev, [key]: end };
+      localStorage.setItem('tc_sync_cooldowns', JSON.stringify(next));
+      return next;
+    });
+  };
 
   const { data } = db.useQuery({ 
     userProfiles: { $: { where: { userId: ownerId } } },
@@ -80,8 +88,9 @@ export default function Integrations({ user, ownerId }) {
   ];
 
   const syncGoogleSheet = async (configIndex) => {
-    if (isCoolingDown) {
-      return toast(`Please wait ${cooldownMinutes} min before syncing again.`, 'warning');
+    const cdKey = `gsheets-${configIndex}`;
+    if (isCoolingDownFor(cdKey)) {
+      return toast(`Please wait ${cooldownMinutesFor(cdKey)} min before syncing this sheet again.`, 'warning');
     }
     const config = gsheets[configIndex];
     if (config?.disabled || profile?.gsheetsDisabled) {
@@ -204,10 +213,8 @@ export default function Integrations({ user, ownerId }) {
       // Flush remaining batch
       if (batch.length > 0) await db.transact(batch);
 
-      // Start cooldown
-      const end = Date.now() + COOLDOWN_MS;
-      setCooldownEnd(end);
-      localStorage.setItem('tc_sync_cooldown', String(end));
+      // Start cooldown for this specific sheet
+      startCooldown(cdKey);
 
       setSyncResults({ type: 'gsheets', total: dataRows.length, added, skipped, errors, configName: config.configName });
       toast(`Synced! ${added} new lead(s) added, ${skipped} skipped.`, 'success');
@@ -299,25 +306,24 @@ export default function Integrations({ user, ownerId }) {
   //   3. Inserts only NEW leads (never updates existing — so stage changes are preserved)
   //   4. Updates that config's lastSyncAt
   const syncIntegration = async (type, configIndex) => {
-    if (isCoolingDown) {
-      return toast(`Please wait ${cooldownMinutes} min before syncing again.`, 'warning');
+    const cdKey = `${type}-${configIndex}`;
+    if (isCoolingDownFor(cdKey)) {
+      return toast(`Please wait ${cooldownMinutesFor(cdKey)} min before syncing this integration again.`, 'warning');
     }
     const cfg = (profile?.[type] || [])[configIndex];
     if (cfg?.disabled) {
       return toast('Integration is disabled. Please enable it first.', 'warning');
     }
 
-    setSyncing(`${type}-${configIndex}`);
+    setSyncing(cdKey);
     setSyncResults(null);
     try {
       const url = `/api/webhook/${type}?action=sync&ownerId=${encodeURIComponent(ownerId)}&configIndex=${configIndex}`;
       const r = await fetch(url, { method: 'GET' });
       const json = await r.json();
 
-      // Start cooldown regardless of success/failure
-      const end = Date.now() + COOLDOWN_MS;
-      setCooldownEnd(end);
-      localStorage.setItem('tc_sync_cooldown', String(end));
+      // Start cooldown for this config only (other integrations stay unblocked)
+      startCooldown(cdKey);
 
       setSyncResults({
         type,
@@ -458,13 +464,13 @@ export default function Integrations({ user, ownerId }) {
                       >
                         {gs.disabled ? 'Enable' : 'Disable'}
                       </button>
-                      <button 
-                        className="btn btn-primary btn-sm" 
-                        style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }} 
-                        onClick={() => syncGoogleSheet(idx)} 
-                        disabled={syncing !== null || isCoolingDown || gs.disabled || profile?.gsheetsDisabled}
+                      <button
+                        className="btn btn-primary btn-sm"
+                        style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }}
+                        onClick={() => syncGoogleSheet(idx)}
+                        disabled={syncing !== null || isCoolingDownFor(`gsheets-${idx}`) || gs.disabled || profile?.gsheetsDisabled}
                       >
-                        {syncing === 'gsheets' ? '⟳ Syncing...' : isCoolingDown ? `⏳ ${cooldownMinutes}m` : '⟳ Sync'}
+                        {syncing === 'gsheets' ? '⟳ Syncing...' : isCoolingDownFor(`gsheets-${idx}`) ? `⏳ ${cooldownMinutesFor(`gsheets-${idx}`)}m` : '⟳ Sync'}
                       </button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setShowConfig({ type: 'gsheets', index: idx })}>Edit</button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10, color: '#ef4444' }} onClick={() => handleDeleteSheet(idx)}>Disconnect</button>
@@ -501,10 +507,10 @@ export default function Integrations({ user, ownerId }) {
                         className="btn btn-primary btn-sm"
                         style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }}
                         onClick={() => syncIntegration(item.id, idx)}
-                        disabled={syncing !== null || isCoolingDown || cfg.disabled}
+                        disabled={syncing !== null || isCoolingDownFor(`${item.id}-${idx}`) || cfg.disabled}
                         title={cfg.lastSyncAt ? `Last synced: ${new Date(cfg.lastSyncAt).toLocaleString()}` : 'Never synced'}
                       >
-                        {syncing === `${item.id}-${idx}` ? '⟳ Syncing...' : isCoolingDown ? `⏳ ${cooldownMinutes}m` : '⟳ Sync'}
+                        {syncing === `${item.id}-${idx}` ? '⟳ Syncing...' : isCoolingDownFor(`${item.id}-${idx}`) ? `⏳ ${cooldownMinutesFor(`${item.id}-${idx}`)}m` : '⟳ Sync'}
                       </button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setShowConfig({ type: item.id, index: idx })}>Edit</button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10, color: '#ef4444' }} onClick={() => handleDeleteIntConfig(item.id, idx)}>Disconnect</button>
