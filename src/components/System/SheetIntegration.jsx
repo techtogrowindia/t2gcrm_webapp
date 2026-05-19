@@ -16,7 +16,7 @@ export default function SheetIntegration({ user, ownerId, onBack, existingConfig
     name: { type: 'column', value: '' },
     email: { type: 'column', value: '' },
     phone: { type: 'column', value: '' },
-    requirement: { type: 'fixed', value: DEFAULT_REQUIREMENTS[0] },
+    requirement: { type: 'fixed', value: '' },  // user picks — never hardcode a category
     stage: { type: 'fixed', value: DEFAULT_STAGES[0] },
     source: { type: 'fixed', value: 'Google Sheets' },
     assign: { type: 'fixed', value: '' },
