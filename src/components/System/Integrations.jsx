@@ -539,45 +539,44 @@ export default function Integrations({ user, ownerId }) {
                       </div>
                     )}
 
-                    {/* Raw API Response — always available, auto-open on failure or diagnostic */}
-                    {syncResults.raw && (
-                      <details style={{ marginTop: 8 }} open={!!(syncResults.failed || syncResults.diagnostic)}>
-                        <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none', fontSize: 11 }}>
-                          📋 Raw API Response (click to expand/collapse)
-                        </summary>
-                        <pre style={{
-                          marginTop: 6,
-                          background: '#1e293b',
-                          color: '#e2e8f0',
-                          padding: 10,
-                          borderRadius: 6,
-                          fontSize: 10,
-                          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                          overflow: 'auto',
-                          maxHeight: 300,
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                        }}>
-{JSON.stringify(syncResults.raw, null, 2)}
-                        </pre>
+                    {/* Compact view: just URL + Response */}
+                    {(syncResults.diagnostic?.requestUrl || syncResults.diagnostic?.responseSample || syncResults.diagnostic?.apiResponseSample) && (
+                      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {syncResults.diagnostic?.requestUrl && (
+                          <div>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>URL</div>
+                            <div style={{ background: '#1e293b', color: '#93c5fd', padding: 8, borderRadius: 6, fontSize: 10, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
+                              {syncResults.diagnostic.requestUrl}
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>Response</div>
+                          <pre style={{
+                            margin: 0,
+                            background: '#1e293b',
+                            color: '#fca5a5',
+                            padding: 8,
+                            borderRadius: 6,
+                            fontSize: 10,
+                            fontFamily: 'ui-monospace, monospace',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            maxHeight: 200,
+                            overflow: 'auto',
+                          }}>
+{syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || '(empty)'}
+                          </pre>
+                        </div>
                         <button
                           type="button"
-                          onClick={() => navigator.clipboard.writeText(JSON.stringify(syncResults.raw, null, 2))}
-                          style={{ marginTop: 5, padding: '3px 8px', background: '#475569', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}
+                          onClick={() => navigator.clipboard.writeText(
+                            `URL: ${syncResults.diagnostic.requestUrl || ''}\n\nResponse: ${syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || ''}`
+                          )}
+                          style={{ alignSelf: 'flex-start', padding: '3px 8px', background: '#475569', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}
                         >
                           📋 Copy
                         </button>
-                      </details>
-                    )}
-
-                    {syncResults.diagnostic && !syncResults.failed && (
-                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #fcd34d' }}>
-                        <strong>⚠️ Why 0 leads?</strong>
-                        <ul style={{ margin: '4px 0 0 16px', padding: 0, fontSize: 10 }}>
-                          <li>If <code>apiResponseSample</code> shows an error message → wrong credentials</li>
-                          <li>If it shows an empty array <code>[]</code> → no new inquiries in this period</li>
-                          <li>If it shows unfamiliar keys → API format changed; share the response above</li>
-                        </ul>
                       </div>
                     )}
                   </div>
