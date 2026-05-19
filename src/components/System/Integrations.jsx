@@ -14,6 +14,27 @@ export default function Integrations({ user, ownerId }) {
   const [syncing, setSyncing] = useState(null);
   const [syncResults, setSyncResults] = useState(null);
   const [showConfig, setShowConfig] = useState(null);
+  const [syncDates, setSyncDates] = useState({});
+
+  const fmtDateInput = (ts) => {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+  const getSyncDates = (type, idx, cfg) => {
+    const key = `${type}-${idx}`;
+    if (syncDates[key]) return syncDates[key];
+    const defaultFrom = fmtDateInput(
+      cfg?.lastSyncAt ? Math.max(cfg.lastSyncAt, Date.now() - THIRTY_DAYS_MS) : Date.now() - THIRTY_DAYS_MS
+    );
+    return { from: defaultFrom, to: fmtDateInput(Date.now()) };
+  };
+
+  const setSyncDate = (type, idx, cfg, field, value) => {
+    const key = `${type}-${idx}`;
+    setSyncDates(prev => ({ ...prev, [key]: { ...getSyncDates(type, idx, cfg), ...prev[key], [field]: value } }));
+  };
   const [activeTab, setActiveTab] = useState('all');
   const [cooldownEnd, setCooldownEnd] = useState(() => {
     const stored = localStorage.getItem('tc_sync_cooldown');
@@ -298,7 +319,7 @@ export default function Integrations({ user, ownerId }) {
   //   2. Dedups by phone + email + sourceLeadId
   //   3. Inserts only NEW leads (never updates existing — so stage changes are preserved)
   //   4. Updates that config's lastSyncAt
-  const syncIntegration = async (type, configIndex) => {
+  const syncIntegration = async (type, configIndex, fromDate, toDate) => {
     if (isCoolingDown) {
       return toast(`Please wait ${cooldownMinutes} min before syncing again.`, 'warning');
     }
@@ -306,11 +327,15 @@ export default function Integrations({ user, ownerId }) {
     if (cfg?.disabled) {
       return toast('Integration is disabled. Please enable it first.', 'warning');
     }
+    if (fromDate && toDate && fromDate > toDate) {
+      return toast('From date cannot be after To date', 'error');
+    }
 
     setSyncing(`${type}-${configIndex}`);
     setSyncResults(null);
     try {
-      const url = `/api/webhook/${type}?action=sync&ownerId=${encodeURIComponent(ownerId)}&configIndex=${configIndex}`;
+      const dateParams = fromDate && toDate ? `&from_date=${fromDate}&to_date=${toDate}` : '';
+      const url = `/api/webhook/${type}?action=sync&ownerId=${encodeURIComponent(ownerId)}&configIndex=${configIndex}${dateParams}`;
       const r = await fetch(url, { method: 'GET' });
       const json = await r.json();
 
@@ -480,11 +505,36 @@ export default function Integrations({ user, ownerId }) {
             {/* IndiaMART / JustDial connected configs */}
             {(item.id === 'indiamart' || item.id === 'justdial' || item.id === 'tradeindia') && (profile?.[item.id] || []).length > 0 && (
               <div style={{ marginTop: -10, marginBottom: 15 }}>
-                {(profile[item.id] || []).map((cfg, idx) => (
+                {(profile[item.id] || []).map((cfg, idx) => {
+                  const dates = getSyncDates(item.id, idx, cfg);
+                  return (
                   <div key={idx} style={{ padding: '10px 12px', background: 'var(--bg)', borderRadius: 8, marginBottom: 8, fontSize: 12, border: '1px solid var(--border)' }}>
-                    <div style={{ fontWeight: 600, marginBottom: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: cfg.disabled ? 0.5 : 1 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: cfg.disabled ? 0.5 : 1 }}>
                       {cfg.disabled ? '⏸ ' : item.id === 'indiamart' ? '🏭 ' : item.id === 'tradeindia' ? '🏢 ' : '📞 '}{cfg.configName || item.name}
                     </div>
+
+                    {/* Date range for manual sync */}
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 3 }}>From</div>
+                        <input
+                          type="date"
+                          value={dates.from}
+                          onChange={e => setSyncDate(item.id, idx, cfg, 'from', e.target.value)}
+                          style={{ width: '100%', padding: '4px 6px', border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+                        />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 3 }}>To</div>
+                        <input
+                          type="date"
+                          value={dates.to}
+                          onChange={e => setSyncDate(item.id, idx, cfg, 'to', e.target.value)}
+                          style={{ width: '100%', padding: '4px 6px', border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 11 }}
+                        />
+                      </div>
+                    </div>
+
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       <button
                         className={`btn ${cfg.disabled ? 'btn-secondary' : 'btn-primary'} btn-sm`}
@@ -496,7 +546,7 @@ export default function Integrations({ user, ownerId }) {
                       <button
                         className="btn btn-primary btn-sm"
                         style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }}
-                        onClick={() => syncIntegration(item.id, idx)}
+                        onClick={() => syncIntegration(item.id, idx, dates.from, dates.to)}
                         disabled={syncing !== null || isCoolingDown || cfg.disabled}
                         title={cfg.lastSyncAt ? `Last synced: ${new Date(cfg.lastSyncAt).toLocaleString()}` : 'Never synced'}
                       >
@@ -511,7 +561,8 @@ export default function Integrations({ user, ownerId }) {
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
                 {/* Only show the sync result under the integration that was actually synced */}
                 {syncResults && syncResults.type === item.id && syncing === null && (
                   <div style={{
