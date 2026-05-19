@@ -224,6 +224,7 @@ export default async function handler(req, res) {
       try {
         // JustDial API endpoint — contact JustDial for your specific endpoint URL
         const apiUrl = `https://api.justdial.com/leads?key=${encodeURIComponent(apiKey)}`;
+        const maskedUrl = apiUrl.replace(encodeURIComponent(apiKey), '***');
         const apiRes = await fetch(apiUrl);
 
         // Read raw text so we can show what JustDial returned even if it's not JSON
@@ -237,7 +238,7 @@ export default async function handler(req, res) {
             success: false,
             message: 'JustDial API returned a non-JSON response. Check your API Key.',
             added: 0, skipped: 0, total: 0,
-            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400) },
+            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400), requestUrl: maskedUrl },
           });
         }
 
@@ -253,9 +254,12 @@ export default async function handler(req, res) {
               httpStatus: apiRes.status,
               apiResponseKeys: Object.keys(apiData || {}),
               apiResponseSample: JSON.stringify(apiData).slice(0, 400),
+              requestUrl: maskedUrl,
             },
           });
         }
+
+        const successResponseSample = JSON.stringify(apiData).slice(0, 400);
 
         // Fetch existing leads for dedup
         const leadsRes = await db.query({ leads: { $: { where: { userId } } } });
@@ -322,6 +326,12 @@ export default async function handler(req, res) {
           message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors`,
           added, skipped, errors, total: leads.length,
           ...(syncDateRange ? { dateRange: syncDateRange, isManualSync: true } : {}),
+          diagnostic: {
+            httpStatus: apiRes.status,
+            requestUrl: maskedUrl,
+            responseSample: successResponseSample,
+            leadsReturned: leads.length,
+          },
         });
       } catch (e) {
         console.error('JustDial Sync Error:', e);

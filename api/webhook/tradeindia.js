@@ -406,6 +406,14 @@ export default async function handler(req, res) {
           chunksAttempted: chunks.length,
           chunksFailed: chunkErrors.length,
           isManualSync,
+          diagnostic: {
+            requestUrl: firstRequestUrl,
+            responseSample: firstResponseSample,
+            httpStatus: firstHttpStatus,
+            chunksAttempted: chunks.length,
+            chunksFailed: chunkErrors.length,
+            leadsReturned: leads.length,
+          },
         });
       } catch (e) {
         console.error('TradeIndia Sync Error:', e);

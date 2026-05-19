@@ -217,6 +217,7 @@ export default async function handler(req, res) {
       try {
         // IndiaMART CRM Lead API
         const apiUrl = `https://mapi.indiamart.com/wservce/enquiry/listing/JEESSION_ID/KEY/${apiKey}/`;
+        const maskedUrl = apiUrl.replace(apiKey, '***');
         const apiRes = await fetch(apiUrl);
 
         // Read as text first so we can include it in the diagnostic response
@@ -231,7 +232,7 @@ export default async function handler(req, res) {
             success: false,
             message: 'IndiaMART API returned a non-JSON response. Check your API Key.',
             added: 0, skipped: 0, total: 0,
-            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400) },
+            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400), requestUrl: maskedUrl },
           });
         }
 
@@ -248,9 +249,12 @@ export default async function handler(req, res) {
               httpStatus: apiRes.status,
               apiResponseKeys: Object.keys(apiData || {}),
               apiResponseSample: sample,
+              requestUrl: maskedUrl,
             },
           });
         }
+
+        const successResponseSample = JSON.stringify(apiData).slice(0, 400);
 
         // Fetch existing leads for dedup
         const leadsRes = await db.query({ leads: { $: { where: { userId } } } });
@@ -321,6 +325,12 @@ export default async function handler(req, res) {
           message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors`,
           added, skipped, errors, total: leads.length,
           ...(syncDateRange ? { dateRange: syncDateRange, isManualSync: true } : {}),
+          diagnostic: {
+            httpStatus: apiRes.status,
+            requestUrl: maskedUrl,
+            responseSample: successResponseSample,
+            leadsReturned: leads.length,
+          },
         });
       } catch (e) {
         console.error('IndiaMART Sync Error:', e);
