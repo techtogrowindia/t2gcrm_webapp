@@ -200,7 +200,7 @@ export default async function handler(req, res) {
         const teamCanSeeAll = profile.teamCanSeeAllLeads !== false; // default true
         const teamCanSeeUnassigned = profile.teamCanSeeUnassignedLeads !== false; // default true
 
-        console.log('[leads-visibility-v2]', {
+        const debugInfo = {
           rawQuery: params,
           actorId,
           ownerId,
@@ -214,7 +214,8 @@ export default async function handler(req, res) {
           teamCanSeeUnassigned,
           willFilter: !isOwner && !hasElevatedLeads && !teamCanSeeAll,
           beforeFilterCount: result.length,
-        });
+        };
+        console.log('[leads-visibility-v2]', debugInfo);
 
         // Restrict team members based on visibility toggles
         if (!isOwner && !hasElevatedLeads && !teamCanSeeAll) {
@@ -314,6 +315,7 @@ export default async function handler(req, res) {
           data: result,
           count: result.length,
           counts,
+          _debug: debugInfo,
         });
       }
 
