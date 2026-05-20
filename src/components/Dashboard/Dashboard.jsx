@@ -43,6 +43,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const myTeamMember = teamMembers.find(t => t.email === user.email);
   const myName = myTeamMember?.name || user.name || '';
   const teamCanSeeAllLeads = profile.teamCanSeeAllLeads !== false;
+  const teamCanSeeUnassignedLeads = profile.teamCanSeeUnassignedLeads !== false;
 
   // --- Server-driven lead stats ------------------------------------------
   // Replaces the 10k-lead subscription. Refreshes every 30s.
@@ -60,6 +61,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
             userEmail: user.email,
             myName,
             teamCanSeeAllLeads,
+            teamCanSeeUnassignedLeads,
             isOwner: perms?.isOwner === true,
             wonStage,
             lostStage,
@@ -77,7 +79,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     fetchStats();
     const iv = setInterval(fetchStats, 30000);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [ownerId, user.email, myName, teamCanSeeAllLeads, perms?.isOwner, wonStage, lostStage, JSON.stringify(profile.leadStages), JSON.stringify(profile.disabledStages)]);
+  }, [ownerId, user.email, myName, teamCanSeeAllLeads, teamCanSeeUnassignedLeads, perms?.isOwner, wonStage, lostStage, JSON.stringify(profile.leadStages), JSON.stringify(profile.disabledStages)]);
 
   const quotes = quotesRaw;
   const invoices = invoicesRaw;
