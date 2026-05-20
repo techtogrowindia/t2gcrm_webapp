@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { init, tx, id } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getCallLogsForOwner, invalidateCallLogsCache } from './_call-logs-cache.js';
@@ -20,25 +21,24 @@ function dupKey(entry) {
   return `${cleanPhone}|${entry.direction || 'Incoming'}|${dur}|${entry.staffEmail || ''}`;
 }
 
-// Returns true if `entry` looks like a duplicate of any timestamp in `timesByKey`.
-function isDuplicate(entry, timesByKey) {
-  const k = dupKey(entry);
-  const arr = timesByKey.get(k);
-  if (!arr) return false;
-  const t = entry.createdAt || Date.now();
-  for (const existing of arr) {
-    if (Math.abs(existing - t) <= DUP_WINDOW_MS) return true;
-  }
-  return false;
-}
-
-// Legacy minute-bucket fingerprint kept for any caller that still imports it.
-// Internal dedup now uses the interval check above.
-function fingerprintCall(entry) {
-  const cleanPhone = (entry.phone || '').replace(/\D/g, '').slice(-10);
-  const minute = Math.floor((entry.createdAt || Date.now()) / 60000);
-  const dur = entry.duration ? Number(entry.duration) : 0;
-  return `${cleanPhone}|${entry.direction || 'Incoming'}|${minute}|${dur}|${entry.staffEmail || ''}`;
+// Content-addressable ID — the same physical call always hashes to the same
+// ID, so InstantDB merges concurrent writes into ONE row instead of N. This is
+// the primary line of defence against duplicates: it works even for old mobile
+// builds that don't send deviceId, and even when N parallel POSTs race past the
+// 30s cache TTL. The 1-minute bucket absorbs sub-minute drift between mobile
+// resyncs while letting genuinely separate calls (different duration OR >1 min
+// apart) keep their own rows.
+function stableCallLogId(entry) {
+  const phone = (entry.phone || '').replace(/\D/g, '').slice(-10);
+  const direction = entry.direction || 'Incoming';
+  const duration = Number(entry.duration) || 0;
+  const staff = entry.staffEmail || '';
+  const ts = Number(entry.createdAt) || 0;
+  const minute = Math.floor(ts / 60000);
+  const key = `${phone}|${direction}|${duration}|${staff}|${minute}`;
+  const h = createHash('sha1').update(key).digest('hex');
+  // Format as a UUIDv5-looking string so it sits alongside id()-generated UUIDs.
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
 /**
@@ -232,39 +232,27 @@ export default async function handler(req, res) {
         const syncStateRecord = syncStateResult.callLogSyncState?.[0] || null;
         const deviceLastSyncedAt = syncStateRecord?.lastSyncedAt || 0;
 
-        // Build a (phone|direction|duration|staff) → [createdAt...] index from the
-        // last 48h of existing logs. Scanning 27k+ rows every sync would grow
-        // unbounded; duplicates never arrive more than 48h late.
-        const timesByKey = new Map();
-        for (const l of existingLogs) {
-          if ((l.createdAt || 0) < dedupSince) continue;
-          const k = dupKey(l);
-          const arr = timesByKey.get(k);
-          if (arr) arr.push(l.createdAt || 0);
-          else timesByKey.set(k, [l.createdAt || 0]);
-        }
+        // Build a Set of existing call log IDs from the cache. Used to skip
+        // writes whose stableCallLogId already lives in the DB — avoids
+        // overwriting fields that may have been edited via the web UI after
+        // the original mobile sync. No extra DB query, reuses the cache load.
+        const existingIds = new Set();
+        for (const l of existingLogs) existingIds.add(l.id);
 
         // Filter batch:
-        // 1. Skip calls already covered by device sync state (createdAt <= deviceLastSyncedAt)
-        // 2. Skip duplicates of existing logs (interval check within 10 min)
+        // 1. Skip calls already covered by device sync state (fast path)
+        // 2. Compute stable ID; skip if it's already in the DB
         // 3. Skip duplicates within this batch itself
-        const seenInBatch = new Map(); // same shape as timesByKey
+        const seenInBatch = new Set();
         const accepted = [];
         let skipped = 0;
         for (const entry of batch) {
           const entryTs = entry.createdAt || now;
-          // Fast path: server already has everything up to deviceLastSyncedAt for this device
           if (deviceId && entryTs <= deviceLastSyncedAt) { skipped++; continue; }
-          const entryForDup = { ...entry, createdAt: entryTs };
-          if (isDuplicate(entryForDup, timesByKey) || isDuplicate(entryForDup, seenInBatch)) {
-            skipped++;
-            continue;
-          }
-          const k = dupKey(entryForDup);
-          const arr = seenInBatch.get(k);
-          if (arr) arr.push(entryTs);
-          else seenInBatch.set(k, [entryTs]);
-          accepted.push({ ...entry, _ts: entryTs });
+          const stableId = stableCallLogId({ ...entry, createdAt: entryTs });
+          if (existingIds.has(stableId) || seenInBatch.has(stableId)) { skipped++; continue; }
+          seenInBatch.add(stableId);
+          accepted.push({ ...entry, _ts: entryTs, _id: stableId });
         }
 
         if (accepted.length === 0) {
@@ -281,7 +269,7 @@ export default async function handler(req, res) {
         const callTxs = accepted.map(entry => {
           const cleanPhone = entry.phone?.replace(/\D/g, '') || '';
           const matched = leadMap[cleanPhone] || null;
-          return tx.callLogs[id()].update({
+          return tx.callLogs[entry._id].update({
             phone: entry.phone || '',
             contactName: entry.contactName || matched?.name || '',
             direction: entry.direction || 'Incoming',
@@ -341,9 +329,11 @@ export default async function handler(req, res) {
         });
       }
 
-      // Single create — also dedup-guarded via shared cache (48h window)
-      const DEDUP_WINDOW_MS = 48 * 60 * 60 * 1000;
-      const dedupSince = Date.now() - DEDUP_WINDOW_MS;
+      // Single create — uniqueness comes from the deterministic stableCallLogId.
+      // If a row with that ID already exists (web edit, prior sync, parallel
+      // POST), we skip — InstantDB's per-ID merge semantics also guarantee no
+      // duplicate row even if two writers race past this check simultaneously.
+      const now = Date.now();
       const [leads, existingLogs] = await Promise.all([
         getLeadsForOwner(ownerId),
         getCallLogsForOwner(ownerId),
@@ -351,21 +341,12 @@ export default async function handler(req, res) {
       const cleanPhone = singleData.phone?.replace(/\D/g, '') || '';
       const matched = (leads || []).find(l => l.phone?.replace(/\D/g, '') === cleanPhone);
 
-      const singleTimesByKey = new Map();
-      for (const l of existingLogs) {
-        if ((l.createdAt || 0) < dedupSince) continue;
-        const k = dupKey(l);
-        const arr = singleTimesByKey.get(k);
-        if (arr) arr.push(l.createdAt || 0);
-        else singleTimesByKey.set(k, [l.createdAt || 0]);
-      }
-      const singleEntryForDup = { ...singleData, createdAt: singleData.createdAt || Date.now() };
-      if (isDuplicate(singleEntryForDup, singleTimesByKey)) {
+      const singleStableId = stableCallLogId({ ...singleData, createdAt: singleData.createdAt || now });
+      if (existingLogs.some(l => l.id === singleStableId)) {
         return res.status(200).json({ success: true, skipped: 1, reason: 'duplicate' });
       }
 
-      const newId = id();
-      const now = Date.now();
+      const newId = singleStableId;
       await db.transact(tx.callLogs[newId].update({
         phone: singleData.phone || '',
         contactName: singleData.contactName || matched?.name || '',
@@ -379,7 +360,9 @@ export default async function handler(req, res) {
         staffName: singleData.staffName || '',
         userId: ownerId,
         actorId: singleData.actorId || ownerId,
-        createdAt: now,
+        // Honour the caller's createdAt when supplied so the stored timestamp
+        // matches the value used to compute stableCallLogId.
+        createdAt: Number(singleData.createdAt) || now,
         updatedAt: now,
         source: singleData.source || 'api',
       }));
