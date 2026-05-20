@@ -496,6 +496,12 @@ export default function ApiDocs({ ownerId }) {
                     
                     <div style={{ padding: 18 }}>
                       {action.desc && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12, fontStyle: 'italic' }}>{action.desc}</div>}
+                      {action.notes && (
+                        <div style={{ fontSize: 12, color: '#0c4a6e', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 8, padding: '10px 12px', marginBottom: 12, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+                          <strong style={{ color: '#075985' }}>ℹ️ Behaviour</strong>
+                          <div style={{ marginTop: 4 }}>{action.notes}</div>
+                        </div>
+                      )}
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, width: '100%' }}>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>
