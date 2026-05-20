@@ -80,6 +80,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     callLogs: { $: { where: { leadId: drawerLeadId } } },
   } : {});
   const teamCanSeeAllLeads = data?.userProfiles?.[0]?.teamCanSeeAllLeads !== false;
+  const teamCanSeeUnassignedLeads = data?.userProfiles?.[0]?.teamCanSeeUnassignedLeads !== false;
   const myTeamMember = (data?.teamMembers || []).find(t => t.email === user.email);
   const myName = myTeamMember?.name || user.name || '';
 
@@ -206,7 +207,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       myName,
       teamCanSeeAllLeads,
       isOwner: !!perms?.isOwner,
-      teamCanSeeUnassignedLeads: data?.userProfiles?.[0]?.teamCanSeeUnassignedLeads !== false,
+      teamCanSeeUnassignedLeads,
       mode: view,
       dateMode,
       tab,
@@ -1513,12 +1514,14 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                       <>
                         <option value="">All Staff</option>
                         <option value="my">My Leads</option>
+                        <option value="unassigned">Unassigned</option>
                         {team.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
                       </>
                     ) : (
                       <>
                         <option value="">All</option>
                         <option value="my">My Leads</option>
+                        {teamCanSeeUnassignedLeads && <option value="unassigned">Unassigned</option>}
                       </>
                     )}
                   </select>
@@ -1747,12 +1750,14 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   <>
                     <option value="">All Staff</option>
                     <option value="my">My Leads</option>
+                    <option value="unassigned">Unassigned</option>
                     {team.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
                   </>
                 ) : (
                   <>
                     <option value="">All</option>
                     <option value="my">My Leads</option>
+                    {teamCanSeeUnassignedLeads && <option value="unassigned">Unassigned</option>}
                   </>
                 )}
               </select>
