@@ -52,9 +52,11 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const [groupRepeats, setGroupRepeats] = useState(() => {
     try { return localStorage.getItem(`callLogGroupRepeats_${user.email}`) !== 'false'; } catch { return true; }
   });
+  // Default ON — businesses want one row per phone unless they explicitly untick.
   const [groupByPhone, setGroupByPhone] = useState(() => {
-    try { return localStorage.getItem(`callLogGroupByPhone_${user.email}`) === 'true'; } catch { return false; }
+    try { return localStorage.getItem(`callLogGroupByPhone_${user.email}`) !== 'false'; } catch { return true; }
   });
+  const [dedupRunning, setDedupRunning] = useState(false);
   // Which phone-group row (by index in `paged`) is currently expanded inline
   const [expandedIdx, setExpandedIdx] = useState(null);
 
@@ -319,6 +321,33 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     try { localStorage.setItem(`callLogGroupByPhone_${user.email}`, String(next)); } catch { /* ignore */ }
   };
 
+  const removeDuplicates = async () => {
+    if (dedupRunning) return;
+    const ok = window.confirm('Permanently delete duplicate call logs?\n\nThis groups every call by phone, direction, duration and staff, then keeps the oldest in each 10-minute cluster and removes the rest. This cannot be undone.');
+    if (!ok) return;
+    setDedupRunning(true);
+    try {
+      const r = await fetch('/api/call-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'dedupe-duplicates', ownerId }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.success) {
+        toast(j.error || 'Failed to remove duplicates', 'error');
+      } else if (j.deleted === 0) {
+        toast('No duplicate call logs found', 'info');
+      } else {
+        toast(`Removed ${j.deleted} duplicate call log${j.deleted !== 1 ? 's' : ''}`, 'success');
+        refetchPage();
+      }
+    } catch (e) {
+      toast('Failed to remove duplicates: ' + (e?.message || e), 'error');
+    } finally {
+      setDedupRunning(false);
+    }
+  };
+
 
   const openNew = () => { setForm(EMPTY_FORM); setEditData(null); setModal(true); };
   const openEdit = (log) => {
@@ -521,6 +550,17 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
             <input type="checkbox" checked={groupByPhone} onChange={toggleGroupByPhone} style={{ margin: 0 }} />
             Group by phone
           </label>
+          {canDelete && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={removeDuplicates}
+              disabled={dedupRunning}
+              title="Scan all call logs and permanently delete duplicates (same phone, direction, duration, staff within 10 minutes)"
+              style={{ borderColor: '#fecaca', color: '#b91c1c' }}
+            >
+              {dedupRunning ? 'Removing…' : '🧹 Remove Duplicates'}
+            </button>
+          )}
           <button className="btn btn-secondary btn-sm" onClick={() => {
             setTempCols(activeCols);
             setTempPageSize(pageSize);

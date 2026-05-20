@@ -160,8 +160,53 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, data: enriched, count: enriched.length });
     }
 
-    /* ── POST: Create (single or batch) ── */
+    /* ── POST: Create (single or batch) or admin actions ── */
     if (method === 'POST') {
+      // ── Action: dedupe-duplicates ─────────────────────────────────────
+      // Sweeps every call log for this owner, groups by
+      // (phone last10 | direction | duration | staffEmail), keeps the
+      // oldest in each ≤10-minute cluster, hard-deletes the rest.
+      // Uses the same logic as _cleanup-duplicate-call-logs.mjs so the
+      // result is identical whether triggered from the UI or the migration
+      // script. Idempotent: running it again on a clean dataset deletes 0.
+      if (params.action === 'dedupe-duplicates') {
+        const { callLogs } = await db.query({
+          callLogs: { $: { where: { userId: ownerId } } },
+        });
+        const buckets = new Map();
+        for (const l of callLogs || []) {
+          const k = dupKey(l);
+          const arr = buckets.get(k);
+          if (arr) arr.push(l);
+          else buckets.set(k, [l]);
+        }
+        const toDelete = [];
+        for (const [, rows] of buckets) {
+          if (rows.length < 2) continue;
+          rows.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          let anchor = rows[0];
+          for (let i = 1; i < rows.length; i++) {
+            const r = rows[i];
+            const dt = (r.createdAt || 0) - (anchor.createdAt || 0);
+            if (dt <= DUP_WINDOW_MS) {
+              toDelete.push(r.id);
+            } else {
+              anchor = r;
+            }
+          }
+        }
+        // Batch deletes in chunks of 50 to stay under InstantDB tx limits
+        for (let i = 0; i < toDelete.length; i += 50) {
+          await db.transact(toDelete.slice(i, i + 50).map(id => tx.callLogs[id].delete()));
+        }
+        if (toDelete.length > 0) invalidateCallLogsCache(ownerId);
+        return res.status(200).json({
+          success: true,
+          deleted: toDelete.length,
+          scanned: (callLogs || []).length,
+        });
+      }
+
       const { batch, deviceId, ...singleData } = params;
 
       // Batch mode: array of call logs from Android app
