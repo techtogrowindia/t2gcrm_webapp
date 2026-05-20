@@ -269,7 +269,20 @@ export default async function handler(req, res) {
 
       const query = { [collection]: { $: { where: { userId: ownerId } } } };
       const result = await db.query(query);
-      return res.status(200).json({ success: true, data: result[collection] || [] });
+      let rows = result[collection] || [];
+
+      // Mobile sync cap: the call logs module only ever exposes the last 30
+      // days. Older rows stay in the DB but are hidden from sync clients to
+      // save bandwidth and keep the mobile list snappy.
+      if (module === 'callLogs') {
+        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        rows = rows.filter(r => {
+          const t = Math.max(r.createdAt || 0, r.updatedAt || 0);
+          return t >= cutoff;
+        });
+      }
+
+      return res.status(200).json({ success: true, data: rows });
     }
 
     /* ──────────── CREATE (POST) ──────────── */

@@ -137,11 +137,22 @@ export default async function handler(req, res) {
 
       let logs = callLogs || [];
 
-      // Filter by since timestamp for incremental sync
-      const since = params.since ? Number(params.since) : null;
-      if (since) {
-        logs = logs.filter(l => (l.createdAt || 0) > since || (l.updatedAt || 0) > since);
-      }
+      // Hard cap on history exposed via the API. The mobile app should only
+      // ever see the last 30 days of call logs — older data stays in the DB
+      // but is invisible to sync clients. Saves bandwidth, keeps the mobile
+      // list snappy, and prevents an old install from re-pulling years of
+      // history on first sync.
+      const HISTORY_CAP_MS = 30 * 24 * 60 * 60 * 1000;
+      const capCutoff = Date.now() - HISTORY_CAP_MS;
+
+      // Filter by `since` timestamp for incremental sync, clamped to capCutoff
+      // (callers can't reach further back than the cap even if they ask).
+      const rawSince = params.since ? Number(params.since) : null;
+      const since = Math.max(rawSince || 0, capCutoff);
+      logs = logs.filter(l => {
+        const t = Math.max(l.createdAt || 0, l.updatedAt || 0);
+        return t > since;
+      });
 
       // Enrich with lead info
       const leadMap = Object.fromEntries((leads || []).map(l => [l.phone?.replace(/\D/g, ''), l]));
