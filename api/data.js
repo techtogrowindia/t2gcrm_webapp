@@ -183,19 +183,6 @@ export default async function handler(req, res) {
         const teamCanSeeAll = profile.teamCanSeeAllLeads !== false; // default true
         const teamCanSeeUnassigned = profile.teamCanSeeUnassignedLeads !== false; // default true
 
-        console.log('[leads-visibility]', {
-          actorId,
-          ownerId,
-          isOwner,
-          userEmail,
-          myName,
-          hasElevatedLeads,
-          teamCanSeeAll,
-          teamCanSeeUnassigned,
-          tmFound: !!teamMembers.find(t => t.id === actorId),
-          totalBeforeFilter: result.length,
-        });
-
         // Restrict team members based on visibility toggles
         if (!isOwner && !hasElevatedLeads && !teamCanSeeAll) {
           if (teamCanSeeUnassigned) {
