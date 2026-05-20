@@ -1513,19 +1513,17 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                       <>
                         <option value="">All Staff</option>
                         <option value="my">My Leads</option>
-                        <option value="unassigned">Unassigned</option>
                         {team.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
                       </>
                     ) : (
                       <>
                         <option value="">All</option>
                         <option value="my">My Leads</option>
-                        <option value="unassigned">Unassigned</option>
                       </>
                     )}
                   </select>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { 
-                    setTempCols(activeCols); 
+                  <button className="btn btn-secondary btn-sm" onClick={() => {
+                    setTempCols(activeCols);
                     setTempStages(savedLeadStages || allStages); 
                     setTempPageSize(pageSize);
                     setColModal(true); 
@@ -1749,14 +1747,12 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   <>
                     <option value="">All Staff</option>
                     <option value="my">My Leads</option>
-                    <option value="unassigned">Unassigned</option>
                     {team.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
                   </>
                 ) : (
                   <>
                     <option value="">All</option>
                     <option value="my">My Leads</option>
-                    <option value="unassigned">Unassigned</option>
                   </>
                 )}
               </select>
