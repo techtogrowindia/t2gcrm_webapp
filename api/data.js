@@ -127,30 +127,18 @@ export default async function handler(req, res) {
       // who hit it (the mobile app showed every team member the full 11k
       // dataset because it relies on this endpoint).
       if (module === 'leads') {
-        // Role-permission-aware visibility for mobile. Each business defines
-        // its own role names — they are NOT hardcoded ("Admin"/"Manager"
-        // matching breaks for businesses that name roles "Boss", "Director",
-        // "TL", etc.). Instead, we look up the role's permission object in
-        // userProfiles.roles[].perms and check what the role is actually
-        // allowed to do.
+        // Visibility for mobile is governed by userProfiles.teamCanSeeAllLeads,
+        // exactly mirroring /api/leads-page (the web endpoint). The toggle is
+        // the single source of truth so behaviour stays consistent across
+        // platforms — toggling it on/off in Business Settings should change
+        // mobile and web together.
         //
-        // Tiers:
-        //   1. Owner (actorId === ownerId)                  → all leads
-        //   2. Team member whose role has Leads:'delete' OR
-        //      Leads:'viewAll' permission                   → all leads
-        //   3. Any other team-member role                   → ONLY leads
-        //                                                    assigned to them
-        //                                                    (or unassigned)
-        //
-        // 'delete' is used as the elevated-trust proxy because the default
-        // Sales role intentionally lacks it (per Teams.jsx DEFAULT_ROLES)
-        // while Admin and similar high-trust roles have it. 'viewAll' is
-        // accepted for forward compatibility if a business explicitly opts
-        // into it as a separate permission later.
-        //
-        // userProfiles.teamCanSeeAllLeads is respected here (default: true).
-        // When true all team members see all leads, matching web behaviour.
-        // When false, visibility falls back to role-permission-derived rules.
+        // Rules:
+        //   1. Owner (actorId === ownerId or absent)         → all leads
+        //   2. Team member + teamCanSeeAllLeads === true     → all leads
+        //   3. Team member + teamCanSeeAllLeads === false    → only leads
+        //                                                      assigned to them
+        //                                                      (or unassigned)
         const { leads, teamMembers: teamFromDb, userProfiles } = await db.query({
           leads: { $: { where: { userId: ownerId } } },
           teamMembers: { $: { where: { userId: ownerId } } },
@@ -159,13 +147,11 @@ export default async function handler(req, res) {
         let result = leads || [];
         const teamMembers = teamFromDb || [];
         const profile = userProfiles?.[0] || {};
-        const roleDefs = profile.roles || [];
 
-        // Resolve caller identity + their role permissions from actorId
+        // Resolve caller identity from actorId
         let isOwner = false;
         let userEmail = params.userEmail || '';
         let myName = params.myName || '';
-        let rolePerms = null; // resolved role's perms object
         if (!actorId || actorId === ownerId) {
           isOwner = true;
         } else {
@@ -173,34 +159,19 @@ export default async function handler(req, res) {
           if (tm) {
             userEmail = userEmail || tm.email || '';
             myName = myName || tm.name || '';
-            const roleDef = roleDefs.find(r => r.name === tm.role);
-            if (roleDef) {
-              // Handle both modern object format and legacy string[] format
-              if (Array.isArray(roleDef.perms)) {
-                rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
-              } else {
-                rolePerms = roleDef.perms || {};
-              }
-            }
           } else if (params.isOwner === true || params.isOwner === 'true') {
             isOwner = true;
           }
         }
 
-        const leadsPerms = (rolePerms && rolePerms.Leads) || [];
         const teamCanSeeAll = profile.teamCanSeeAllLeads !== false; // default true
-        const hasFullVisibility = isOwner || teamCanSeeAll
-          || (Array.isArray(leadsPerms) && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll')));
 
-        // Restrict team members to their own leads only when teamCanSeeAllLeads
-        // is explicitly disabled AND they don't have elevated role permissions.
-        if (!hasFullVisibility) {
+        // Restrict team members to their own leads when toggle is off
+        if (!isOwner && !teamCanSeeAll) {
           result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
         }
 
         // Optional explicit filters layered on top (mirrors /api/leads-page).
-        // Non-owners can still further narrow with staffFilter='unassigned'
-        // or staffFilter='my', but cannot expand beyond their assigned set.
         const { staffFilter = '', srcFilter = '', stgFilter = '' } = params;
         result = result.filter(l => {
           if (srcFilter && l.source !== srcFilter) return false;
@@ -217,8 +188,64 @@ export default async function handler(req, res) {
           return true;
         });
 
+        // Newest leads first
         result.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-        return res.status(200).json({ success: true, data: result, count: result.length });
+
+        // Followup-based counts (today / tomorrow / all) — computed server-side
+        // using IST (Asia/Kolkata, +05:30) so they match the user's local
+        // timezone. The mobile app can override with explicit boundaries:
+        //   ?todayStartMs=..&todayEndMs=..&tomorrowStartMs=..&tomorrowEndMs=..
+        const istOffsetMs = 5.5 * 60 * 60 * 1000;
+        const nowIst = new Date(Date.now() + istOffsetMs);
+        const istY = nowIst.getUTCFullYear();
+        const istM = nowIst.getUTCMonth();
+        const istD = nowIst.getUTCDate();
+        const defaultTodayStart = Date.UTC(istY, istM, istD) - istOffsetMs;
+        const defaultTodayEnd   = Date.UTC(istY, istM, istD + 1) - istOffsetMs - 1;
+        const defaultTmrStart   = Date.UTC(istY, istM, istD + 1) - istOffsetMs;
+        const defaultTmrEnd     = Date.UTC(istY, istM, istD + 2) - istOffsetMs - 1;
+
+        const toMs = (v) => {
+          if (v === undefined || v === null || v === '') return NaN;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : NaN;
+        };
+        const todayStartMs = Number.isFinite(toMs(params.todayStartMs)) ? toMs(params.todayStartMs) : defaultTodayStart;
+        const todayEndMs   = Number.isFinite(toMs(params.todayEndMs))   ? toMs(params.todayEndMs)   : defaultTodayEnd;
+        const tomorrowStartMs = Number.isFinite(toMs(params.tomorrowStartMs)) ? toMs(params.tomorrowStartMs) : defaultTmrStart;
+        const tomorrowEndMs   = Number.isFinite(toMs(params.tomorrowEndMs))   ? toMs(params.tomorrowEndMs)   : defaultTmrEnd;
+
+        const followupMs = (l) => {
+          const v = l.followup;
+          if (!v) return null;
+          if (typeof v === 'number') return v;
+          // Bare "YYYY-MM-DDTHH:MM" strings have no tz info — interpret as IST
+          // so server bucketing matches what the mobile/web client sees.
+          const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+          const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/.test(v);
+          if (m && !hasTz) {
+            return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - istOffsetMs;
+          }
+          const t = new Date(v).getTime();
+          return Number.isFinite(t) ? t : null;
+        };
+
+        let cToday = 0, cTomorrow = 0;
+        for (const l of result) {
+          const d = followupMs(l);
+          if (d === null) continue;
+          if (d >= todayStartMs && d <= todayEndMs) cToday++;
+          if (d >= tomorrowStartMs && d <= tomorrowEndMs) cTomorrow++;
+        }
+
+        const counts = { all: result.length, today: cToday, tomorrow: cTomorrow };
+
+        return res.status(200).json({
+          success: true,
+          data: result,
+          count: result.length,
+          counts,
+        });
       }
 
       const query = { [collection]: { $: { where: { userId: ownerId } } } };
