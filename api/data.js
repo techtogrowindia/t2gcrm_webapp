@@ -127,17 +127,18 @@ export default async function handler(req, res) {
       // who hit it (the mobile app showed every team member the full 11k
       // dataset because it relies on this endpoint).
       if (module === 'leads') {
-        // Visibility for mobile is governed by userProfiles.teamCanSeeAllLeads,
-        // exactly mirroring /api/leads-page (the web endpoint). The toggle is
-        // the single source of truth so behaviour stays consistent across
-        // platforms — toggling it on/off in Business Settings should change
-        // mobile and web together.
+        // Visibility on the mobile API mirrors /api/leads-page, with one
+        // additional override: team members whose role has elevated Leads
+        // permissions (delete or viewAll) always see all leads, regardless
+        // of the teamCanSeeAllLeads toggle. The toggle is meant to restrict
+        // ordinary team members — admins/managers with full Leads access
+        // are expected to keep their full view.
         //
-        // Rules:
+        // Rules (in priority order):
         //   1. Owner (actorId === ownerId or absent)         → all leads
-        //   2. Team member + teamCanSeeAllLeads === true     → all leads
-        //   3. Team member + teamCanSeeAllLeads === false    → only leads
-        //                                                      assigned to them
+        //   2. Team member with Leads:'delete' or 'viewAll'  → all leads
+        //   3. Team member + teamCanSeeAllLeads === true     → all leads
+        //   4. Team member + teamCanSeeAllLeads === false    → only assigned
         //                                                      (or unassigned)
         const { leads, teamMembers: teamFromDb, userProfiles } = await db.query({
           leads: { $: { where: { userId: ownerId } } },
@@ -147,11 +148,13 @@ export default async function handler(req, res) {
         let result = leads || [];
         const teamMembers = teamFromDb || [];
         const profile = userProfiles?.[0] || {};
+        const roleDefs = profile.roles || [];
 
-        // Resolve caller identity from actorId
+        // Resolve caller identity + their role perms from actorId
         let isOwner = false;
         let userEmail = params.userEmail || '';
         let myName = params.myName || '';
+        let rolePerms = null;
         if (!actorId || actorId === ownerId) {
           isOwner = true;
         } else {
@@ -159,15 +162,31 @@ export default async function handler(req, res) {
           if (tm) {
             userEmail = userEmail || tm.email || '';
             myName = myName || tm.name || '';
+            const roleDef = roleDefs.find(r => r.name === tm.role);
+            if (roleDef) {
+              // Modern format: { Leads: ['list','view','create','edit','delete','viewAll'] }
+              // Legacy format: ['Leads', 'Customers'] → grant only list/view per module
+              if (Array.isArray(roleDef.perms)) {
+                rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
+              } else {
+                rolePerms = roleDef.perms || {};
+              }
+            }
           } else if (params.isOwner === true || params.isOwner === 'true') {
             isOwner = true;
           }
         }
 
+        const leadsPerms = (rolePerms && rolePerms.Leads) || [];
+        const hasElevatedLeads = Array.isArray(leadsPerms)
+          && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll'));
         const teamCanSeeAll = profile.teamCanSeeAllLeads !== false; // default true
 
-        // Restrict team members to their own leads when toggle is off
-        if (!isOwner && !teamCanSeeAll) {
+        // Restrict team members to their own leads only when:
+        // - they aren't the owner
+        // - they don't have elevated Leads perms (delete/viewAll)
+        // - the teamCanSeeAllLeads toggle is off
+        if (!isOwner && !hasElevatedLeads && !teamCanSeeAll) {
           result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
         }
 

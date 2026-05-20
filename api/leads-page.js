@@ -1,4 +1,8 @@
+import { init } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
+
+const APP_ID = process.env.VITE_INSTANT_APP_ID;
+const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
 
 
 // POST /api/leads-page
@@ -48,7 +52,36 @@ export default async function handler(req, res) {
     const planTotal = leads.length;
 
     // --- 2. Team visibility filter ----------------------------------------
-    if (!isOwner && !teamCanSeeAllLeads) {
+    // Team members whose role has elevated Leads perms (delete or viewAll)
+    // bypass the teamCanSeeAllLeads toggle and always see all leads — they
+    // are treated as admins for visibility purposes.
+    let hasElevatedLeads = false;
+    if (!isOwner && !teamCanSeeAllLeads && userEmail) {
+      try {
+        const db = init({ appId: APP_ID, adminToken: ADMIN_TOKEN });
+        const r = await db.query({
+          teamMembers: { $: { where: { userId: ownerId, email: userEmail } } },
+          userProfiles: { $: { where: { userId: ownerId } } },
+        });
+        const tm = r.teamMembers?.[0];
+        const profile = r.userProfiles?.[0] || {};
+        const roleDef = (profile.roles || []).find(rl => rl.name === tm?.role);
+        let rolePerms = null;
+        if (roleDef) {
+          if (Array.isArray(roleDef.perms)) {
+            rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
+          } else {
+            rolePerms = roleDef.perms || {};
+          }
+        }
+        const leadsPerms = (rolePerms && rolePerms.Leads) || [];
+        hasElevatedLeads = Array.isArray(leadsPerms)
+          && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll'));
+      } catch (e) {
+        console.warn('[leads-page] role lookup failed', e?.message);
+      }
+    }
+    if (!isOwner && !teamCanSeeAllLeads && !hasElevatedLeads) {
       leads = leads.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
     }
 
