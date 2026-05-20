@@ -150,6 +150,23 @@ export default async function handler(req, res) {
         const profile = userProfiles?.[0] || {};
         const roleDefs = profile.roles || [];
 
+        // Source normalization — mirror /api/leads-page so web & mobile match
+        result = result.map(l => (l.source === 'Retailer' || l.source === 'Retailers')
+          ? { ...l, source: 'Channel Partners' }
+          : l);
+
+        // Stage visibility — apply the same savedLeadStages + disabledStages
+        // filter the web uses so disabled stages never leak into mobile.
+        const savedLeadStages = profile.leadStages || null;
+        const disabledStages = profile.disabledStages || [];
+        const disabledSet = new Set(disabledStages);
+        if (Array.isArray(savedLeadStages) && savedLeadStages.length > 0) {
+          const vs = new Set(savedLeadStages);
+          result = result.filter(l => vs.has(l.stage) && !disabledSet.has(l.stage));
+        } else if (disabledSet.size > 0) {
+          result = result.filter(l => !disabledSet.has(l.stage));
+        }
+
         // Resolve caller identity + their role perms from actorId
         let isOwner = false;
         let userEmail = params.userEmail || '';
