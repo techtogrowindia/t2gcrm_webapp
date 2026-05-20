@@ -207,6 +207,19 @@ export default async function handler(req, res) {
           return true;
         });
 
+        // Assigned date range filter (mobile "today assigned" feature)
+        const { assignedFrom = '', assignedTo = '' } = params;
+        if (assignedFrom || assignedTo) {
+          const aFromMs = assignedFrom ? new Date(assignedFrom + 'T00:00:00').getTime() : null;
+          const aToMs   = assignedTo   ? new Date(assignedTo   + 'T23:59:59.999').getTime() : null;
+          result = result.filter(l => {
+            const t = l.assignedAt || 0;
+            if (aFromMs !== null && t < aFromMs) return false;
+            if (aToMs   !== null && t > aToMs)   return false;
+            return true;
+          });
+        }
+
         // Newest leads first
         result.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
@@ -290,6 +303,11 @@ export default async function handler(req, res) {
       const newId = id();
       let payload = { ...data, userId: ownerId, actorId: actorId || ownerId, createdAt: Date.now() };
 
+      // Record when a lead is first assigned
+      if (module === 'leads' && payload.assign) {
+        payload.assignedAt = payload.createdAt;
+      }
+
       // Handle Task Numbering
       if (module === 'tasks') {
         const { tasks } = await db.query({ tasks: { $: { where: { userId: ownerId } } } });
@@ -339,6 +357,11 @@ export default async function handler(req, res) {
     if (method === 'PATCH') {
       const { id: targetId, ...updates } = data;
       if (!targetId) return res.status(400).json({ error: 'Record ID is required for updates' });
+
+      // Record when a lead's assignee changes
+      if (module === 'leads' && updates.assign !== undefined) {
+        updates.assignedAt = Date.now();
+      }
 
       const txs = [
         tx[collection][targetId].update(updates),

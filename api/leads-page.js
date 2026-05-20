@@ -124,7 +124,10 @@ export default async function handler(req, res) {
     } = boundaries;
 
     const dateMsOf = (l) => {
-      const v = dateMode === 'created' ? l.createdAt : l.followup;
+      let v;
+      if (dateMode === 'created') v = l.createdAt;
+      else if (dateMode === 'assigned') v = l.assignedAt;
+      else v = l.followup;
       if (!v) return null;
       if (typeof v === 'number') return v;
       const t = new Date(v).getTime();

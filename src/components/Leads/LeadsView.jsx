@@ -413,6 +413,9 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         if (editData.stage !== form.stage) {
           updates.stageChangedAt = Date.now();
         }
+        if (form.assign && form.assign !== editData.assign) {
+          updates.assignedAt = Date.now();
+        }
         await db.transact(db.tx.leads[editData.id].update(updates));
 
         if (isWon(form.stage) && editData.stage !== form.stage) {
@@ -445,7 +448,9 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         refetchPage();
       } else {
         const newId = id();
-        await db.transact(db.tx.leads[newId].update({ ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+        const newLeadPayload = { ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() };
+        if (form.assign) newLeadPayload.assignedAt = newLeadPayload.createdAt;
+        await db.transact(db.tx.leads[newId].update(newLeadPayload));
         await db.transact(db.tx.activityLogs[id()].update({
           entityId: newId,
           entityType: 'lead',
@@ -1376,7 +1381,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Filter by:</span>
         <div style={{ display: 'inline-flex', background: 'var(--bg)', borderRadius: 6, padding: 2, border: '1px solid var(--border)' }}>
-          {[['followup', 'Follow-up Date'], ['created', 'Created Date']].map(([mode, label]) => (
+          {[['followup', 'Follow-up Date'], ['created', 'Created Date'], ['assigned', 'Assigned Date']].map(([mode, label]) => (
             <button
               key={mode}
               onClick={() => {
@@ -1418,6 +1423,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               ['custom', `Custom${(customFrom || customTo) ? suffix('custom') : ''}`],
             ];
           }
+          // 'created' and 'assigned' share the same tab set
           return [
             ['all', `All${suffix('total')}`],
             ['today', `Today${suffix('today')}`],
@@ -1434,7 +1440,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       {tab === 'custom' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, marginBottom: 8, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6 }}>
           <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>
-            {dateMode === 'created' ? 'Created between:' : 'Follow-up between:'}
+            {dateMode === 'created' ? 'Created between:' : dateMode === 'assigned' ? 'Assigned between:' : 'Follow-up between:'}
           </span>
           <input
             type="date"
