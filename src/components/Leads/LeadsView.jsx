@@ -206,6 +206,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       myName,
       teamCanSeeAllLeads,
       isOwner: !!perms?.isOwner,
+      teamCanSeeUnassignedLeads: data?.userProfiles?.[0]?.teamCanSeeUnassignedLeads !== false,
       mode: view,
       dateMode,
       tab,

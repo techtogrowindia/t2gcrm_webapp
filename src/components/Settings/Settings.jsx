@@ -817,6 +817,44 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       </div>
                     </div>
                   </div>
+
+                  {/* Second toggle: only relevant when the main "see all leads" toggle is OFF */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 16, marginTop: 12, background: 'var(--bg-soft)', borderRadius: 10, border: '1px solid var(--border)', opacity: profile?.teamCanSeeAllLeads !== false ? 0.5 : 1 }}>
+                    <label style={{ position: 'relative', display: 'inline-block', width: 44, height: 24, flexShrink: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={profile?.teamCanSeeUnassignedLeads !== false}
+                        disabled={profile?.teamCanSeeAllLeads !== false}
+                        onChange={async (e) => {
+                          if (profileId) {
+                            await db.transact(db.tx.userProfiles[profileId].update({ teamCanSeeUnassignedLeads: e.target.checked }));
+                            toast(e.target.checked ? 'Team members can now see unassigned leads' : 'Team members can no longer see unassigned leads', 'success');
+                          }
+                        }}
+                        style={{ opacity: 0, width: 0, height: 0 }}
+                      />
+                      <span style={{
+                        position: 'absolute', cursor: profile?.teamCanSeeAllLeads !== false ? 'not-allowed' : 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                        background: profile?.teamCanSeeUnassignedLeads !== false ? 'var(--accent)' : '#cbd5e1',
+                        borderRadius: 24, transition: '.3s',
+                      }}>
+                        <span style={{
+                          position: 'absolute', height: 18, width: 18, left: profile?.teamCanSeeUnassignedLeads !== false ? 22 : 3, bottom: 3,
+                          background: '#fff', borderRadius: '50%', transition: '.3s',
+                        }} />
+                      </span>
+                    </label>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>Team members can see unassigned leads</div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                        {profile?.teamCanSeeAllLeads !== false
+                          ? 'Not applicable when "see all leads" is enabled'
+                          : (profile?.teamCanSeeUnassignedLeads !== false
+                              ? 'Enabled: Team members see assigned + unassigned leads'
+                              : 'Disabled: Team members see ONLY leads assigned to them')}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div style={{ marginTop: 30, paddingTop: 20, borderTop: '2px dashed var(--border)' }}>

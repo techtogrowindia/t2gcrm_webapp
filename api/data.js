@@ -181,13 +181,17 @@ export default async function handler(req, res) {
         const hasElevatedLeads = Array.isArray(leadsPerms)
           && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll'));
         const teamCanSeeAll = profile.teamCanSeeAllLeads !== false; // default true
+        const teamCanSeeUnassigned = profile.teamCanSeeUnassignedLeads !== false; // default true
 
-        // Restrict team members to their own leads only when:
-        // - they aren't the owner
-        // - they don't have elevated Leads perms (delete/viewAll)
-        // - the teamCanSeeAllLeads toggle is off
+        // Restrict team members based on visibility toggles
         if (!isOwner && !hasElevatedLeads && !teamCanSeeAll) {
-          result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
+          if (teamCanSeeUnassigned) {
+            // Default: assigned-to-me + unassigned
+            result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
+          } else {
+            // Strict: only leads assigned to me
+            result = result.filter(l => l.assign === userEmail || l.assign === myName);
+          }
         }
 
         // Optional explicit filters layered on top (mirrors /api/leads-page).

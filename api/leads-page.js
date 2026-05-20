@@ -20,6 +20,7 @@ export default async function handler(req, res) {
       userEmail = '',
       myName = '',
       teamCanSeeAllLeads = true,
+      teamCanSeeUnassignedLeads = true,
       isOwner = true,
       mode = 'list',
       dateMode = 'followup',
@@ -82,7 +83,13 @@ export default async function handler(req, res) {
       }
     }
     if (!isOwner && !teamCanSeeAllLeads && !hasElevatedLeads) {
-      leads = leads.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
+      if (teamCanSeeUnassignedLeads !== false) {
+        // Default: assigned-to-me + unassigned leads
+        leads = leads.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
+      } else {
+        // Strict: only leads assigned to me
+        leads = leads.filter(l => l.assign === userEmail || l.assign === myName);
+      }
     }
 
     // --- 3. Stage visibility (savedLeadStages + disabledStages) -----------
