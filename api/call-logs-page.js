@@ -38,6 +38,7 @@ export default async function handler(req, res) {
       dateFrom = '',
       dateTo = '',
       groupRepeats = true,
+      groupByPhone = false, // when true, collapse all calls to one row per phone
       summaryDate = '',     // YYYY-MM-DD (client computes today in its tz)
       team = [],            // [{ email, name }] — small, sent by client to avoid DB lookup
     } = req.body || {};
@@ -83,9 +84,62 @@ export default async function handler(req, res) {
       outgoing: filtered.filter(l => l.direction === 'Outgoing').length,
     };
 
-    // ─── Optional rollup grouping (matches CallLogs.jsx `grouped` useMemo) ─
+    // ─── Phone-group mode: one row per phone (takes priority over groupRepeats) ─
     let grouped;
-    if (groupRepeats) {
+    if (groupByPhone) {
+      const byPhone = new Map();
+      for (const l of filtered) {
+        const k = normalize(l.phone) || `__unknown_${l.id}`;
+        const g = byPhone.get(k);
+        if (g) g.calls.push(l);
+        else byPhone.set(k, { calls: [l] });
+      }
+      grouped = [];
+      for (const [, g] of byPhone) {
+        const calls = g.calls.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        const latest = calls[0];
+        const totalDuration = calls.reduce((s, c) => s + (Number(c.duration) || 0), 0);
+        const connectedCount = calls.filter(c => Number(c.duration || 0) > 0).length;
+        const notPickedCount = calls.filter(c => c.direction === 'Outgoing' && !(Number(c.duration) > 0)).length;
+        const missedCount = calls.filter(c => c.direction === 'Missed').length;
+        const incomingCount = calls.filter(c => c.direction === 'Incoming').length;
+        const outgoingCount = calls.filter(c => c.direction === 'Outgoing').length;
+        // Pick the most informative contact name across all calls in the group
+        const contactName = calls.map(c => c.contactName).find(n => n && n.trim()) || '';
+        grouped.push({
+          ...latest,
+          contactName,
+          phoneGroup: true,
+          attemptCount: calls.length,
+          firstAttemptAt: Math.min(...calls.map(c => c.createdAt || 0)),
+          lastAttemptAt: Math.max(...calls.map(c => c.createdAt || 0)),
+          groupedIds: calls.map(c => c.id),
+          // Duration field on the group row reflects the TOTAL talk time
+          duration: totalDuration,
+          breakdown: {
+            outgoing: outgoingCount,
+            incoming: incomingCount,
+            missed: missedCount,
+            connected: connectedCount,
+            notPicked: notPickedCount,
+          },
+          // Embed the full call list so the client can expand inline without
+          // a second fetch. Strip to small fields only.
+          calls: calls.map(c => ({
+            id: c.id,
+            createdAt: c.createdAt || 0,
+            direction: c.direction || '',
+            duration: Number(c.duration) || 0,
+            outcome: c.outcome || '',
+            notes: c.notes || '',
+            staffName: c.staffName || '',
+            staffEmail: c.staffEmail || '',
+            contactName: c.contactName || '',
+          })),
+        });
+      }
+      grouped.sort((a, b) => (b.lastAttemptAt || 0) - (a.lastAttemptAt || 0));
+    } else if (groupRepeats) {
       grouped = [];
       let i = 0;
       while (i < filtered.length) {
