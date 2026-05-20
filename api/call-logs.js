@@ -250,15 +250,25 @@ export default async function handler(req, res) {
         const existingIds = new Set();
         for (const l of existingLogs) existingIds.add(l.id);
 
+        // Server-side retention cap: never accept call logs older than 30
+        // days. A fresh install may report years of phone-history; without
+        // this gate the DB would balloon with old data the user can't even
+        // see (the read path already hides anything older than 30 days).
+        const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+        const retentionCutoff = now - RETENTION_MS;
+
         // Filter batch:
-        // 1. Skip calls already covered by device sync state (fast path)
-        // 2. Compute stable ID; skip if it's already in the DB
-        // 3. Skip duplicates within this batch itself
+        // 1. Reject calls older than the 30-day retention window
+        // 2. Skip calls already covered by device sync state (fast path)
+        // 3. Compute stable ID; skip if it's already in the DB
+        // 4. Skip duplicates within this batch itself
         const seenInBatch = new Set();
         const accepted = [];
         let skipped = 0;
+        let rejectedOld = 0;
         for (const entry of batch) {
           const entryTs = entry.createdAt || now;
+          if (entryTs < retentionCutoff) { rejectedOld++; continue; }
           if (deviceId && entryTs <= deviceLastSyncedAt) { skipped++; continue; }
           const stableId = stableCallLogId({ ...entry, createdAt: entryTs });
           if (existingIds.has(stableId) || seenInBatch.has(stableId)) { skipped++; continue; }
@@ -272,7 +282,7 @@ export default async function handler(req, res) {
             await db.transact(tx.callLogSyncState[syncStateRecord.id].update({ lastSyncAt: now }));
           }
           return res.status(200).json({
-            success: true, created: 0, skipped,
+            success: true, created: 0, skipped, rejectedOld,
             nextSyncFrom: deviceLastSyncedAt,
           });
         }
@@ -336,6 +346,7 @@ export default async function handler(req, res) {
           success: true,
           created: accepted.length,
           skipped,
+          rejectedOld,
           nextSyncFrom: newLastSyncedAt,  // Android stores this, sends only calls after this on next sync
         });
       }
@@ -345,6 +356,14 @@ export default async function handler(req, res) {
       // POST), we skip — InstantDB's per-ID merge semantics also guarantee no
       // duplicate row even if two writers race past this check simultaneously.
       const now = Date.now();
+      // Same 30-day retention cap as the batch path. Single-call inserts from
+      // mobile (e.g. real-time after a call ends) should always be recent, but
+      // we enforce defensively.
+      const RETENTION_MS_SINGLE = 30 * 24 * 60 * 60 * 1000;
+      const incomingTs = Number(singleData.createdAt) || now;
+      if (incomingTs < now - RETENTION_MS_SINGLE) {
+        return res.status(200).json({ success: true, skipped: 1, reason: 'older-than-retention' });
+      }
       const [leads, existingLogs] = await Promise.all([
         getLeadsForOwner(ownerId),
         getCallLogsForOwner(ownerId),
