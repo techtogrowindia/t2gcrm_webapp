@@ -167,31 +167,46 @@ export default async function handler(req, res) {
           result = result.filter(l => !disabledSet.has(l.stage));
         }
 
-        // Resolve caller identity + their role perms from actorId
+        // Resolve caller identity + their role perms from actorId OR userEmail.
+        //
+        // Mobile apps following the old API doc only sent `ownerId` — that
+        // silently leaked every lead in the workspace because the server
+        // treated "no actorId" as "owner". We now also try to resolve the
+        // caller by email so a missing actorId can't escalate to owner unless
+        // the email truly belongs to the workspace owner.
         let isOwner = false;
         let userEmail = params.userEmail || '';
         let myName = params.myName || '';
         let rolePerms = null;
-        if (!actorId || actorId === ownerId) {
-          isOwner = true;
-        } else {
-          const tm = teamMembers.find(t => t.id === actorId);
-          if (tm) {
-            userEmail = userEmail || tm.email || '';
-            myName = myName || tm.name || '';
-            const roleDef = roleDefs.find(r => r.name === tm.role);
-            if (roleDef) {
-              // Modern format: { Leads: ['list','view','create','edit','delete','viewAll'] }
-              // Legacy format: ['Leads', 'Customers'] → grant only list/view per module
-              if (Array.isArray(roleDef.perms)) {
-                rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
-              } else {
-                rolePerms = roleDef.perms || {};
-              }
+        let resolvedTm = null;
+
+        // 1. Try actorId → teamMembers.id lookup
+        if (actorId && actorId !== ownerId) {
+          resolvedTm = teamMembers.find(t => t.id === actorId) || null;
+        }
+
+        // 2. Fall back to userEmail → teamMembers.email lookup
+        if (!resolvedTm && userEmail) {
+          const lookup = userEmail.toLowerCase();
+          resolvedTm = teamMembers.find(t => (t.email || '').toLowerCase() === lookup) || null;
+        }
+
+        if (resolvedTm) {
+          userEmail = resolvedTm.email || userEmail;
+          myName = resolvedTm.name || myName;
+          const roleDef = roleDefs.find(r => r.name === resolvedTm.role);
+          if (roleDef) {
+            if (Array.isArray(roleDef.perms)) {
+              rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
+            } else {
+              rolePerms = roleDef.perms || {};
             }
-          } else if (params.isOwner === true || params.isOwner === 'true') {
-            isOwner = true;
           }
+        } else if (!actorId || actorId === ownerId) {
+          // No team-member match — caller is (or claims to be) the owner.
+          isOwner = true;
+        } else if (params.isOwner === true || params.isOwner === 'true') {
+          isOwner = true;
         }
 
         const leadsPerms = (rolePerms && rolePerms.Leads) || [];
