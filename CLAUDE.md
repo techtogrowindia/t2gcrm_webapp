@@ -55,7 +55,10 @@ npm start               # Run Express server (port 3000)
 
 **Production:**
 - Express server serves `dist/` + API endpoints
-- Designed for Vercel or similar Node.js hosting
+- Hosted on a **Contabo VPS** (Node.js + Express, **not** Vercel/serverless)
+- **Production URL:** https://crm.t2gcrm.in
+- **Dev/staging URL:** https://dev.t2gcrm.in
+- Server logs are on the VPS — there is no Vercel dashboard; SSH to the box (or ask the user for log access) when you need to inspect runtime output
 
 ## Project Structure
 
@@ -979,4 +982,4 @@ npm run dev  # Tail console for "process-automations" logs
 
 ---
 
-**This codebase is production-ready for SaaS deployment on Vercel, AWS Lambda, or similar serverless/Node.js hosting. It demonstrates enterprise patterns: multi-tenancy, real-time sync, role-based access, email automation, and modular feature architecture.**
+**This codebase is deployed on a Contabo VPS (Node.js + Express). Production is https://crm.t2gcrm.in; staging is https://dev.t2gcrm.in. It demonstrates enterprise patterns: multi-tenancy, real-time sync, role-based access, email automation, and modular feature architecture.**
