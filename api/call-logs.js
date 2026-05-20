@@ -5,9 +5,35 @@ import { getCallLogsForOwner, invalidateCallLogsCache } from './_call-logs-cache
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
 
-// Fingerprint a call log for dedup: same number + direction + minute + duration + staff
-// = same physical call. The mobile app sometimes re-sends batches (retry, restart,
-// second device), and without this guard each re-send creates duplicate rows.
+// Time-tolerant duplicate window. Two call logs are duplicates when phone,
+// direction, duration, and staffEmail all match AND their createdAt values are
+// within this window. 10 minutes absorbs sync-time drift across mobile retries
+// (sometimes seconds, sometimes minutes if a batch was re-uploaded) while still
+// letting genuine callbacks with identical duration flow through as separate
+// rows.
+const DUP_WINDOW_MS = 10 * 60 * 1000;
+
+// Stable key for grouping potentially-duplicate calls (everything except time).
+function dupKey(entry) {
+  const cleanPhone = (entry.phone || '').replace(/\D/g, '').slice(-10);
+  const dur = entry.duration ? Number(entry.duration) : 0;
+  return `${cleanPhone}|${entry.direction || 'Incoming'}|${dur}|${entry.staffEmail || ''}`;
+}
+
+// Returns true if `entry` looks like a duplicate of any timestamp in `timesByKey`.
+function isDuplicate(entry, timesByKey) {
+  const k = dupKey(entry);
+  const arr = timesByKey.get(k);
+  if (!arr) return false;
+  const t = entry.createdAt || Date.now();
+  for (const existing of arr) {
+    if (Math.abs(existing - t) <= DUP_WINDOW_MS) return true;
+  }
+  return false;
+}
+
+// Legacy minute-bucket fingerprint kept for any caller that still imports it.
+// Internal dedup now uses the interval check above.
 function fingerprintCall(entry) {
   const cleanPhone = (entry.phone || '').replace(/\D/g, '').slice(-10);
   const minute = Math.floor((entry.createdAt || Date.now()) / 60000);
@@ -161,27 +187,38 @@ export default async function handler(req, res) {
         const syncStateRecord = syncStateResult.callLogSyncState?.[0] || null;
         const deviceLastSyncedAt = syncStateRecord?.lastSyncedAt || 0;
 
-        // Build fingerprint set from last 48h only — scanning 27k+ rows every
-        // sync would grow unbounded; duplicates never arrive more than 48h late.
-        const existingFingerprints = new Set();
-        existingLogs
-          .filter(l => (l.createdAt || 0) >= dedupSince)
-          .forEach(l => existingFingerprints.add(fingerprintCall(l)));
+        // Build a (phone|direction|duration|staff) → [createdAt...] index from the
+        // last 48h of existing logs. Scanning 27k+ rows every sync would grow
+        // unbounded; duplicates never arrive more than 48h late.
+        const timesByKey = new Map();
+        for (const l of existingLogs) {
+          if ((l.createdAt || 0) < dedupSince) continue;
+          const k = dupKey(l);
+          const arr = timesByKey.get(k);
+          if (arr) arr.push(l.createdAt || 0);
+          else timesByKey.set(k, [l.createdAt || 0]);
+        }
 
         // Filter batch:
         // 1. Skip calls already covered by device sync state (createdAt <= deviceLastSyncedAt)
-        // 2. Skip fingerprint duplicates in existing logs (last 48h)
+        // 2. Skip duplicates of existing logs (interval check within 10 min)
         // 3. Skip duplicates within this batch itself
-        const seenInBatch = new Set();
+        const seenInBatch = new Map(); // same shape as timesByKey
         const accepted = [];
         let skipped = 0;
         for (const entry of batch) {
           const entryTs = entry.createdAt || now;
           // Fast path: server already has everything up to deviceLastSyncedAt for this device
           if (deviceId && entryTs <= deviceLastSyncedAt) { skipped++; continue; }
-          const fp = fingerprintCall(entry);
-          if (existingFingerprints.has(fp) || seenInBatch.has(fp)) { skipped++; continue; }
-          seenInBatch.add(fp);
+          const entryForDup = { ...entry, createdAt: entryTs };
+          if (isDuplicate(entryForDup, timesByKey) || isDuplicate(entryForDup, seenInBatch)) {
+            skipped++;
+            continue;
+          }
+          const k = dupKey(entryForDup);
+          const arr = seenInBatch.get(k);
+          if (arr) arr.push(entryTs);
+          else seenInBatch.set(k, [entryTs]);
           accepted.push({ ...entry, _ts: entryTs });
         }
 
@@ -269,11 +306,16 @@ export default async function handler(req, res) {
       const cleanPhone = singleData.phone?.replace(/\D/g, '') || '';
       const matched = (leads || []).find(l => l.phone?.replace(/\D/g, '') === cleanPhone);
 
-      const incomingFp = fingerprintCall(singleData);
-      const isDup = existingLogs
-        .filter(l => (l.createdAt || 0) >= dedupSince)
-        .some(l => fingerprintCall(l) === incomingFp);
-      if (isDup) {
+      const singleTimesByKey = new Map();
+      for (const l of existingLogs) {
+        if ((l.createdAt || 0) < dedupSince) continue;
+        const k = dupKey(l);
+        const arr = singleTimesByKey.get(k);
+        if (arr) arr.push(l.createdAt || 0);
+        else singleTimesByKey.set(k, [l.createdAt || 0]);
+      }
+      const singleEntryForDup = { ...singleData, createdAt: singleData.createdAt || Date.now() };
+      if (isDuplicate(singleEntryForDup, singleTimesByKey)) {
         return res.status(200).json({ success: true, skipped: 1, reason: 'duplicate' });
       }
 
