@@ -412,8 +412,9 @@ export default async function handler(req, res) {
       const { id: targetId, ...updates } = data;
       if (!targetId) return res.status(400).json({ error: 'Record ID is required for updates' });
 
-      // Record when a lead's assignee changes
-      if (module === 'leads' && updates.assign !== undefined) {
+      // Record when a lead's assignee changes. Only stamp when assigning to a
+      // real person — clearing the assignee (assign = '') must not set a date.
+      if (module === 'leads' && updates.assign) {
         updates.assignedAt = Date.now();
       }
 
