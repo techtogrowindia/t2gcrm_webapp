@@ -55,7 +55,15 @@ npm start               # Run Express server (port 3000)
 
 **Production:**
 - Express server serves `dist/` + API endpoints
-- Designed for Vercel or similar Node.js hosting
+- Hosted on a **Contabo VPS** (Node.js + Express, **not** Vercel/serverless)
+- **Production URL:** https://crm.t2gcrm.in
+- **Dev/staging URL:** https://dev.t2gcrm.in
+- Server logs are on the VPS — there is no Vercel dashboard; SSH to the box (or ask the user for log access) when you need to inspect runtime output
+
+**Deploying changes to the VPS:**
+- **API-only change** (`api/*.js`, `server.mjs`): `git pull` + restart Node (`pm2 restart all` or the systemd service). **No `npm run build` needed.**
+- **Frontend change** (`src/**`): `git pull` + **`npm run build`** (rebuilds `dist/`) + restart. UI won't reflect `src/` edits until `dist/` is rebuilt.
+- **Diagnosing prod without log access:** `curl` the live endpoints directly to inspect real responses; a temporary `_debug` field in a JSON response surfaces server-side state when VPS logs aren't reachable — remove it after.
 
 ## Project Structure
 
@@ -782,27 +790,36 @@ Use `modalLeads` in the dropdown and any `leads.find(name match)` on save.
 
 ### Mobile vs Web API split — PERMISSION-DRIVEN MOBILE VISIBILITY
 
-- Web calls `/api/leads-page` and passes `isOwner` / `teamCanSeeAllLeads` / `userEmail` / `myName` explicitly.
-- Mobile calls `GET /api/data?module=leads`. Auto-detects caller from `actorId` and applies visibility based on the role's **permissions**, never the role's **name** (each business invents its own role names — "Boss", "Director", "TL", etc.; hardcoded name matching is brittle).
+- Web calls `/api/leads-page` and passes `isOwner` / `teamCanSeeAllLeads` / `teamCanSeeUnassignedLeads` / `userEmail` / `myName` explicitly.
+- Mobile calls `GET /api/data?module=leads`. **Both endpoints must return an identical lead set for the same user** (hard parity requirement).
 
-How it resolves:
-1. `actorId` → `teamMembers[]` row → `member.role` string
-2. `member.role` → `userProfiles.roles[]` definition → `roleDef.perms.Leads` action array
-3. Visibility tier:
+**Caller resolution on `/api/data?module=leads` (CRITICAL):**
+1. `actorId` → `teamMembers.id` lookup (preferred — what the API docs tell integrators to send).
+2. Fallback: `userEmail` → `teamMembers.email` lookup. Older mobile builds followed the old API doc (only `ownerId`) and never sent `actorId` — that defaulted the caller to **owner** and **leaked all leads**. The email fallback stops a missing/owner-matching `actorId` from escalating to owner.
+3. Only if neither resolves to a team member → treated as **owner** (all leads).
+- **The bug to never reintroduce:** `if (!actorId || actorId === ownerId) isOwner = true` assumed "no actorId means owner". Resolve by email before defaulting to owner.
+- **IDs come from `/api/auth` Login response:** `ownerUserId` (→ `ownerId`) and `teamMemberId` (→ `actorId`, null for owners). Integrators store both at login.
+
+**Visibility tier (after caller resolved → `roleDef.perms.Leads`):**
 
 | Caller | Sees |
 |---|---|
-| Owner (`actorId === ownerId` or absent) | All leads |
-| Team member whose role has `Leads: [..., 'delete']` | All leads |
-| Team member whose role has `Leads: [..., 'viewAll']` | All leads |
-| Any other team-member role | Only leads assigned to them (or unassigned) |
+| Owner | All leads |
+| Team member with `Leads: 'delete'` or `'viewAll'` (elevated) | All leads |
+| Team member, `teamCanSeeAllLeads === true` | All leads |
+| Team member, `teamCanSeeAllLeads === false`, `teamCanSeeUnassignedLeads !== false` | Assigned-to-them **+ unassigned** |
+| Team member, `teamCanSeeAllLeads === false`, `teamCanSeeUnassignedLeads === false` | **Only** assigned-to-them |
 
-- **`delete` is the elevated-trust proxy** because default `Sales` role lacks it, default `Admin` role has it. Backward compatible with existing production roles.
-- **`viewAll`** is accepted for forward compatibility — owners can grant it explicitly when delete authority shouldn't imply full visibility.
-- **Legacy `string[]` perms format** (old roles saved as `perms: ['Leads', 'Customers']`) is converted to `{ Leads: ['list', 'view'], ... }` — they get only their own leads. Re-save with granular perms to elevate.
-- `userProfiles.teamCanSeeAllLeads` is **ignored** here — mobile visibility is strictly permission-derived.
-- Optional `staffFilter` / `srcFilter` / `stgFilter` can narrow further, cannot expand.
-- **Pre-fix gotcha:** raw `/api/data` was returning all leads to every caller. If you add a new module to `/api/data`, decide whether it needs permission-driven filtering too.
+- **Two toggles in `userProfiles`** (Settings → Team Permissions): `teamCanSeeAllLeads` (master) + `teamCanSeeUnassignedLeads` (only relevant when master off). Both default `true` when `undefined` (`field !== false`).
+- **`undefined` default gotcha (cost a debugging session):** a profile that never saved the toggle has `teamCanSeeAllLeads === undefined` → reads as `true` → team sees all leads. When debugging "team member sees all leads", check the actual DB value, not just the UI.
+- **`delete`/`viewAll` is the elevated proxy** (default `Sales`/`Marketer` lack it, `Admin` has it). Legacy `string[]` perms → own leads only; re-save granular to elevate.
+- Optional `staffFilter` / `srcFilter` / `stgFilter` narrow further, cannot expand.
+
+**Lead Visibility Parity (web ↔ mobile ↔ dashboard):** `/api/leads-page`, `/api/data?module=leads`, AND `/api/dashboard-stats` must each apply, BEFORE counts/pagination, in order: (1) source normalization `Retailer→Channel Partners`, (2) stage visibility (`leadStages` + `disabledStages`), (3) team visibility (toggles + elevated role). Real bug: mobile showed 7322 vs web 739 because mobile skipped stage visibility AND defaulted to owner. Update all three together; verify by comparing lead-id sets.
+
+**`assignedAt` field on leads:** records when a lead was assigned to its current owner. Create-with-assignee → `assignedAt = createdAt`; assign/reassign (web save or API PATCH) → `Date.now()`; unassign (`assign === ''`) → not touched. Returned as-is by GET lead API. Filter via `dateMode: 'assigned'` (leads-page) or `assignedFrom`/`assignedTo` (data GET). Leads assigned before the field shipped have no `assignedAt` — needs a one-time backfill for historical filtering.
+
+**If you add a new module to `/api/data`:** decide whether it needs the same caller-resolution + visibility (tasks, callLogs, appointments often do). Raw `where: { userId: ownerId }` is unsafe for any per-user-assigned module.
 
 ### Symptoms of the Scale Bug (for diagnosis)
 
@@ -810,7 +827,7 @@ How it resolves:
 - Page stuck on "Loading..." spinner — subscription handle-receive timeout
 - Date tab counts unchanged when staff filter changes — `staffFilter` not being sent server-side
 - Team Performance metrics show 0 across all date filters — activity logs subscription returning arbitrary rows outside the date window
-- Mobile shows all leads instead of "my" leads — `/api/data?module=leads` filter bypassed
+- Mobile shows all leads instead of "my" leads — usually: (a) `actorId` not sent → caller defaults to owner (mitigated by `userEmail` fallback), (b) `teamCanSeeAllLeads` is `undefined` in DB → reads as `true`, or (c) mobile skipped stage/source filters so its count differs from web. Curl the prod endpoint and compare lead-id sets to `/api/leads-page`.
 
 ## Call Logs Integrity (CRITICAL)
 
@@ -877,4 +894,4 @@ npm run dev  # Tail console for "process-automations" logs
 
 ---
 
-**This codebase is production-ready for SaaS deployment on Vercel, AWS Lambda, or similar serverless/Node.js hosting. It demonstrates enterprise patterns: multi-tenancy, real-time sync, role-based access, email automation, and modular feature architecture.**
+**This codebase is deployed on a Contabo VPS (Node.js + Express). Production is https://crm.t2gcrm.in; staging is https://dev.t2gcrm.in. It demonstrates enterprise patterns: multi-tenancy, real-time sync, role-based access, email automation, and modular feature architecture.**
