@@ -607,7 +607,12 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     const sourceSet = new Set(activeSources);
     const reqSet = new Set(activeRequirements);
 
-    // Must be async for...of (not forEach) to support await for server-side dedup check
+    // PASS 1 — parse + validate + intra-file dedup (all synchronous, no network).
+    // Build a list of clean candidates; the expensive cross-database dedup runs
+    // ONCE as a batch after this loop (not per-row, which froze the browser at
+    // thousands of rows). `candidates[]` keeps the row index + keys for the
+    // batch result mapping.
+    const candidates = []; // { lead, rowIndex, phone, email }
     for (const vals of importData) {
       const lead = {
         userId: ownerId,
@@ -665,7 +670,8 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       const emailKey = lead.email ? String(lead.email).toLowerCase().trim() : '';
       const phoneKey = lead.phone ? String(lead.phone).replace(/\D/g, '') : '';
 
-      // Fast local pre-check (current page + customers already loaded in memory)
+      // Fast local pre-check: current page + customers already in memory, plus
+      // keys already reserved by earlier rows in THIS file (intra-file dedup).
       const dupEmailLocal = emailKey && emailIndexLocal.has(emailKey);
       const dupPhoneLocal = phoneKey && phoneIndexLocal.has(phoneKey);
 
@@ -677,32 +683,47 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         continue;
       }
 
-      // Server-side dedup check — scans ALL leads + customers in the database
-      // This is the only reliable method when leads > current page size
-      if (emailKey || phoneKey) {
-        try {
-          const dupRes = await fetch('/api/lead-check-duplicate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ownerId, phone: lead.phone || '', email: lead.email || '' }),
-          });
-          if (dupRes.ok) {
-            const { duplicate } = await dupRes.json();
-            if (duplicate) {
-              duplicates.push(`Row ${rowIndex}: ${lead.name} (${duplicate.matchedOn === 'phone' ? 'Phone' : 'Email'} already exists as "${duplicate.name}")`);
-              rowIndex++;
-              continue;
-            }
-          }
-        } catch { /* network hiccup — fall through, let the batch attempt the row */ }
-      }
-
-      // Reserve the keys within this import batch so rows within the same file don't duplicate each other
+      // Reserve keys so later rows in the same file dedup against this one
       if (emailKey) emailIndexLocal.set(emailKey, true);
       if (phoneKey) phoneIndexLocal.set(phoneKey, true);
 
-      toAdd.push(lead);
+      candidates.push({ lead, rowIndex, phone: lead.phone || '', email: lead.email || '' });
       rowIndex++;
+    }
+
+    // PASS 2 — single batched cross-database dedup check (one request, one DB
+    // scan) for all candidates that have a phone or email. Rows flagged as
+    // duplicates are moved to `duplicates[]`; the rest go to `toAdd`.
+    const dupByIndex = {};
+    const checkable = candidates.filter(c => c.phone || c.email);
+    if (checkable.length > 0) {
+      try {
+        const dupRes = await fetch('/api/lead-check-duplicate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ownerId,
+            candidates: checkable.map(c => ({ phone: c.phone, email: c.email })),
+          }),
+        });
+        if (dupRes.ok) {
+          const { duplicates: dupMap } = await dupRes.json();
+          // dupMap is keyed by the index within `checkable`
+          Object.entries(dupMap || {}).forEach(([k, v]) => {
+            const cand = checkable[Number(k)];
+            if (cand) dupByIndex[cand.rowIndex] = v;
+          });
+        }
+      } catch { /* network hiccup — fall through, let the insert attempt the rows */ }
+    }
+
+    for (const c of candidates) {
+      const hit = dupByIndex[c.rowIndex];
+      if (hit) {
+        duplicates.push(`Row ${c.rowIndex}: ${c.lead.name} (${hit.matchedOn === 'phone' ? 'Phone' : 'Email'} already exists as "${hit.name}")`);
+      } else {
+        toAdd.push(c.lead);
+      }
     }
 
     if (invalidFields.length > 0 || duplicates.length > 0) {

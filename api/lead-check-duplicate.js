@@ -4,10 +4,17 @@ const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
 
 // POST /api/lead-check-duplicate
-// { ownerId, phone, email, excludeLeadId?, excludeCustomerId? }
+// Single mode:  { ownerId, phone, email, excludeLeadId?, excludeCustomerId? }
+//   → { duplicate: {...} | null }
+// Batch mode:   { ownerId, candidates: [{ phone, email }, ...] }
+//   → { duplicates: { "<index>": { matchedOn, name } } }  (only duplicate rows included)
+//
+// Batch mode exists for bulk CSV import: checking N rows one-at-a-time meant N
+// sequential requests AND N full-DB scans (catastrophic at thousands of rows —
+// froze the browser). Batch mode queries the DB ONCE, builds phone/email index
+// maps, and resolves every candidate in memory.
+//
 // Checks leads + customers for matching phone or email (case-insensitive).
-// Used by the Create / Edit Lead flow which can no longer scan the full
-// in-memory list (table is server-paginated).
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -20,9 +27,37 @@ export default async function handler(req, res) {
       email = '',
       excludeLeadId = null,
       excludeCustomerId = null,
+      candidates = null, // batch mode when this is an array
     } = req.body || {};
 
     if (!ownerId) return res.status(400).json({ error: 'ownerId required' });
+
+    // ─── Batch mode ─────────────────────────────────────────────────────
+    if (Array.isArray(candidates)) {
+      const result = await db.query({
+        leads: { $: { where: { userId: ownerId } } },
+        customers: { $: { where: { userId: ownerId } } },
+      });
+      const phoneIndex = new Map(); // last10digits → name
+      const emailIndex = new Map(); // lowercased email → name
+      for (const r of [...(result.leads || []), ...(result.customers || [])]) {
+        const p = String(r.phone || '').replace(/\D/g, '').slice(-10);
+        const e = String(r.email || '').trim().toLowerCase();
+        if (p && !phoneIndex.has(p)) phoneIndex.set(p, r.name || '');
+        if (e && !emailIndex.has(e)) emailIndex.set(e, r.name || '');
+      }
+      const duplicates = {};
+      candidates.forEach((c, i) => {
+        const p = String(c.phone || '').replace(/\D/g, '').slice(-10);
+        const e = String(c.email || '').trim().toLowerCase();
+        if (p && phoneIndex.has(p)) {
+          duplicates[i] = { matchedOn: 'phone', name: phoneIndex.get(p) };
+        } else if (e && emailIndex.has(e)) {
+          duplicates[i] = { matchedOn: 'email', name: emailIndex.get(e) };
+        }
+      });
+      return res.status(200).json({ duplicates });
+    }
 
     const cleanPhone = String(phone || '').trim().toLowerCase();
     const cleanEmail = String(email || '').trim().toLowerCase();
