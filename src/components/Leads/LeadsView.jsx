@@ -59,6 +59,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [importData, setImportData] = useState([]); // Raw rows from CSV
   const [importSample, setImportSample] = useState(null); // First data row for preview
   const [importing, setImporting] = useState(false); // true while performImport is validating/inserting
+  const [importProgress, setImportProgress] = useState({ phase: '', current: 0, total: 0 }); // live import progress
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const dragLeadId = useRef(null);
@@ -585,6 +586,9 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     if (!importMapping.name.value && importMapping.name.type === 'column') return toast('Please map the Name field', 'error');
 
     setImporting(true);
+    setImportProgress({ phase: 'validating', current: 0, total: importData.length });
+    // Yield a frame so the progress panel paints before the (synchronous) parse loop blocks the thread
+    await new Promise(r => setTimeout(r, 30));
     const toAdd = [];
     const duplicates = [];
     const invalidFields = [];
@@ -700,6 +704,8 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     const dupByIndex = {};
     const checkable = candidates.filter(c => c.phone || c.email);
     if (checkable.length > 0) {
+      setImportProgress({ phase: 'checking', current: 0, total: checkable.length });
+      await new Promise(r => setTimeout(r, 30));
       try {
         const dupRes = await fetch('/api/lead-check-duplicate', {
           method: 'POST',
@@ -771,9 +777,9 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       }
     }
 
-    // Close modal immediately so the user can keep using the app while the import runs
-    setImportMappingModal(false);
-    toast(`Importing ${toAdd.length} leads… this may take a moment.`, 'info');
+    // Keep the modal open and show a live progress bar while inserting, so the
+    // user can see exactly how far the import has got.
+    setImportProgress({ phase: 'importing', current: 0, total: toAdd.length });
 
     // Bigger batches + parallel chunks — at 9k leads, serial batches of 50 meant 180 round-trips
     const BATCH_SIZE = 200;     // rows per transaction
@@ -784,6 +790,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     }
     let ok = 0;
     let failed = 0;
+    let processed = 0;
     for (let i = 0; i < batches.length; i += PARALLEL) {
       const group = batches.slice(i, i + PARALLEL);
       const results = await Promise.allSettled(
@@ -793,7 +800,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         if (r.status === 'fulfilled') ok += group[idx].length;
         else failed += group[idx].length;
       });
+      processed += group.reduce((s, b) => s + b.length, 0);
+      setImportProgress({ phase: 'importing', current: processed, total: toAdd.length });
     }
+    // Done — show the completion state briefly so the user sees it, then close
+    setImportProgress({ phase: 'done', current: ok, total: toAdd.length });
+    await new Promise(r => setTimeout(r, 900));
+    setImportMappingModal(false);
     // Single summary activity log for the entire import
     // (one row per bulk import instead of one-per-lead — saves thousands of rows at CSV scale)
     if (ok > 0) {
@@ -2030,10 +2043,45 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       {/* BULK IMPORT MAPPING MODAL */}
       {importMappingModal && (
         <div className="mo open">
-          <div className="mo-box" style={{ width: 680 }}>
+          <div className="mo-box" style={{ width: 680, position: 'relative' }}>
+            {/* Live progress overlay — covers the mapping UI while the import runs */}
+            {importing && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 5, background: 'rgba(255,255,255,0.97)',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 12, padding: 30, textAlign: 'center',
+              }}>
+                <div style={{
+                  width: 48, height: 48, border: '4px solid var(--bg-soft)', borderTopColor: 'var(--accent)',
+                  borderRadius: '50%', animation: 'spin 0.8s linear infinite', marginBottom: 18,
+                }} />
+                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                  {importProgress.phase === 'validating' && 'Validating rows…'}
+                  {importProgress.phase === 'checking' && 'Checking for duplicates…'}
+                  {importProgress.phase === 'importing' && `Importing ${importProgress.current.toLocaleString()} of ${importProgress.total.toLocaleString()} leads…`}
+                  {importProgress.phase === 'done' && '✓ Import complete'}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>
+                  {importProgress.phase === 'validating' && `Checking ${importProgress.total.toLocaleString()} rows against your business settings`}
+                  {importProgress.phase === 'checking' && `Scanning the database for ${importProgress.total.toLocaleString()} possible duplicates`}
+                  {importProgress.phase === 'importing' && 'Please keep this window open until it finishes'}
+                  {importProgress.phase === 'done' && `${importProgress.current.toLocaleString()} leads added`}
+                </div>
+                {/* Progress bar — determinate during the importing phase */}
+                <div style={{ width: '70%', maxWidth: 360, height: 8, background: 'var(--bg-soft)', borderRadius: 99, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', borderRadius: 99, background: 'var(--accent)', transition: 'width 0.3s ease',
+                    width: importProgress.phase === 'importing' && importProgress.total > 0
+                      ? `${Math.round((importProgress.current / importProgress.total) * 100)}%`
+                      : (importProgress.phase === 'done' ? '100%' : '40%'),
+                  }} />
+                </div>
+              </div>
+            )}
             <div className="mo-head">
               <h3>Bulk Import Column Mapping</h3>
-              <button className="btn-icon" onClick={() => setImportMappingModal(false)}>✕</button>
+              <button className="btn-icon" onClick={() => setImportMappingModal(false)} disabled={importing}>✕</button>
             </div>
             <div className="mo-body" style={{ maxHeight: '70vh', overflowY: 'auto', padding: '0 25px' }}>
               <div style={{ padding: '15px 0', borderBottom: '1px solid var(--border)', display: 'flex', gap: 15, alignItems: 'center' }}>
