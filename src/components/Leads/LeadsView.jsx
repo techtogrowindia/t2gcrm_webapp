@@ -58,6 +58,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [importHeaders, setImportHeaders] = useState([]);
   const [importData, setImportData] = useState([]); // Raw rows from CSV
   const [importSample, setImportSample] = useState(null); // First data row for preview
+  const [importing, setImporting] = useState(false); // true while performImport is validating/inserting
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const dragLeadId = useRef(null);
@@ -580,8 +581,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   };
 
   const performImport = async () => {
+    if (importing) return; // guard against double-clicks
     if (!importMapping.name.value && importMapping.name.type === 'column') return toast('Please map the Name field', 'error');
-    
+
+    setImporting(true);
     const toAdd = [];
     const duplicates = [];
     const invalidFields = [];
@@ -736,11 +739,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       }
       msg += `Do you want to skip these and import the remaining ${toAdd.length} leads?`;
       if (!window.confirm(msg)) {
+        setImporting(false);
         return; // User cancelled
       }
     }
 
     if (toAdd.length === 0) {
+      setImporting(false);
       setImportMappingModal(false);
       return toast(`No new leads imported.`, 'warning');
     }
@@ -752,11 +757,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         const currentTotal = pageData?.planTotal ?? pageData?.counts?.total ?? 0;
         const remaining = maxLeads - currentTotal;
         if (remaining <= 0) {
+          setImporting(false);
           return toast(`Lead limit reached (${maxLeads.toLocaleString()} max on your plan). Upgrade to import more leads.`, 'error');
         }
         if (toAdd.length > remaining) {
           const skipped = toAdd.length - remaining;
           if (!window.confirm(`Your plan allows ${maxLeads.toLocaleString()} leads. You have ${currentTotal.toLocaleString()} and are trying to import ${toAdd.length.toLocaleString()}.\n\nOnly ${remaining.toLocaleString()} slot${remaining === 1 ? '' : 's'} remaining — ${skipped.toLocaleString()} lead${skipped === 1 ? '' : 's'} will be skipped.\n\nImport first ${remaining.toLocaleString()} leads?`)) {
+            setImporting(false);
             return;
           }
           toAdd.splice(remaining); // trim to fit within limit
@@ -812,6 +819,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     if (failed === 0) toast(`Imported ${ok} leads.`, 'success');
     else if (ok > 0) toast(`Imported ${ok} leads. ${failed} failed — please retry.`, 'warning');
     else toast(`Import failed. No leads were saved.`, 'error');
+    setImporting(false);
     refetchPage();
   };
 
@@ -2112,8 +2120,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               })}
             </div>
             <div className="mo-foot">
-              <button className="btn btn-secondary btn-sm" onClick={() => setImportMappingModal(false)}>Cancel</button>
-              <button className="btn btn-primary btn-sm" onClick={performImport}>Complete Import</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setImportMappingModal(false)} disabled={importing}>Cancel</button>
+              <button className="btn btn-primary btn-sm" onClick={performImport} disabled={importing} style={importing ? { opacity: 0.7, cursor: 'wait' } : undefined}>
+                {importing ? '⏳ Checking & importing…' : 'Complete Import'}
+              </button>
             </div>
           </div>
         </div>
