@@ -747,9 +747,9 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                     {activeCols.includes('Date & Time') && (
                       <td style={{ padding: '10px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>
                         {isPhoneGroup
-                          ? <span title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>{fmtDT(log.firstAttemptAt)} → {fmtDT(log.lastAttemptAt)}</span>
+                          ? <span title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>{fmtDT(log.lastAttemptAt)}</span>
                           : log.attemptCount > 1
-                            ? <span title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>Last: {fmtDT(log.lastAttemptAt)}</span>
+                            ? <span title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>{fmtDT(log.lastAttemptAt)}</span>
                             : fmtDT(log.createdAt)}
                       </td>
                     )}
