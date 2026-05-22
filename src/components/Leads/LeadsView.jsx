@@ -60,6 +60,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [importSample, setImportSample] = useState(null); // First data row for preview
   const [importing, setImporting] = useState(false); // true while performImport is validating/inserting
   const [importProgress, setImportProgress] = useState({ phase: '', current: 0, total: 0 }); // live import progress
+  const [importSummary, setImportSummary] = useState(null); // { invalidFields, duplicates, toAdd } — shown as in-app confirm before commit
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const dragLeadId = useRef(null);
@@ -575,6 +576,9 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         }
       });
       setImportMapping(newMapping);
+      setImportSummary(null);
+      setImporting(false);
+      setImportProgress({ phase: '', current: 0, total: 0 });
       setImportMappingModal(true);
     };
     reader.readAsText(file);
@@ -735,19 +739,14 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       }
     }
 
+    // If anything was skipped, pause and show a single clean in-app summary
+    // (counts + a few examples) instead of a noisy native popup listing every
+    // row. The user reviews once and clicks "Import N" to commit.
     if (invalidFields.length > 0 || duplicates.length > 0) {
-      let msg = '';
-      if (invalidFields.length > 0) {
-        msg += `Found ${invalidFields.length} entries with invalid fields:\n${invalidFields.slice(0, 10).join('\n')}${invalidFields.length > 10 ? '\n...and more.' : ''}\n\n`;
-      }
-      if (duplicates.length > 0) {
-        msg += `Found ${duplicates.length} duplicate entries:\n${duplicates.slice(0, 10).join('\n')}${duplicates.length > 10 ? '\n...and more.' : ''}\n\n`;
-      }
-      msg += `Do you want to skip these and import the remaining ${toAdd.length} leads?`;
-      if (!window.confirm(msg)) {
-        setImporting(false);
-        return; // User cancelled
-      }
+      setImporting(false);
+      setImportProgress({ phase: '', current: 0, total: 0 });
+      setImportSummary({ invalidFields, duplicates, toAdd });
+      return;
     }
 
     if (toAdd.length === 0) {
@@ -755,6 +754,15 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       setImportMappingModal(false);
       return toast(`No new leads imported.`, 'warning');
     }
+
+    await commitImport(toAdd, duplicates.length);
+  };
+
+  // Inserts the validated rows. Separated from performImport so the in-app
+  // summary panel can call it after the user confirms skipping invalid/dupes.
+  const commitImport = async (toAdd, duplicateCount = 0) => {
+    setImportSummary(null);
+    setImporting(true);
 
     // Plan limit check — enforce maxLeads before committing any records
     if (planEnforcement) {
@@ -816,10 +824,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
           entityId: 'bulk',
           entityName: `Bulk import: ${ok} leads`,
           action: 'bulk-import',
-          text: `Imported ${ok} leads from CSV${failed > 0 ? ` (${failed} failed)` : ''}${duplicates.length > 0 ? ` (${duplicates.length} duplicates skipped)` : ''}`,
+          text: `Imported ${ok} leads from CSV${failed > 0 ? ` (${failed} failed)` : ''}${duplicateCount > 0 ? ` (${duplicateCount} duplicates skipped)` : ''}`,
           count: ok,
           failedCount: failed,
-          duplicateCount: duplicates.length,
+          duplicateCount: duplicateCount,
           userId: ownerId,
           actorId: user.id,
           userName: user.email,
@@ -2044,6 +2052,50 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       {importMappingModal && (
         <div className="mo open">
           <div className="mo-box" style={{ width: 680, position: 'relative' }}>
+            {/* In-app review summary — replaces the noisy native confirm popup */}
+            {importSummary && !importing && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 6, background: '#fff',
+                display: 'flex', flexDirection: 'column', borderRadius: 12, padding: 24,
+              }}>
+                <h3 style={{ margin: '0 0 4px' }}>Review before import</h3>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>Some rows can't be imported. Review and continue with the rest.</div>
+
+                <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+                  <div style={{ flex: 1, background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#065f46' }}>{importSummary.toAdd.length.toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#047857', fontWeight: 600 }}>Will be imported</div>
+                  </div>
+                  <div style={{ flex: 1, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#92400e' }}>{importSummary.duplicates.length.toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600 }}>Duplicates (skipped)</div>
+                  </div>
+                  <div style={{ flex: 1, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#991b1b' }}>{importSummary.invalidFields.length.toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#b91c1c', fontWeight: 600 }}>Invalid (skipped)</div>
+                  </div>
+                </div>
+
+                <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', fontSize: 11, color: 'var(--muted)', minHeight: 0 }}>
+                  {importSummary.invalidFields.slice(0, 5).map((s, i) => <div key={`inv${i}`} style={{ marginBottom: 4 }}>⚠️ {s}</div>)}
+                  {importSummary.duplicates.slice(0, 5).map((s, i) => <div key={`dup${i}`} style={{ marginBottom: 4 }}>♻️ {s}</div>)}
+                  {(importSummary.invalidFields.length + importSummary.duplicates.length) > 10 && (
+                    <div style={{ fontStyle: 'italic', marginTop: 4 }}>…and {(importSummary.invalidFields.length + importSummary.duplicates.length - 10).toLocaleString()} more</div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setImportSummary(null); setImportMappingModal(false); }}>Cancel import</button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={importSummary.toAdd.length === 0}
+                    onClick={() => commitImport(importSummary.toAdd, importSummary.duplicates.length)}
+                  >
+                    {importSummary.toAdd.length > 0 ? `Skip & import ${importSummary.toAdd.length.toLocaleString()} leads` : 'Nothing to import'}
+                  </button>
+                </div>
+              </div>
+            )}
             {/* Live progress overlay — covers the mapping UI while the import runs */}
             {importing && (
               <div style={{
