@@ -41,6 +41,21 @@ function stableCallLogId(entry) {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
+// Human-friendly sync summary for the mobile app to display. A sync where
+// everything was skipped (already in the DB) is a SUCCESS, not a failure —
+// the message makes that explicit so the app doesn't render it as an error.
+function buildSyncMessage(created, skipped, rejectedOld) {
+  const parts = [];
+  if (created > 0) parts.push(`${created} new call${created === 1 ? '' : 's'} synced`);
+  if (skipped > 0) parts.push(`${skipped} already up to date`);
+  if (rejectedOld > 0) parts.push(`${rejectedOld} older than 30 days skipped`);
+  if (parts.length === 0) return 'Nothing to sync.';
+  if (created === 0 && skipped > 0 && rejectedOld === 0) {
+    return `All ${skipped} call${skipped === 1 ? '' : 's'} already synced — nothing new to upload.`;
+  }
+  return parts.join(', ') + '.';
+}
+
 /**
  * Dedicated Call Logs API for Android App integration.
  * Supports batch sync of call logs from mobile devices.
@@ -284,6 +299,7 @@ export default async function handler(req, res) {
           return res.status(200).json({
             success: true, created: 0, skipped, rejectedOld,
             nextSyncFrom: deviceLastSyncedAt,
+            message: buildSyncMessage(0, skipped, rejectedOld),
           });
         }
 
@@ -348,6 +364,7 @@ export default async function handler(req, res) {
           skipped,
           rejectedOld,
           nextSyncFrom: newLastSyncedAt,  // Android stores this, sends only calls after this on next sync
+          message: buildSyncMessage(accepted.length, skipped, rejectedOld),
         });
       }
 
@@ -362,7 +379,7 @@ export default async function handler(req, res) {
       const RETENTION_MS_SINGLE = 30 * 24 * 60 * 60 * 1000;
       const incomingTs = Number(singleData.createdAt) || now;
       if (incomingTs < now - RETENTION_MS_SINGLE) {
-        return res.status(200).json({ success: true, skipped: 1, reason: 'older-than-retention' });
+        return res.status(200).json({ success: true, skipped: 1, reason: 'older-than-retention', message: 'Call older than 30 days — skipped.' });
       }
       const [leads, existingLogs] = await Promise.all([
         getLeadsForOwner(ownerId),
@@ -373,7 +390,7 @@ export default async function handler(req, res) {
 
       const singleStableId = stableCallLogId({ ...singleData, createdAt: singleData.createdAt || now });
       if (existingLogs.some(l => l.id === singleStableId)) {
-        return res.status(200).json({ success: true, skipped: 1, reason: 'duplicate' });
+        return res.status(200).json({ success: true, skipped: 1, reason: 'duplicate', message: 'Call already synced.' });
       }
 
       const newId = singleStableId;
@@ -400,7 +417,7 @@ export default async function handler(req, res) {
       // Invalidate cache so next read reflects the new row
       invalidateCallLogsCache(ownerId);
 
-      return res.status(201).json({ success: true, id: newId, lastSyncedAt: now });
+      return res.status(201).json({ success: true, id: newId, lastSyncedAt: now, created: 1, message: '1 new call synced.' });
     }
 
     /* ── PATCH: Update ── */
