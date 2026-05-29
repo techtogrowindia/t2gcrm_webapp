@@ -135,8 +135,15 @@ export default async function handler(req, res) {
     const injected = { ownerId, actorId };
     if (isOwner) injected.isOwner = true;
 
-    req.query = { ...stripIdentity(req.query), ...injected };
-    req.body = { ...stripIdentity(req.body), ...injected };
+    // NOTE: on Express, `req.query` is a getter-only property — assigning to it
+    // throws ("Cannot set property query ... which has only a getter"). Use
+    // Object.defineProperty to replace it with a plain value. We override BOTH
+    // query and body so data.js (which merges them, body-wins) only ever sees
+    // the trusted identity, never client-supplied identity fields.
+    const cleanQuery = { ...stripIdentity(req.query), ...injected };
+    const cleanBody = { ...stripIdentity(req.body), ...injected };
+    Object.defineProperty(req, 'query', { value: cleanQuery, writable: true, configurable: true });
+    Object.defineProperty(req, 'body', { value: cleanBody, writable: true, configurable: true });
 
     // 6. Delegate to the existing data.js logic (single source of truth).
     return dataHandler(req, res);
