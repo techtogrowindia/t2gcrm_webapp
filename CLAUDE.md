@@ -814,6 +814,30 @@ Shared caches:
 
 > **Verification gotcha:** `@instantdb/admin` (v0.22.x) exposes only `db.auth.createToken` / `signOut` — there is no `verifyToken`. Verify a refresh token by impersonating with `db.asUser({ token })` and reading `$users`. `createToken({ email })` is an ADMIN mint (no password) — never use it to "verify" a client token; only use it to issue tokens at login.
 
+> **Express getter gotcha:** on Express, `req.query` is a **getter-only** property — `req.query = {...}` throws `Cannot set property query ... which has only a getter`. `secure-data.js` injects the trusted identity with `Object.defineProperty(req, 'query', { value, writable: true, configurable: true })` (and the same for `req.body`). Don't revert to direct assignment. (Caught only in production — local plain-object req mocks don't have the getter.)
+
+#### Usage (how clients call it)
+
+**The token goes in the `Authorization` HEADER, never in the URL** (tokens in URLs leak into logs/history/proxies). The URL carries only `module` + filters.
+
+1. **Login** → `POST /api/auth` with `{ action:'login', email, password }` → response has `token` (+ `ownerUserId`, `teamMemberId`). Store the `token`.
+2. **Every call:**
+   ```
+   GET https://crm.t2gcrm.in/api/secure-data?module=leads
+   Header:  Authorization: Bearer <token>
+   ```
+   - **No `ownerId`/`actorId` in the URL** — identity is the token. To get a team member's view, log in AS that member and use THEIR token.
+   - Missing/invalid header → `401`.
+
+**Leads filter params** (same as `/api/data`, all optional, combinable with AND logic):
+- `srcFilter=<source>` — exact source (after Retailer→Channel Partners normalization)
+- `stgFilter=<stage>` — exact stage
+- `staffFilter=unassigned` | `my` | `<exact assign name>` — `my` resolves to the token's user
+- `assignedFrom=YYYY-MM-DD` / `assignedTo=YYYY-MM-DD` — `assignedAt` range
+- Response: `{ count, counts:{all,today,tomorrow}, data:[...], _debug:{isOwner,ownerId,actorId,...} }`. Each lead carries `createdAt`, `assignedAt`, `followup`.
+
+> `staffFilter=my` can't show fewer leads than the user's visibility allows. In a workspace with `teamCanSeeAllLeads=true` or an elevated (delete/viewAll) role, a member already sees ALL leads, so `staffFilter=my` still returns the full set. It only narrows to own-leads when the member is genuinely restricted.
+
 ### Shared Caches
 
 **File:** `api/_leads-cache.js` (leads)

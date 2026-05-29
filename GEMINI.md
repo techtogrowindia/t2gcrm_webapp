@@ -760,6 +760,24 @@ Shared caches:
 
 > **Verification gotcha:** `@instantdb/admin` v0.22.x exposes only `createToken`/`signOut` — no `verifyToken`. Verify a token via `db.asUser({ token })` + read `$users`. `createToken({ email })` is an admin mint (no password) — only for issuing tokens at login, never for verifying client tokens.
 
+> **Express getter gotcha:** `req.query` is getter-only on Express — `req.query = {...}` throws. `secure-data.js` injects trusted identity via `Object.defineProperty(req,'query',{value,writable:true,configurable:true})` (same for `req.body`). Only reproduces in production, not with plain-object req mocks.
+
+#### Usage (how clients call it)
+
+**Token goes in the `Authorization` HEADER, never in the URL** (URLs leak into logs/history). URL carries only `module` + filters.
+
+1. `POST /api/auth` `{ action:'login', email, password }` → response `token` (+ `ownerUserId`, `teamMemberId`). Store `token`.
+2. Every call:
+   ```
+   GET https://crm.t2gcrm.in/api/secure-data?module=leads
+   Header: Authorization: Bearer <token>
+   ```
+   No `ownerId`/`actorId` in URL — identity = token. For a team member's view, log in AS them and use THEIR token. Missing/invalid → `401`.
+
+**Leads filters** (optional, combinable, same as `/api/data`): `srcFilter`, `stgFilter`, `staffFilter` (`unassigned`|`my`|`<name>`), `assignedFrom`/`assignedTo` (YYYY-MM-DD). Response: `{ count, counts:{all,today,tomorrow}, data, _debug }`; leads carry `createdAt`/`assignedAt`/`followup`.
+
+> `staffFilter=my` cannot show fewer than the user's visibility allows — in a `teamCanSeeAllLeads=true` or elevated-role workspace it still returns all leads; it only narrows to own-leads for a genuinely restricted member.
+
 ### Components Already Migrated
 
 | Component | Pattern |
