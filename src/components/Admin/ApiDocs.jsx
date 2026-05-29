@@ -21,6 +21,47 @@ const API_LIST = [
     ]
   },
   {
+    group: '🔐 Secure Data API (Token Auth) — RECOMMENDED',
+    path: '/api/secure-data',
+    method: 'ALL',
+    desc: 'Token-authenticated replacement for /api/data. Send Authorization: Bearer <token> in the HEADER (never in the URL). Identity (workspace + caller + role) is derived server-side from the token — you do NOT pass ownerId / actorId / isOwner. Same query shape, filters and responses as /api/data, so it is a drop-in secure upgrade.',
+    actions: [
+      {
+        name: 'List Leads (Secure GET)', method: 'GET', query: 'module=leads',
+        notes: 'AUTH (required): send the InstantDB token from the /api/auth Login response as an HTTP header — Authorization: Bearer <token>. The token is NEVER placed in the URL or query string.\n\nIDENTITY IS DERIVED FROM THE TOKEN — do NOT send ownerId, actorId, isOwner, userEmail, myName or teamMemberId. If you send them they are stripped and ignored (anti-spoofing). The server resolves your email → workspace + role automatically:\n  • Owner token → all leads in the workspace.\n  • Team-member token → only the leads that member may see (Team-Permissions visibility — assigned-only / +unassigned / all).\n\nWORKSPACE SELECTION: if your email belongs to exactly ONE workspace it is auto-selected. If it belongs to multiple, pass ?ownerId=<workspaceId> as a HINT — it is honoured only if you actually belong to that workspace (else 403). Omitting it when multiple exist returns 400 with the list.\n\nOPTIONAL FILTERS (same as /api/data, appended to the query string):\n  • srcFilter=<source>        e.g. srcFilter=Youtube\n  • stgFilter=<stage>         e.g. stgFilter=Warm\n  • staffFilter=<value>       unassigned | my | <staff name>  (cannot widen beyond your allowed set)\n  • assignedFrom=<ms>&assignedTo=<ms>   assigned-date range (epoch millis)\nExample: GET /api/secure-data?module=leads&srcFilter=Youtube&stgFilter=Warm',
+        resp: { success: true, data: [{ id: '123', name: 'John Smith', stage: 'New', source: 'Website', createdAt: 1711234567890, assignedAt: 1711240000000, followupDate: 1711500000000, assign: 'staff@company.com' }], count: 25, followupCounts: { today: 3, overdue: 2, upcoming: 7 } },
+        errors: [
+          { status: 401, error: 'Missing Authorization bearer token' },
+          { status: 401, error: 'Invalid or expired token' },
+          { status: 403, error: 'This account has no workspace access' },
+          { status: 403, error: 'You do not have access to the requested workspace' },
+          { status: 400, error: 'Multiple workspaces available — specify ownerId' }
+        ]
+      },
+      {
+        name: 'Create Lead (Secure POST)', method: 'POST',
+        body: { module: 'leads', name: 'John Smith', email: 'john@example.com', phone: '9876543210', source: 'Website', stage: 'New', logText: 'Lead captured via app' },
+        notes: 'Send Authorization: Bearer <token> in the header. Do NOT include ownerId / actorId in the body — they are injected server-side from the verified token. All other module endpoints (customers, invoices, tasks, etc.) work the same way: pass module=<key> + the record fields, with the token in the header.',
+        resp: { success: true, id: '12345...', message: 'Record created successfully' },
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Invalid or missing module' }]
+      },
+      {
+        name: 'Update Lead (Secure PATCH)', method: 'PATCH',
+        body: { module: 'leads', id: 'LEAD_ID', stage: 'Contacted', logText: 'Called client' },
+        notes: 'Authorization: Bearer <token> header required. ownerId/actorId are derived from the token — only send the record id + the fields to change.',
+        resp: { success: true, message: 'Record updated successfully' },
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Record ID is required for updates' }]
+      },
+      {
+        name: 'Delete Lead (Secure DELETE)', method: 'DELETE',
+        body: { module: 'leads', id: 'LEAD_ID' },
+        notes: 'Authorization: Bearer <token> header required. The workspace is resolved from the token — a caller can only delete records inside a workspace they belong to.',
+        resp: { success: true, message: 'Record deleted successfully' },
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Record ID is required for deletion' }]
+      }
+    ]
+  },
+  {
     group: 'Admin Management',
     path: '/api/auth',
     method: 'POST',
@@ -409,13 +450,14 @@ export default function ApiDocs({ ownerId }) {
             <div>
               <h4 style={{ fontSize: 13, textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 8 }}>2. Authentication Workflow</h4>
               <p style={{ fontSize: 13, lineHeight: '1.6', color: 'var(--text-soft)' }}>
-                Login returns a <strong>token</strong> (for SDK) and an <strong>ownerUserId</strong> (Workspace Identifier). 
-                Save these locally.
+                Login (<code>/api/auth</code>) returns a <strong>token</strong>, an <strong>ownerUserId</strong> (Workspace ID) and a <strong>teamMemberId</strong>. Save these locally.
               </p>
-              <ul style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, color: 'var(--text-soft)' }}>
-                <li>Every data request <strong>MUST</strong> include <code>ownerId</code> (set this to <code>ownerUserId</code> from login).</li>
-                <li><code>actorId</code> should be the logged-in user's own ID.</li>
-              </ul>
+              <div style={{ fontSize: 12, marginTop: 10, padding: '8px 12px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, color: '#065f46' }}>
+                <strong>✅ Recommended — Secure API (<code>/api/secure-data</code>):</strong> send <code>Authorization: Bearer &lt;token&gt;</code> as an HTTP <strong>header</strong>. Identity is derived from the token — do <strong>not</strong> send <code>ownerId</code> / <code>actorId</code>. Spoofed identity fields are stripped server-side.
+              </div>
+              <div style={{ fontSize: 12, marginTop: 8, padding: '8px 12px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, color: '#9a3412' }}>
+                <strong>⚠️ Legacy — <code>/api/data</code> (being phased out):</strong> no auth; every request must include <code>ownerId</code> (= <code>ownerUserId</code>) and <code>actorId</code> (= <code>teamMemberId</code>, or <code>ownerUserId</code> for owners). Migrate new apps to the secure endpoint above.
+              </div>
             </div>
 
             <div>
