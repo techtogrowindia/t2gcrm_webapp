@@ -7,6 +7,7 @@ import cors from 'cors';
 // Import Vercel handlers
 import authHandler from './api/auth.js';
 import dataHandler from './api/data.js';
+import secureDataHandler from './api/secure-data.js';
 import financeHandler from './api/finance.js';
 import notifyHandler from './api/notify.js';
 import callLogsHandler from './api/call-logs.js';
@@ -63,6 +64,7 @@ app.all('/api/data/:module', (req, res) => {
 // Standard APIs
 app.all('/api/auth', wrap(authHandler));
 app.all('/api/data', wrap(dataHandler));
+app.all('/api/secure-data', wrap(secureDataHandler));
 app.all('/api/call-logs', wrap(callLogsHandler));
 app.all('/api/call-logs-page', wrap(callLogsPageHandler));
 app.all('/api/team-activity', wrap(teamActivityHandler));

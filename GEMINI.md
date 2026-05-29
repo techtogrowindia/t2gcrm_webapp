@@ -736,7 +736,8 @@ const res = await fetch('/api/leads-page', { method: 'POST', body: JSON.stringif
 | `POST /api/call-logs-page` | Paginated call logs + rollup grouping + per-member team stats | Web CallLogs |
 | `POST /api/team-stats` | Pre-aggregated per-member metrics | TeamReports |
 | `POST /api/team-activity` | Raw activity logs (member drilldown only) | TeamReports (lazy) |
-| `GET /api/data?module=leads` | **Mobile-only.** Permission-driven filter by actorId | Mobile app |
+| `GET /api/data?module=leads` | **Mobile-only (LEGACY, INSECURE).** Permission-driven filter by actorId | Mobile app |
+| `ALL /api/secure-data` | **Secure replacement for `/api/data`.** Token-authenticated; identity derived from token | New app (migration target) |
 
 Shared caches:
 - `api/_leads-cache.js` (15s TTL) — `getLeadsForOwner(ownerId)`.
@@ -744,6 +745,20 @@ Shared caches:
 - Internal activity-log caches inside `team-stats.js` and `team-activity.js`.
 
 **Rule:** any new endpoint that needs the full set of a large collection MUST use a shared cache helper.
+
+### API Security — `/api/secure-data` (token-authenticated replacement for `/api/data`)
+
+**The legacy `/api/data` endpoint has NO authentication** — it trusts `ownerId`/`actorId`/`isOwner` from the query string, so anyone with an `ownerId` (a non-secret UUID) can read AND write/delete a whole workspace, and any caller becomes "owner" by omitting `actorId` or passing `isOwner=true`. Being phased out.
+
+**`api/secure-data.js`** is the secure replacement (same query shape as `/api/data`):
+1. **Requires `Authorization: Bearer <token>`** — the InstantDB token from `/api/auth` login.
+2. **Verifies server-side** via `db.asUser({ token }).query({ $users: {} })` — the admin SDK has **no `verifyToken`**. Valid → `{id,email}`; invalid/expired → `401`.
+3. **Derives identity from the verified email, never from client params.** `actorId`/`isOwner`/`userEmail`/`myName`/`teamMemberId` are stripped so they can't be spoofed. Email → owner/team-member workspace allow-list; `?ownerId=` is only a hint validated against that list (`403` if not allowed; `400` if ambiguous).
+4. **Delegates to `data.js`** with injected trusted identity → single source of truth, parity with legacy.
+
+**Rule:** new clients use `/api/secure-data` + bearer token. Do NOT add auth to `/api/data` (breaks old mobile mid-flight); migrate the new app, then delete `/api/data` + its `server.mjs` route, keeping `api/data.js` as the internal impl `secure-data.js` imports.
+
+> **Verification gotcha:** `@instantdb/admin` v0.22.x exposes only `createToken`/`signOut` — no `verifyToken`. Verify a token via `db.asUser({ token })` + read `$users`. `createToken({ email })` is an admin mint (no password) — only for issuing tokens at login, never for verifying client tokens.
 
 ### Components Already Migrated
 

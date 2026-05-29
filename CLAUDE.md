@@ -789,7 +789,8 @@ const res = await fetch('/api/leads-page', { method: 'POST', body: JSON.stringif
 | `POST /api/call-logs-page` | Paginated call logs + rollup grouping + per-member team stats | Web CallLogs |
 | `POST /api/team-stats` | Pre-aggregated per-member performance metrics (totalActivities, leadsWorked, leadsWon, callsMade, ...) | TeamReports |
 | `POST /api/team-activity` | Raw activity logs for date range — only used for member drilldown drawer | TeamReports (lazy) |
-| `GET /api/data?module=leads` | **Mobile-only.** Permission-driven filter by actorId | Mobile app |
+| `GET /api/data?module=leads` | **Mobile-only (LEGACY, INSECURE).** Permission-driven filter by actorId | Mobile app |
+| `ALL /api/secure-data` | **Secure replacement for `/api/data`.** Token-authenticated; identity derived from token | New app (migration target) |
 
 Shared caches:
 - **`api/_leads-cache.js`** (15s TTL) — `getLeadsForOwner(ownerId)`. Used by leads-page, dashboard-stats, lead-check-duplicate, sync-won-leads, call-logs-page, team-stats, team-activity, /api/data leads route.
@@ -797,6 +798,21 @@ Shared caches:
 - `team-stats.js` and `team-activity.js` have internal per-owner activity-logs caches.
 
 **Rule:** any new endpoint that needs the full set of a large collection MUST use the shared cache helper — never spin up a one-off in-memory cache.
+
+### API Security — `/api/secure-data` (token-authenticated replacement for `/api/data`)
+
+**The legacy `/api/data` endpoint has NO authentication.** It trusts `ownerId` / `actorId` / `isOwner` straight from the query string, so anyone who knows an `ownerId` (a non-secret UUID that leaks via docs, app traffic, login responses) can **read AND write/delete an entire workspace**, and any caller can become "owner" just by omitting `actorId` or passing `isOwner=true`. It is being phased out.
+
+**`api/secure-data.js`** is the secure replacement. Same query shape as `/api/data` (e.g. `?module=leads&srcFilter=Youtube`) but:
+
+1. **Requires `Authorization: Bearer <token>`** — the InstantDB token returned by `/api/auth` at login (the `token` field).
+2. **Verifies the token server-side** via `db.asUser({ token }).query({ $users: {} })` (the admin SDK has **no `verifyToken`**; this is the verification mechanism). Valid → one `$users` row `{ id, email }`; malformed → throws `Malformed parameter`; fake/expired → throws `Record not found`. All non-valid tokens → `401`.
+3. **Derives identity (`ownerId` + `actorId` + `isOwner`) from the verified email — never from client params.** Client-supplied `actorId`/`isOwner`/`userEmail`/`myName`/`teamMemberId` are **stripped** (`IDENTITY_KEYS`) so they can't be spoofed. Email → `userProfiles` (owner) and/or `teamMembers` (member) builds an allow-list of workspaces. `?ownerId=` is honoured **only as a hint** and only if the user belongs to that workspace (else `403`); ambiguous multi-workspace with no hint → `400`.
+4. **Delegates to `data.js`** after injecting the trusted identity into both `req.query` and `req.body`, so all visibility/filter/CRUD logic stays in ONE place — guaranteed parity with the legacy endpoint while both exist.
+
+**Rule:** new clients (the new app) must call `/api/secure-data` with a bearer token. Do NOT add auth to `/api/data` (it would break old mobile builds mid-flight) — let the new app migrate, then delete `/api/data` + its `server.mjs` route. When deleting `/api/data`, keep `api/data.js` as the internal implementation that `secure-data.js` imports.
+
+> **Verification gotcha:** `@instantdb/admin` (v0.22.x) exposes only `db.auth.createToken` / `signOut` — there is no `verifyToken`. Verify a refresh token by impersonating with `db.asUser({ token })` and reading `$users`. `createToken({ email })` is an ADMIN mint (no password) — never use it to "verify" a client token; only use it to issue tokens at login.
 
 ### Shared Caches
 
