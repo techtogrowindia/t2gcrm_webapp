@@ -21,6 +21,17 @@ export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMemb
     return member?.role || 'Team';
   }, [teamInfo, teamMembers]);
 
+  // Name of the logged-in user — team member's name, else owner's full /
+  // business name, else the email. Shown next to the avatar so it's always
+  // clear who is logged in.
+  const displayName = useMemo(() => {
+    if (teamInfo?.isTeamMember && teamMembers) {
+      const member = teamMembers.find(m => m.id === teamInfo.teamMemberId);
+      if (member?.name) return member.name;
+    }
+    return user?.profile?.fullName || user?.profile?.bizName || user?.email || 'User';
+  }, [teamInfo, teamMembers, user]);
+
   return (
     <div className="topbar">
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -76,9 +87,21 @@ export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMemb
           </div>
         </div>
 
-        {/* Avatar */}
-        <div className="av" onClick={() => setActiveView('userprofile')}>
-          {(user?.email || 'U').charAt(0).toUpperCase()}
+        {/* Avatar + logged-in name */}
+        <div
+          onClick={() => setActiveView('userprofile')}
+          title={`Logged in as ${displayName}${user?.email ? ` (${user.email})` : ''}`}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+        >
+          <div className="av">
+            {(displayName || user?.email || 'U').charAt(0).toUpperCase()}
+          </div>
+          <span
+            className="topbar-username"
+            style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {displayName}
+          </span>
         </div>
 
         {/* Logout */}
