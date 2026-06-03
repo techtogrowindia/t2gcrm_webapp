@@ -468,7 +468,23 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     setNewCF({ name: '', type: 'text', options: '' });
   };
 
-  const removeItem = (key, list, idx) => saveList(key, list.filter((_, i) => i !== idx));
+  // Friendly labels per list type for the confirmation prompt.
+  const ITEM_LABELS = {
+    taxRates: 'tax rate', customFields: 'custom field', sources: 'source',
+    stages: 'stage', requirements: 'requirement', productCats: 'product category',
+    productUnits: 'unit', expCats: 'expense category', taskStatuses: 'task status',
+    orderStatuses: 'order status',
+  };
+
+  const removeItem = (key, list, idx) => {
+    const item = list[idx];
+    const name = typeof item === 'string'
+      ? item
+      : (item?.name || item?.label || (item?.rate != null ? `${item.rate}%` : '') || 'this item');
+    const typeLabel = ITEM_LABELS[key] || 'item';
+    if (!window.confirm(`Remove ${typeLabel} "${name}"? This cannot be undone.`)) return;
+    saveList(key, list.filter((_, i) => i !== idx));
+  };
 
   const editItem = (key, list, idx, currentVal) => {
     const newVal = prompt('Edit value:', currentVal);
@@ -739,6 +755,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>Recommended: Square PNG/JPG, Max 500KB.</div>
                       </div>
                       {biz.logo && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={async () => {
+                        if (!window.confirm('Remove the brand logo? This cannot be undone.')) return;
                         setBiz(b => ({ ...b, logo: null }));
                         if (profileId) await db.transact(db.tx.userProfiles[profileId].update({ logo: null }));
                       }}>Remove</button>}
