@@ -24,6 +24,7 @@ export default async function handler(req, res) {
       isOwner = true,
       mode = 'list',
       dateMode = 'followup',
+      sortOrder = 'newest', // 'newest' | 'oldest' — by the active dateMode dimension
       tab = 'all',
       customFromMs = null,
       customToMs = null,
@@ -213,8 +214,20 @@ export default async function handler(req, res) {
 
     const totalFiltered = filteredForTab.length;
 
-    // --- 8. Sort newest first --------------------------------------------
-    filteredForTab.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    // --- 8. Sort by the active date dimension (dateMode), honouring sortOrder.
+    // 'newest' = most recent first (desc), 'oldest' = earliest first (asc).
+    // Leads with no date for the active dimension always sort LAST (so they
+    // never masquerade as the "oldest"). createdAt is the stable tiebreak.
+    const asc = sortOrder === 'oldest';
+    filteredForTab.sort((a, b) => {
+      const da = dateMsOf(a);
+      const db_ = dateMsOf(b);
+      if (da === null && db_ === null) return (b.createdAt || 0) - (a.createdAt || 0);
+      if (da === null) return 1;   // a has no date → after b
+      if (db_ === null) return -1; // b has no date → after a
+      if (da !== db_) return asc ? (da - db_) : (db_ - da);
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
 
     // --- 9. Paginate / cap ------------------------------------------------
     let items;

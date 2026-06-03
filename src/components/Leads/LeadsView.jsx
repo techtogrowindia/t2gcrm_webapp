@@ -32,6 +32,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [view, setView] = useState('list'); // 'list' | 'kanban'
   const [tab, setTab] = useState('all');
   const [dateMode, setDateMode] = useState(() => localStorage.getItem('tc_leads_date_mode') || 'followup'); // 'followup' | 'created'
+  const [sortOrder, setSortOrder] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(`leadView_${user.email}`))?.sortOrder || 'newest'; }
+    catch { return 'newest'; }
+  }); // 'newest' | 'oldest' — sorts by the active dateMode dimension
   const [customFrom, setCustomFrom] = useState(() => localStorage.getItem('tc_leads_custom_from') || '');
   const [customTo, setCustomTo] = useState(() => localStorage.getItem('tc_leads_custom_to') || '');
   const [search, setSearch] = useState('');
@@ -50,6 +54,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [tempCols, setTempCols] = useState([]);
   const [tempStages, setTempStages] = useState([]);
   const [tempPageSize, setTempPageSize] = useState(25);
+  const [tempSortOrder, setTempSortOrder] = useState('newest');
   const [viewLead, setViewLead] = useState(null);
   const [noteText, setNoteText] = useState('');
   const [dragOverStage, setDragOverStage] = useState(null);
@@ -213,6 +218,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       teamCanSeeUnassignedLeads,
       mode: view,
       dateMode,
+      sortOrder,
       tab,
       customFromMs,
       customToMs,
@@ -262,7 +268,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     return () => { cancelled = true; controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    ownerId, view, tab, dateMode, customFrom, customTo,
+    ownerId, view, tab, dateMode, sortOrder, customFrom, customTo,
     debouncedSearch, srcFilter, stgFilter, staffFilter,
     currentPage, pageSize, myName, teamCanSeeAllLeads, perms?.isOwner,
     // savedLeadStages is serialised to detect changes
@@ -1075,13 +1081,16 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     }
   };
 
-  const saveViewConfig = (colsToSave, stagesVisible, defaultSize) => {
+  const saveViewConfig = (colsToSave, stagesVisible, defaultSize, sortOrderToSave) => {
     localStorage.setItem(`leadView_${user.email}`, JSON.stringify({
       leadCols: colsToSave,
       leadStages: stagesVisible,
-      defaultPageSize: defaultSize
+      defaultPageSize: defaultSize,
+      sortOrder: sortOrderToSave,
     }));
     setPageSize(defaultSize);
+    setSortOrder(sortOrderToSave);
+    setCurrentPage(1);
     setColModal(false);
     toast('View configuration saved', 'success');
   };
@@ -1089,6 +1098,8 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const resetViewConfig = () => {
     localStorage.removeItem(`leadView_${user.email}`);
     setPageSize(25);
+    setSortOrder('newest');
+    setCurrentPage(1);
     setColModal(false);
     toast('View reset to default', 'success');
   };
@@ -1577,9 +1588,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   </select>
                   <button className="btn btn-secondary btn-sm" onClick={() => {
                     setTempCols(activeCols);
-                    setTempStages(savedLeadStages || allStages); 
+                    setTempStages(savedLeadStages || allStages);
                     setTempPageSize(pageSize);
-                    setColModal(true); 
+                    setTempSortOrder(sortOrder);
+                    setColModal(true);
                   }}>⚙ Configure View</button>
                </div>
             </div>
@@ -2291,12 +2303,32 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                 </div>
               </div>
 
+              {/* Sort Order */}
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+                <strong style={{ fontSize: 13, color: 'var(--text)', marginBottom: 6, display: 'block' }}>Sort by date</strong>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>
+                  Sorts by the active date tab ({dateMode === 'created' ? 'Created Date' : dateMode === 'assigned' ? 'Assigned Date' : 'Follow-up Date'}).
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {[['newest', 'Newest first'], ['oldest', 'Oldest first']].map(([val, label]) => (
+                    <button
+                      key={val}
+                      className={`btn btn-sm ${tempSortOrder === val ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setTempSortOrder(val)}
+                      style={{ padding: '6px 12px' }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
             </div>
             <div className="mo-foot" style={{ justifyContent: 'space-between' }}>
               <button className="btn btn-secondary btn-sm" onClick={resetViewConfig}>Reset to Default</button>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-secondary btn-sm" onClick={() => setColModal(false)}>Cancel</button>
-                <button className="btn btn-primary btn-sm" onClick={() => saveViewConfig(tempCols, tempStages, tempPageSize)}>Save View</button>
+                <button className="btn btn-primary btn-sm" onClick={() => saveViewConfig(tempCols, tempStages, tempPageSize, tempSortOrder)}>Save View</button>
               </div>
             </div>
           </div>
