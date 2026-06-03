@@ -58,7 +58,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   });
 
   // Deferred: subscription for non-leads tabs only; leads replaced by server fetch
-  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'team', 'product-enquiry'].includes(tab);
+  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'team', 'product-enquiry', 'lead-source'].includes(tab);
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
   const needsStageLogs = tab === 'stage-transitions';
@@ -319,6 +319,30 @@ export default function Reports({ user, perms, ownerId, profile }) {
   }, [tab, filteredLeadsAtSource, fromDate, toDate, wonStage, lostStage]);
 
   // ==================================================
+  // #2b LEADS BY SOURCE — leads grouped by source (date-filtered)
+  // ==================================================
+  const leadSource = useMemo(() => {
+    if (tab !== 'lead-source') return [];
+    const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
+    const map = {};
+    inRangeLeads.forEach(l => {
+      const src = l.source || 'Unknown';
+      if (!map[src]) map[src] = { source: src, enquiries: 0, won: 0, lost: 0, open: 0, requirements: {} };
+      map[src].enquiries += 1;
+      if (l.stage === wonStage) map[src].won += 1;
+      else if (l.stage === lostStage) map[src].lost += 1;
+      else map[src].open += 1;
+      const req = l.requirement || l.productCat || 'Not Specified';
+      map[src].requirements[req] = (map[src].requirements[req] || 0) + 1;
+    });
+    return Object.values(map).map(s => ({
+      ...s,
+      conversionRate: s.enquiries > 0 ? Math.round((s.won / s.enquiries) * 100) : 0,
+      topRequirement: Object.entries(s.requirements).sort((a, b) => b[1] - a[1])[0]?.[0] || '-',
+    })).sort((a, b) => b.enquiries - a.enquiries);
+  }, [tab, filteredLeadsAtSource, fromDate, toDate, wonStage, lostStage]);
+
+  // ==================================================
   // #3 CUSTOMER PURCHASE REPORT — from paid invoice items, grouped by product
   // ==================================================
   const customerPurchase = useMemo(() => {
@@ -514,6 +538,8 @@ export default function Reports({ user, perms, ownerId, profile }) {
       exportCSV(['Product', 'Units Sold', 'Revenue', 'GST Collected', 'Total (with Tax)'], prodFiltered.map(p => [p.name, p.units, p.revenue, p.totalTax, p.revenue + p.totalTax]), `Product_Performance_${fromDate}_to_${toDate}`);
     } else if (tab === 'product-enquiry') {
       exportCSV(['Product', 'Enquiries', 'Won', 'Lost', 'Open', 'Conversion %', 'Top Source'], productEnquiry.map(p => [p.product, p.enquiries, p.won, p.lost, p.open, p.conversionRate + '%', p.topSource]), `Product_Enquiries_${fromDate}_to_${toDate}`);
+    } else if (tab === 'lead-source') {
+      exportCSV(['Source', 'Enquiries', 'Won', 'Lost', 'Open', 'Conversion %', 'Top Requirement'], leadSource.map(s => [s.source, s.enquiries, s.won, s.lost, s.open, s.conversionRate + '%', s.topRequirement]), `Leads_By_Source_${fromDate}_to_${toDate}`);
     } else if (tab === 'customer-purchase') {
       const rows = [
         ['--- By Product ---'],
@@ -612,6 +638,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
             ['expenses', 'Expense Report'],
             ['gst', 'GST Summary'],
             ['product-enquiry', 'Leads by Requirement'],
+            ['lead-source', 'Leads by Source'],
             ['customer-purchase', 'Customer Purchases'],
             ['stage-transitions', 'Stage Transitions'],
             ['leads', 'Lead Pipeline'],
@@ -1058,6 +1085,66 @@ export default function Reports({ user, perms, ownerId, profile }) {
                           <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{p.open}</td>
                           <td style={{ textAlign: 'right', fontWeight: 700, color: p.conversionRate >= 30 ? '#16a34a' : p.conversionRate >= 10 ? '#ca8a04' : '#dc2626' }}>{p.conversionRate}%</td>
                           <td style={{ fontSize: 12 }}>{p.topSource}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {tab === 'lead-source' && (() => {
+        const maxEnq = Math.max(...leadSource.map(s => s.enquiries), 1);
+        const totalEnq = leadSource.reduce((s, x) => s + x.enquiries, 0);
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <div className="stat-grid">
+              <div className="stat-card sc-blue"><div className="lbl">Total Leads</div><div className="val">{totalEnq}</div></div>
+              <div className="stat-card sc-green"><div className="lbl">Unique Sources</div><div className="val">{leadSource.length}</div></div>
+              <div className="stat-card" style={{ background: '#fff7ed' }}>
+                <div className="lbl" style={{ color: '#c2410c' }}>Top Source</div>
+                <div className="val" style={{ color: '#c2410c', fontSize: 'clamp(12px, 1.2vw, 16px)', wordBreak: 'break-word', lineHeight: '1.2' }}>{leadSource[0]?.source || '-'}</div>
+              </div>
+            </div>
+
+            {leadSource.slice(0, 10).length > 0 && (
+              <div className="tw">
+                <div className="tw-head"><h3>Top 10 Sources</h3></div>
+                <div style={{ padding: '16px 20px' }}>
+                  {leadSource.slice(0, 10).map((s, i) => (
+                    <div key={s.source} className="chart-row" style={{ marginBottom: 10 }}>
+                      <div className="chart-label" style={{ width: 180, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.source}>{i + 1}. {s.source}</div>
+                      <div className="chart-bar-wrap" style={{ height: 14 }}>
+                        <div className="chart-bar" style={{ width: `${(s.enquiries / maxEnq) * 100}%`, background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                      </div>
+                      <div style={{ width: 180, fontSize: 12, marginLeft: 10, fontWeight: 700, textAlign: 'right' }}>
+                        {s.enquiries} leads <span style={{ color: s.conversionRate >= 30 ? '#16a34a' : 'var(--muted)', fontWeight: 600 }}>({s.conversionRate}% won)</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="tw">
+              <div className="tw-head"><h3>All Sources ({leadSource.length})</h3></div>
+              <div className="tw-scroll">
+                <table>
+                  <thead><tr><th>#</th><th>Source</th><th style={{ textAlign: 'right' }}>Leads</th><th style={{ textAlign: 'right' }}>Won</th><th style={{ textAlign: 'right' }}>Lost</th><th style={{ textAlign: 'right' }}>Open</th><th style={{ textAlign: 'right' }}>Conv %</th><th>Top Requirement</th></tr></thead>
+                  <tbody>
+                    {leadSource.length === 0 ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>No leads in this period</td></tr>
+                      : leadSource.map((s, i) => (
+                        <tr key={s.source}>
+                          <td style={{ color: 'var(--muted)', fontSize: 12 }}>{i + 1}</td>
+                          <td><strong>{s.source}</strong></td>
+                          <td style={{ textAlign: 'right', fontWeight: 700 }}>{s.enquiries}</td>
+                          <td style={{ textAlign: 'right', color: '#16a34a' }}>{s.won}</td>
+                          <td style={{ textAlign: 'right', color: '#dc2626' }}>{s.lost}</td>
+                          <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{s.open}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 700, color: s.conversionRate >= 30 ? '#16a34a' : s.conversionRate >= 10 ? '#ca8a04' : '#dc2626' }}>{s.conversionRate}%</td>
+                          <td style={{ fontSize: 12 }}>{s.topRequirement}</td>
                         </tr>
                       ))}
                   </tbody>
