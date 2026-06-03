@@ -441,7 +441,8 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
                 <tr>
                   <th style={{ textAlign: 'left' }}>Team Member</th>
                   <th>Activity</th>
-                  {showLeads && <th>Leads Assg.</th>}
+                  {showLeads && <th title="Leads assigned within the selected date range">Leads Assg.</th>}
+                  {showLeads && <th title="Leads currently assigned to this member (all-time, ignores the date filter)">Currently Assigned</th>}
                   {showLeads && <th>Leads Work.</th>}
                   {showLeads && <th>Leads Won</th>}
                   {showLeads && <th>Stage Δ</th>}
@@ -478,6 +479,11 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
                       {showLeads && (
                         <td style={{ textAlign: 'center' }}>
                           <span className="badge bg-gray" style={{ fontSize: 11 }}>{m.leadsAssigned}</span>
+                        </td>
+                      )}
+                      {showLeads && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className="badge bg-gray" style={{ fontSize: 11 }}>{m.leadsAssignedTotal ?? 0}</span>
                         </td>
                       )}
                       {showLeads && (

@@ -111,13 +111,17 @@ export default async function handler(req, res) {
     ]);
 
     const result = members.map(m => {
+      // Leads currently assigned to this member (all-time snapshot, ignores
+      // the date filter).
+      const assignedToMember = allLeads.filter(l => l.assign === m.name);
+      const leadsAssignedTotal = assignedToMember.length;
       // Leads ASSIGNED within the selected date range — uses `assignedAt`
       // (set when a lead is assigned/reassigned) so the count honours the
       // Today / This Month / This Year / Custom filter like every other
       // column. NOTE: leads assigned before the `assignedAt` field shipped
       // have no timestamp and therefore won't appear in a dated range
       // (they only count when there is no lower bound, i.e. startMs = 0).
-      const leadsAssigned = allLeads.filter(l => l.assign === m.name && inRange(l.assignedAt || 0)).length;
+      const leadsAssigned = assignedToMember.filter(l => inRange(l.assignedAt || 0)).length;
       const userLogs = logsInRange.filter(l => isLogByMember(l, m));
 
       const uniqueByEntity = (fn) =>
@@ -154,6 +158,7 @@ export default async function handler(req, res) {
         email: m.email,
         role: m.role || (m.isOwnerRow ? 'Owner' : ''),
         leadsAssigned,
+        leadsAssignedTotal,
         totalActivities,
         tasksWorked, tasksCompleted,
         leadsWorked, leadsWon,
