@@ -12,7 +12,7 @@ const VIEW_TITLES = {
 };
 
 export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMembers }) {
-  const { activeView, setActiveView, setSidebarExpanded, mobileSidebarOpen, setMobileSidebarOpen, setNotifOpen, setSettingsTab } = useApp();
+  const { activeView, setActiveView, setSidebarExpanded, mobileSidebarOpen, setMobileSidebarOpen, setNotifOpen } = useApp();
 
   // Find team member role if applicable
   const roleName = useMemo(() => {
@@ -68,24 +68,12 @@ export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMemb
           {notifCount > 0 && <span className="notif-dot" />}
         </div>
 
-        {/* Plan badge & Expiry Notification */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {isExpired && (
-            <div style={{ background: '#fee2e2', color: '#991b1b', padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, border: '1px solid #fecaca' }}>
-              ⚠️ PLAN EXPIRED
-            </div>
-          )}
-          <div 
-            style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', background: 'var(--bg-soft)', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }}
-            onClick={() => {
-              if (setSettingsTab) setSettingsTab('Billing');
-              setActiveView('settings');
-            }}
-            title="Go to Billing Settings"
-          >
-            <span className="plan-badge-text">{user?.profile?.plan || 'Free'}</span>
+        {/* Expiry Notification */}
+        {isExpired && (
+          <div style={{ background: '#fee2e2', color: '#991b1b', padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, border: '1px solid #fecaca' }}>
+            ⚠️ PLAN EXPIRED
           </div>
-        </div>
+        )}
 
         {/* Avatar + logged-in name */}
         <div
