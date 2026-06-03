@@ -58,14 +58,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
   });
 
   // Deferred: subscription for non-leads tabs only; leads replaced by server fetch
-  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'team', 'product-enquiry', 'lead-source'].includes(tab);
+  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source'].includes(tab);
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
   const needsStageLogs = tab === 'stage-transitions';
-  const { data: deferredData } = db.useQuery(needsLeadsData ? {
-    tasks: { $: { where: { userId: ownerId } } },
-    teamMembers: { $: { where: { userId: ownerId } } },
-  } : needsProductsData ? {
+  const { data: deferredData } = db.useQuery(needsProductsData ? {
     products: { $: { where: { userId: ownerId } } },
   } : needsCustomersData ? {
     customers: { $: { where: { userId: ownerId }, limit: 10000 } },
@@ -94,8 +91,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const invoices = data?.invoices || [];
   const expenses = data?.expenses || [];
   const leads = reportLeads.map(l => (l.source === 'Retailer' || l.source === 'Retailers') ? { ...l, source: 'Channel Partners' } : l);
-  const tasks = deferredData?.tasks || [];
-  const team = deferredData?.teamMembers || [];
   const products = deferredData?.products || [];
   const customersList = deferredData?.customers || [];
   const stageLogs = deferredData?.activityLogs || [];
@@ -128,8 +123,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
     return true;
   });
-  const filteredTasksAtSource = tasks.filter(t => canSeeAll || t.actorId === user.id || t.assignTo === user.email || t.assignTo === perms.name);
-
   const inRange = (dateStr) => {
     if (!dateStr) return false;
     const d = new Date(dateStr);
@@ -199,14 +192,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const stageCount = STAGE_ORDER.map(s => ({ stage: s, count: pipelineLeads.filter(l => l.stage === s).length }));
   const maxCount = Math.max(...stageCount.map(s => s.count), 1);
   const CHART_COLORS = ['#60a5fa', '#6ee7b7', '#fde68a', '#c4b5fd', '#86efac', '#fca5a5'];
-
-  // Team performance
-  const teamPerf = team.map(m => ({
-    name: m.name,
-    leads: filteredLeadsAtSource.filter(l => l.assign === m.name).length,
-    done: filteredTasksAtSource.filter(t => t.assignTo === m.name && t.status === 'Done').length,
-    tasks: filteredTasksAtSource.filter(t => t.assignTo === m.name).length,
-  }));
 
   // Lead Funnel — date-filtered on createdAt (mirrors pipelineLeads) so it
   // honours the From/To filter like every other lead report.
@@ -566,8 +551,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
         return row;
       });
       exportCSV(headers, rows, `Stage_Transitions_${fromDate}_to_${toDate}`);
-    } else if (tab === 'team') {
-      exportCSV(['Name', 'Leads Assigned', 'Tasks Total', 'Tasks Done', 'Completion %'], teamPerf.map(m => [m.name, m.leads, m.tasks, m.done, m.tasks ? Math.round((m.done / m.tasks) * 100) + '%' : '0%']), `Team_Perf_${fromDate}_to_${toDate}`);
     } else if (tab === 'leads') {
       exportCSV(['Stage', 'Count'], stageCount.map(s => [s.stage, s.count]), `Lead_Pipeline_${fromDate}_to_${toDate}`);
     } else if (tab === 'expenses' && expenseReport) {
@@ -646,8 +629,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
             ['leads', 'Lead Pipeline'],
             ['funnel', 'Sales Funnel'],
             ['rev-src', 'Revenue by Source'],
-            ['products', 'Product Performance'],
-            ['team', 'Team Performance']
+            ['products', 'Product Performance']
           ].map(([t, l]) => (
             <div key={t} className={`tab${tab === t ? ' active' : ''}`} onClick={() => setTab(t)} style={{ padding: '10px 16px', borderRadius: 8, width: '100%', textAlign: 'left' }}>{l}</div>
           ))}
@@ -1384,31 +1366,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
         </div>
       )}
 
-      {tab === 'team' && (
-        <div className="tw">
-          <div className="tw-head"><h3>Team Performance</h3></div>
-          <div className="tw-scroll">
-            <table>
-              <thead><tr><th>Name</th><th>Leads Assigned</th><th>Tasks Total</th><th>Tasks Done</th><th>Completion</th></tr></thead>
-              <tbody>
-                {teamPerf.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>Add team members to see performance</td></tr>
-                  : teamPerf.map((m, i) => {
-                    const pct = m.tasks ? Math.round((m.done / m.tasks) * 100) : 0;
-                    return (
-                      <tr key={i}>
-                        <td><strong>{m.name}</strong></td>
-                        <td><span className="badge bg-blue">{m.leads}</span></td>
-                        <td>{m.tasks}</td>
-                        <td><span className="badge bg-green">{m.done}</span></td>
-                        <td style={{ minWidth: 100 }}><div className="pbar"><div className="pfill" style={{ width: `${pct}%` }} /></div><span style={{ fontSize: 11, color: 'var(--muted)' }}>{pct}%</span></td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
         </div>
       </div>
     </div>
