@@ -111,7 +111,13 @@ export default async function handler(req, res) {
     ]);
 
     const result = members.map(m => {
-      const leadsAssigned = allLeads.filter(l => l.assign === m.name).length;
+      // Leads ASSIGNED within the selected date range — uses `assignedAt`
+      // (set when a lead is assigned/reassigned) so the count honours the
+      // Today / This Month / This Year / Custom filter like every other
+      // column. NOTE: leads assigned before the `assignedAt` field shipped
+      // have no timestamp and therefore won't appear in a dated range
+      // (they only count when there is no lower bound, i.e. startMs = 0).
+      const leadsAssigned = allLeads.filter(l => l.assign === m.name && inRange(l.assignedAt || 0)).length;
       const userLogs = logsInRange.filter(l => isLogByMember(l, m));
 
       const uniqueByEntity = (fn) =>
