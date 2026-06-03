@@ -208,26 +208,28 @@ export default function Reports({ user, perms, ownerId, profile }) {
     tasks: filteredTasksAtSource.filter(t => t.assignTo === m.name).length,
   }));
 
-  // Lead Funnel
+  // Lead Funnel — date-filtered on createdAt (mirrors pipelineLeads) so it
+  // honours the From/To filter like every other lead report.
   const funnel = useMemo(() => {
-    const total = filteredLeadsAtSource.length;
+    const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
+    const total = inRangeLeads.length;
     // Contacted: any stage that isn't the first one
-    const contacted = filteredLeadsAtSource.filter(l => l.stage !== STAGE_ORDER[0]).length;
+    const contacted = inRangeLeads.filter(l => l.stage !== STAGE_ORDER[0]).length;
     // Won: matches wonStage
-    const wonCount = filteredLeadsAtSource.filter(l => l.stage === wonStage).length;
+    const wonCount = inRangeLeads.filter(l => l.stage === wonStage).length;
     // Negotiation: typically stages near the end but before Won (heuristically)
-    const negotiation = filteredLeadsAtSource.filter(l => {
+    const negotiation = inRangeLeads.filter(l => {
        const idx = STAGE_ORDER.indexOf(l.stage);
        return idx >= Math.floor(STAGE_ORDER.length / 2) && l.stage !== lostStage;
     }).length;
-    
+
     return [
       { name: 'Total Leads', count: total, pct: 100, color: '#60a5fa' },
       { name: 'Contacted', count: contacted, pct: total ? Math.round((contacted/total)*100) : 0, color: '#6ee7b7' },
       { name: 'Negotiation', count: negotiation, pct: total ? Math.round((negotiation/total)*100) : 0, color: '#fde68a' },
       { name: 'Won (Success)', count: wonCount, pct: total ? Math.round((wonCount/total)*100) : 0, color: '#86efac' },
     ];
-  }, [filteredLeadsAtSource, STAGE_ORDER, wonStage, lostStage]);
+  }, [filteredLeadsAtSource, STAGE_ORDER, wonStage, lostStage, fromDate, toDate]);
 
   // Product Performance
   const productPerf = useMemo(() => {
