@@ -62,13 +62,15 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
   const needsStageLogs = tab === 'stage-transitions';
-  const needsDeferred = needsProductsData || needsCustomersData || needsStageLogs;
+  // Stage Transitions is fetched server-side (see below), NOT via this
+  // subscription — db.useQuery({ activityLogs: limit:5000 }) returns
+  // arbitrary (often oldest) rows with no ordering, dropping recent
+  // transitions in the selected window on busy workspaces.
+  const needsDeferred = needsProductsData || needsCustomersData;
   const { data: deferredData, isLoading: deferredLoadingRaw } = db.useQuery(needsProductsData ? {
     products: { $: { where: { userId: ownerId } } },
   } : needsCustomersData ? {
     customers: { $: { where: { userId: ownerId }, limit: 10000 } },
-  } : needsStageLogs ? {
-    activityLogs: { $: { where: { userId: ownerId, entityType: 'lead' }, limit: 5000 } },
   } : {});
   // Empty query ({}) resolves instantly — only treat deferred as loading when
   // the active tab actually needs deferred data.
@@ -97,12 +99,33 @@ export default function Reports({ user, perms, ownerId, profile }) {
       .finally(() => setReportLeadsLoading(false));
   }, [needsLeadsData, ownerId]);
 
+  // Stage Transitions: fetch activity logs server-side for the selected date
+  // range (full set, no WebSocket cap, correct on busy workspaces). Re-fetches
+  // when the date range changes since the server filters by createdAt.
+  const [stageLogsData, setStageLogsData] = useState([]);
+  const [stageLogsLoading, setStageLogsLoading] = useState(false);
+  useEffect(() => {
+    if (tab !== 'stage-transitions' || !ownerId) return;
+    const startMs = new Date(fromDate).getTime();
+    const endMs = new Date(toDate + 'T23:59:59').getTime();
+    setStageLogsLoading(true);
+    fetch('/api/team-activity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, startMs, endMs }),
+    })
+      .then(r => r.json())
+      .then(json => setStageLogsData(json.logs || []))
+      .catch(() => {})
+      .finally(() => setStageLogsLoading(false));
+  }, [tab, ownerId, fromDate, toDate]);
+
   const invoices = data?.invoices || [];
   const expenses = data?.expenses || [];
   const leads = reportLeads.map(l => (l.source === 'Retailer' || l.source === 'Retailers') ? { ...l, source: 'Channel Partners' } : l);
   const products = deferredData?.products || [];
   const customersList = deferredData?.customers || [];
-  const stageLogs = deferredData?.activityLogs || [];
+  const stageLogs = stageLogsData;
 
   // Whether the data the ACTIVE tab depends on is still loading. Used to show
   // a progress window over the report area. pl/gst/expenses/rev-src need the
@@ -111,6 +134,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const needsCore = ['pl', 'gst', 'expenses', 'rev-src'].includes(tab);
   const reportLoading =
     (needsLeadsData && reportLeadsLoading) ||
+    (needsStageLogs && stageLogsLoading) ||
     deferredLoading ||
     (needsCore && coreLoading);
   const commissions = data?.partnerCommissions || [];
