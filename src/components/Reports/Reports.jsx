@@ -50,7 +50,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   }, [tab]);
 
   // Core: always needed for pl, gst, rev-src, funnel tabs
-  const { data } = db.useQuery({
+  const { data, isLoading: coreLoading } = db.useQuery({
     invoices: { $: { where: { userId: ownerId } } },
     expenses: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
@@ -62,13 +62,17 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
   const needsStageLogs = tab === 'stage-transitions';
-  const { data: deferredData } = db.useQuery(needsProductsData ? {
+  const needsDeferred = needsProductsData || needsCustomersData || needsStageLogs;
+  const { data: deferredData, isLoading: deferredLoadingRaw } = db.useQuery(needsProductsData ? {
     products: { $: { where: { userId: ownerId } } },
   } : needsCustomersData ? {
     customers: { $: { where: { userId: ownerId }, limit: 10000 } },
   } : needsStageLogs ? {
     activityLogs: { $: { where: { userId: ownerId, entityType: 'lead' }, limit: 5000 } },
   } : {});
+  // Empty query ({}) resolves instantly — only treat deferred as loading when
+  // the active tab actually needs deferred data.
+  const deferredLoading = needsDeferred && deferredLoadingRaw;
 
   // Fetch leads via server when on a leads-related tab — avoids the
   // limit:10000 subscription that times out at 11k scale.
@@ -99,6 +103,16 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const products = deferredData?.products || [];
   const customersList = deferredData?.customers || [];
   const stageLogs = deferredData?.activityLogs || [];
+
+  // Whether the data the ACTIVE tab depends on is still loading. Used to show
+  // a progress window over the report area. pl/gst/expenses/rev-src need the
+  // core query (invoices/expenses); lead tabs need the leads fetch; the rest
+  // need their deferred subscription.
+  const needsCore = ['pl', 'gst', 'expenses', 'rev-src'].includes(tab);
+  const reportLoading =
+    (needsLeadsData && reportLeadsLoading) ||
+    deferredLoading ||
+    (needsCore && coreLoading);
   const commissions = data?.partnerCommissions || [];
 
   const isTeam = perms && !perms.isOwner;
@@ -640,7 +654,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
           ))}
         </div>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0, position: 'relative', minHeight: reportLoading ? 360 : undefined }}>
+          {reportLoading && (
+            <div className="no-print" style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.82)', backdropFilter: 'blur(1px)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, zIndex: 30, borderRadius: 16 }}>
+              <div className="spinner" style={{ width: 40, height: 40, borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>Loading report…</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>Crunching the numbers, please wait</div>
+            </div>
+          )}
           {tab === 'pl' && (
         <div>
           <div className="stat-grid" style={{ marginBottom: 18 }}>
