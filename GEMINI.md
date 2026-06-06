@@ -787,9 +787,23 @@ Shared caches:
 | `Customers.jsx` | `/api/lead-check-duplicate` + `/api/sync-won-leads` on mount |
 | `Quotations.jsx`, `Invoices.jsx`, `POSBilling.jsx`, `Projects.jsx`, `AllTasks.jsx`, `AMC.jsx` | **Modal-lazy-fetch** (see below) |
 | `CallLogs.jsx` | Full server-driven via `/api/call-logs-page` (items + counts + teamStats) |
-| `Reports.jsx` | `/api/leads-page` only when leads tab is selected |
+| `Reports.jsx` | Fetches the **entire** lead set via `/api/leads-page` (`mode:'list'`, large `pageSize`) + full activity logs via `/api/team-activity`; aggregates over all of it and date-filters client-side |
 | `TeamReports.jsx` | Pre-aggregated `/api/team-stats`; `/api/team-activity` lazy on drilldown |
 | `Campaigns.jsx` | `/api/leads-page` (up to 1000) on mount |
+
+### Rule: Reports MUST aggregate over the ENTIRE dataset — never a filtered/capped subset (CRITICAL)
+
+Reports compute totals, breakdowns, conversion %, and trends. They are only correct if they see **all** records for the workspace, then apply the date/source/stage filters **client-side** for display. Fetching a partial set silently undercounts every metric.
+
+**Hard rules for any report computation:**
+- **Fetch the full set.** Use a server endpoint that returns the complete collection — `/api/leads-page` with `mode:'list'` + a large `pageSize` (NOT `mode:'kanban'`, which caps at 1000 and returns only the newest-by-followup subset), `/api/team-activity` for activity logs, etc. Never rely on a paginated page, a kanban cap, or a `db.useQuery({ ...limit:N })` subscription for report data — `limit` has **no ordering guarantee** and returns arbitrary (often oldest) rows.
+- **Date-filter in the client, after fetching all.** The report's date dropdown (This Month / This FY / Custom) filters the full set with `inRange()` — it must never be the thing that scopes the fetch (except as a pure server-side optimisation that still returns the complete in-range set, e.g. `/api/team-activity` filtering by `createdAt`).
+- **Cross-entity reports need ALL of the joined entity.** e.g. Revenue-by-Source matches *this-period invoices* to *all-time leads* by name — the lead side must be the full set, or sources go missing.
+- **When adding a new report tab,** confirm its data source returns everything; add it to the per-tab loading flag so the progress overlay shows while it loads.
+
+**Real bugs this rule prevents:**
+- *Leads by Source* showed IndiaMart = 19 for "This Month" while the Leads page had more — Reports fetched only 1000 leads (`mode:'kanban'`), so this-month leads outside the top-1000-by-followup were never counted. Every lead report (Source, Requirement, Pipeline, Funnel, Revenue-by-Source) was affected.
+- *Stage Transitions* showed a near-empty matrix on busy workspaces — it read `db.useQuery({ activityLogs: limit:5000 })`, which returned the oldest 5000 rows (outside the selected window). Fixed by fetching the full range via `/api/team-activity`.
 
 ### Modal-Lazy-Fetch Pattern
 
