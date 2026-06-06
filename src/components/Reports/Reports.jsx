@@ -77,10 +77,15 @@ export default function Reports({ user, perms, ownerId, profile }) {
   useEffect(() => {
     if (!needsLeadsData || !ownerId) return;
     setReportLeadsLoading(true);
+    // Fetch ALL leads (mode:'list' + large pageSize) — NOT mode:'kanban',
+    // which caps at 1000 and returns only the newest-by-followup subset,
+    // making every lead report undercount on large workspaces. Reports
+    // aggregate over the full set and date-filter client-side, and
+    // revBySource needs all-time leads to match invoices by name.
     fetch('/api/leads-page', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerId, mode: 'kanban', tab: 'all', page: 1, pageSize: 1000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+      body: JSON.stringify({ ownerId, mode: 'list', tab: 'all', page: 1, pageSize: 100000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
     })
       .then(r => r.json())
       .then(json => setReportLeads(json.items || []))
