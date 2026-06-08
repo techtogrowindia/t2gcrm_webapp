@@ -30,7 +30,9 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
     projects: { $: { where: { userId: ownerId } } },
     customers: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
-    callLogs: { $: { where: { userId: ownerId }, limit: 5000 } }
+    // callLogs removed — the Calls metric comes from /api/team-stats (full
+    // dataset via server cache). The limit:5000 subscription returned arbitrary
+    // rows, would undercount on busy workspaces, and allCallLogs was unused.
   });
 
   // Activity logs are now server-driven (filtered by date range server-side).
@@ -41,14 +43,17 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
   const [logsLoading, setLogsLoading] = useState(false);
   const team = data?.teamMembers || [];
   const allTasks = data?.tasks || [];
-  // Leads fetched via server — replaced unlimited subscription that hung at 11k
+  // Leads fetched via server (full set) — used for the leadMap (id→name) in
+  // the activity-log drilldown drawer. mode:'list' + large pageSize ensures
+  // all leads are covered; mode:'kanban' (old) capped at 1000 so log entries
+  // for leads outside the top-1000 showed blank names in the drawer.
   const [allLeads, setAllLeads] = useState([]);
   useEffect(() => {
     if (!ownerId) return;
     fetch('/api/leads-page', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerId, mode: 'kanban', tab: 'all', page: 1, pageSize: 1000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+      body: JSON.stringify({ ownerId, mode: 'list', tab: 'all', page: 1, pageSize: 100000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
     })
       .then(r => r.json())
       .then(json => setAllLeads(json.items || []))
@@ -56,7 +61,6 @@ export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
   }, [ownerId]);
   const allProjects = data?.projects || [];
   const allCustomers = data?.customers || [];
-  const allCallLogs = data?.callLogs || [];
   const profile = data?.userProfiles?.[0] || {};
   const wonStage = profile.wonStage || 'Won';
 
