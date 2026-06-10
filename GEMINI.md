@@ -319,7 +319,8 @@ The `COLLECTION_MAP` in `api/data.js` maps module keys to actual InstantDB colle
 | `payment_received` | Payment logged | `#client#`, `#clientphoneno#`, `#invoiceno#`, `#amount#`, `#date#` |
 | `appointment_booked` | Booking submitted | `#client#`, `#clientphoneno#`, `#service#`, `#apptDate#`, `#apptTime#`, `#date#` |
 | `task_assigned` | New task with assignee | `#assignee#`, `#task#`, `#client#`, `#duedate#`, `#priority#` — sends to **staff phone** |
-| `amc_expiry` | AMC saved with endDate ≤ 30 days away | `#client#`, `#clientphoneno#`, `#contractNo#`, `#endDate#`, `#daysLeft#`, `#amount#`, `#plan#`, `#date#` |
+| `lead_followup` | Daily cron, N days before follow-up date | `#lead#`, `#client#`, `#leadphoneno#`, `#stage#`, `#assignee#`, `#followupdate#`, `#daysLeft#`, `#date#` |
+| `amc_expiry` | AMC saved with endDate ≤ 30 days away; also daily cron N days before | `#client#`, `#clientphoneno#`, `#contractNo#`, `#endDate#`, `#daysLeft#`, `#amount#`, `#plan#`, `#date#` |
 | `order_placed` | E-commerce checkout | `#client#`, `#clientphoneno#`, `#orderId#`, `#orderAmount#`, `#date#` |
 
 Built-in date vars (DD/MM/YYYY): `#today#`, `#tomorrow#`, `#+1day#` … `#+Nday#`
@@ -343,6 +344,7 @@ Built-in date vars (DD/MM/YYYY): `#today#`, `#tomorrow#`, `#+1day#` … `#+Nday#
 | `BookingPage.jsx` | `appointment_booked` |
 | `StorePage.jsx` | `order_placed` |
 | `AMC.jsx` | `amc_expiry` (fires on save when endDate ≤ 30 days) |
+| `api/cron/process-wa-followup.js` | `lead_followup` (daily cron, N days before followup date) |
 
 ### Fixed bugs (never revert)
 

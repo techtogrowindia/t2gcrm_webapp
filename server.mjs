@@ -24,6 +24,7 @@ import bookHandler from './api/appointments/book.js';
 import checkoutHandler from './api/ecom/checkout.js';
 import cronHandler from './api/cron/process-automations.js';
 import waAmcCronHandler from './api/cron/process-wa-amc.js';
+import waFollowupCronHandler from './api/cron/process-wa-followup.js';
 import processIntegrationsHandler from './api/cron/process-integrations.js';
 import gsheetsHandler from './api/webhook/gsheets.js';
 import indiamartHandler from './api/webhook/indiamart.js';
@@ -82,6 +83,7 @@ app.all('/api/appointments/book', wrap(bookHandler));
 app.all('/api/ecom/checkout', wrap(checkoutHandler));
 app.all('/api/cron/process-automations', wrap(cronHandler));
 app.all('/api/cron/process-wa-amc', wrap(waAmcCronHandler));
+app.all('/api/cron/process-wa-followup', wrap(waFollowupCronHandler));
 app.all('/api/cron/process-integrations', wrap(processIntegrationsHandler));
 app.all('/api/webhook/gsheets', wrap(gsheetsHandler));
 app.all('/api/webhook/indiamart', wrap(indiamartHandler));
@@ -159,3 +161,27 @@ const runWaAmcCron = async () => {
 };
 setInterval(runWaAmcCron, 24 * 60 * 60 * 1000); // once per day
 setTimeout(runWaAmcCron, 30 * 1000);             // first run 30s after boot
+
+// WhatsApp lead follow-up reminder — runs once per day.
+// Checks leads with a followup date exactly N days away and sends a WA alert.
+let waFollowupRunning = false;
+const runWaFollowupCron = async () => {
+  if (waFollowupRunning) return;
+  waFollowupRunning = true;
+  try {
+    const mockReq = { method: 'POST', query: {}, body: {} };
+    const mockRes = {
+      setHeader: () => {},
+      status: () => ({ json: () => {}, end: () => {} }),
+      json: () => {},
+      end: () => {},
+    };
+    await waFollowupCronHandler(mockReq, mockRes);
+  } catch (e) {
+    console.error('[wa-followup-cron] tick failed:', e?.message || e);
+  } finally {
+    waFollowupRunning = false;
+  }
+};
+setInterval(runWaFollowupCron, 24 * 60 * 60 * 1000); // once per day
+setTimeout(runWaFollowupCron, 45 * 1000);             // first run 45s after boot

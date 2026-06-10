@@ -1532,9 +1532,10 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { var: '#task#', label: 'Task Title' },
                             { var: '#duedate#', label: 'Due Date' },
                             { var: '#priority#', label: 'Task Priority' },
+                            { var: '#followupdate#', label: 'Follow-up Date' },
+                            { var: '#daysLeft#', label: 'Days Left' },
                             { var: '#contractNo#', label: 'AMC Contract No' },
                             { var: '#endDate#', label: 'AMC End Date' },
-                            { var: '#daysLeft#', label: 'AMC Days Left' },
                             { var: '#plan#', label: 'AMC Plan' },
                             { var: '#today#', label: "Today's Date" },
                             { var: '#tomorrow#', label: "Tomorrow's Date" },
@@ -1640,19 +1641,24 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       </label>
                     </div>
                     <div style={{ fontSize: 11, color: '#15803d', marginTop: 6 }}>When enabled, this template is sent automatically when the selected event occurs — no automation setup needed.</div>
-                    {/* ── AMC: days before expiry — only shown when amc_expiry is selected ── */}
-                    {waFormTrigger === 'amc_expiry' && (
+                    {/* ── Days-before field — shown for amc_expiry and lead_followup ── */}
+                    {(waFormTrigger === 'amc_expiry' || waFormTrigger === 'lead_followup') && (
                       <>
                         <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                           <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>⏰ Send this alert:</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <input type="number" id="new_wa_days" min="1" max="365" defaultValue="7"
+                            <input type="number" id="new_wa_days" min="1" max="365" defaultValue={waFormTrigger === 'lead_followup' ? '1' : '7'}
                               style={{ width: 70, padding: '6px 8px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }} />
-                            <span style={{ fontSize: 13, color: '#166534', fontWeight: 600 }}>days before AMC expiry</span>
+                            <span style={{ fontSize: 13, color: '#166534', fontWeight: 600 }}>
+                              {waFormTrigger === 'lead_followup' ? 'day(s) before follow-up date' : 'days before AMC expiry'}
+                            </span>
                           </div>
                         </div>
                         <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
-                          Set to <strong>7</strong> for a week-before warning, <strong>1</strong> for a final day reminder. Create separate templates for each milestone.
+                          {waFormTrigger === 'lead_followup'
+                            ? <>Set to <strong>1</strong> for a day-before reminder, <strong>0</strong> sends on the follow-up day itself. Create separate templates for different timings.</>
+                            : <>Set to <strong>7</strong> for a week-before warning, <strong>1</strong> for a final day reminder. Create separate templates for each milestone.</>
+                          }
                         </div>
                       </>
                     )}
@@ -1677,21 +1683,27 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       const autoTrigger = document.getElementById('new_wa_trigger').value;
                       const autoEnabled = document.getElementById('new_wa_autoEnabled').checked;
                       const recipientType = document.getElementById('new_wa_recipient').value;
-                      const daysBeforeExpiry = parseInt(document.getElementById('new_wa_days')?.value || '7', 10) || 7;
+                      const daysVal = parseInt(document.getElementById('new_wa_days')?.value || '7', 10) || 7;
+                      const daysBeforeExpiry  = autoTrigger === 'amc_expiry'    ? daysVal : undefined;
+                      const daysBeforeFollowup = autoTrigger === 'lead_followup' ? daysVal : undefined;
                       if (!name || !templateId) return toast('Name and Template ID required', 'error');
                       if (!body.trim()) return toast('Template message body is required', 'error');
 
                       const vars = extractVars(body);
+                      const tplObj = { name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientType,
+                        ...(daysBeforeExpiry  != null ? { daysBeforeExpiry }  : {}),
+                        ...(daysBeforeFollowup != null ? { daysBeforeFollowup } : {}),
+                      };
 
                       if (editingWA) {
                         const updated = whatsappTemplates.map(t =>
-                          t.id === editingWA.id ? { ...t, name, templateId, body, variables: vars, customCurl: editingWA.customCurl, autoTrigger, autoEnabled, recipientType, daysBeforeExpiry } : t
+                          t.id === editingWA.id ? { ...t, ...tplObj, customCurl: editingWA.customCurl } : t
                         );
                         await saveTemplatesNow(updated);
                         setEditingWA(null);
                         toast('Template updated & saved!', 'success');
                       } else {
-                        const updated = [...whatsappTemplates, { id: id(), name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientType, daysBeforeExpiry }];
+                        const updated = [...whatsappTemplates, { id: id(), ...tplObj }];
                         await saveTemplatesNow(updated);
                         toast('Template added & saved!', 'success');
                       }
@@ -1749,6 +1761,11 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                       ⏰ {t.daysBeforeExpiry || 7}d before expiry
                                     </span>
                                   )}
+                                  {t.autoTrigger === 'lead_followup' && (
+                                    <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid #bfdbfe' }}>
+                                      ⏰ {t.daysBeforeFollowup ?? 1}d before follow-up
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -1770,7 +1787,10 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   if (recipientEl) recipientEl.value = t.recipientType || 'client';
                                   setWaFormTrigger(t.autoTrigger || '');
                                   const daysEl = document.getElementById('new_wa_days');
-                                  if (daysEl) daysEl.value = t.daysBeforeExpiry || 7;
+                                  if (daysEl) {
+                                    if (t.autoTrigger === 'lead_followup') daysEl.value = t.daysBeforeFollowup ?? 1;
+                                    else daysEl.value = t.daysBeforeExpiry ?? 7;
+                                  }
                                 }, 0);
                                 window.scrollTo({ top: 0, behavior: 'smooth' });
                               }}>✏️ Edit</button>

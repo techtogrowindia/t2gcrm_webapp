@@ -151,6 +151,7 @@ export const AUTO_TRIGGER_EVENTS = [
   { value: 'lead_stage_changed', label: 'Lead Stage Changed' },
   { value: 'lead_assigned', label: 'Lead Assigned to Staff' },
   { value: 'customer_created', label: 'Lead Converted to Customer' },
+  { value: 'lead_followup', label: 'Lead Follow-up Reminder' },
   // Finance
   { value: 'quotation_created', label: 'Quotation Created' },
   { value: 'invoice_created', label: 'Invoice Created' },
