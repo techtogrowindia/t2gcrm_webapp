@@ -1484,6 +1484,16 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                   <div style={{ marginTop: 6, color: '#1e40af', fontWeight: 600 }}>
                     Example: <code>Hello #client#, Invoice #invoiceno# for Rs.#amt#/-</code> → <code>client=1, invoiceno=2, amt=3</code>
                   </div>
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      onClick={() => setShowWAGuide(true)}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                      📖 Open Variable Guide — all variables with examples (module-wise)
+                    </button>
+                    <div style={{ fontSize: 11, color: '#0369a1', marginTop: 4 }}>
+                      Confused about <code>#validuntil#</code>, <code>#endDate#</code>, <code>#requirement#</code> etc.? See every variable explained with examples for each module.
+                    </div>
+                  </div>
                 </div>
 
                 {/* ── Add / Edit Template Form ── */}
