@@ -133,8 +133,7 @@ export default function BookingPage() {
           fireAutoNotifications('appointment_booked', {
             // Provide multiple aliases so the CRM template body can use any
             // variable name that matches the Waprochat template definition.
-            name: form.name,      // #name#   ← use this if Waprochat template uses "name"
-            client: form.name,    // #client# ← alias
+            client: form.name,
             phone: form.phone,
             email: form.email || '',
             apptDate: selectedDate,

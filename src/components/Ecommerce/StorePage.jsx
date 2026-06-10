@@ -169,7 +169,6 @@ function CheckoutModal({ cart, ownerId, ecomName, customerSession, onClose, onSu
         // Fire WhatsApp auto-notification for order placed
         if (profile) {
           fireAutoNotifications('order_placed', {
-            name: form.name,
             client: form.name,
             phone: form.phone,
             email: form.email || '',

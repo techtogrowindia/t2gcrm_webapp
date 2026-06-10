@@ -585,7 +585,6 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     const payRecipientPhone = cMatchPay?.phone || lMatchPay?.phone;
     if (payRecipientPhone) {
       fireAutoNotifications('payment_received', {
-        name: payModal.client,
         client: payModal.client,
         phone: payRecipientPhone,
         invoiceno: payModal.no,
