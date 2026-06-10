@@ -163,6 +163,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const [editingCFIndex, setEditingCFIndex] = useState(null);
   const [editingWA, setEditingWA] = useState(null);
+  const [waFormTrigger, setWaFormTrigger] = useState('');
   const toast = useToast();
 
   const { data } = db.useQuery({
@@ -1629,7 +1630,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                   <div style={{ marginTop: 16, padding: 14, background: '#f0fdf4', borderRadius: 10, border: '1px solid #bbf7d0' }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: '#166534', textTransform: 'uppercase', marginBottom: 8 }}>⚡ Auto-Notification Trigger</div>
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <select id="new_wa_trigger" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}>
+                      <select id="new_wa_trigger" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}
+                        onChange={e => setWaFormTrigger(e.target.value)}>
                         {AUTO_TRIGGER_EVENTS.map(e => <option key={e.value} value={e.value}>{e.label}</option>)}
                       </select>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: '#166534', cursor: 'pointer' }}>
@@ -1638,18 +1640,22 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       </label>
                     </div>
                     <div style={{ fontSize: 11, color: '#15803d', marginTop: 6 }}>When enabled, this template is sent automatically when the selected event occurs — no automation setup needed.</div>
-                    {/* ── AMC: days before expiry ── */}
-                    <div id="amc_days_wrap" style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>⏰ Send this alert:</div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <input type="number" id="new_wa_days" min="1" max="365" defaultValue="7"
-                          style={{ width: 70, padding: '6px 8px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }} />
-                        <span style={{ fontSize: 13, color: '#166534', fontWeight: 600 }}>days before AMC expiry</span>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
-                      Set to <strong>7</strong> for a week-before warning, <strong>1</strong> for a final day reminder. Create separate templates for each milestone.
-                    </div>
+                    {/* ── AMC: days before expiry — only shown when amc_expiry is selected ── */}
+                    {waFormTrigger === 'amc_expiry' && (
+                      <>
+                        <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>⏰ Send this alert:</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input type="number" id="new_wa_days" min="1" max="365" defaultValue="7"
+                              style={{ width: 70, padding: '6px 8px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }} />
+                            <span style={{ fontSize: 13, color: '#166534', fontWeight: 600 }}>days before AMC expiry</span>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
+                          Set to <strong>7</strong> for a week-before warning, <strong>1</strong> for a final day reminder. Create separate templates for each milestone.
+                        </div>
+                      </>
+                    )}
                     {/* ── Recipient ── */}
                     <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>📱 Send message to:</div>
@@ -1697,6 +1703,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       document.getElementById('new_wa_autoEnabled').checked = false;
                       document.getElementById('new_wa_recipient').value = 'client';
                       if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
+                      setWaFormTrigger('');
                     }}>{editingWA ? 'Update Template' : 'Add Template'}</button>
                     {editingWA && <button className="btn btn-secondary" onClick={() => {
                       setEditingWA(null);
@@ -1707,6 +1714,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       document.getElementById('new_wa_autoEnabled').checked = false;
                       document.getElementById('new_wa_recipient').value = 'client';
                       if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
+                      setWaFormTrigger('');
                     }}>Cancel Edit</button>}
                   </div>
                 </div>
@@ -1760,6 +1768,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   if (triggerEl) triggerEl.value = t.autoTrigger || '';
                                   if (enabledEl) enabledEl.checked = !!t.autoEnabled;
                                   if (recipientEl) recipientEl.value = t.recipientType || 'client';
+                                  setWaFormTrigger(t.autoTrigger || '');
                                   const daysEl = document.getElementById('new_wa_days');
                                   if (daysEl) daysEl.value = t.daysBeforeExpiry || 7;
                                 }, 0);
