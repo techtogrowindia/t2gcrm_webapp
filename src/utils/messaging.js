@@ -177,31 +177,68 @@ export const fireAutoNotifications = async (eventType, data, profile, ownerId) =
     return;
   }
 
-  // Must have a recipient phone number
-  const phone = data.phone?.replace(/\D/g, '');
-  if (!phone) {
-    console.warn(`[AutoNotify] No phone number provided for event: ${eventType}. Skipping.`);
-    return;
-  }
-
   for (const tpl of matching) {
     try {
-      // Build variables from template body using #variable# syntax
+      // Determine recipient phone based on template's recipientType:
+      //   'owner'  → send to the business owner's phone (profile.phone)
+      //   'client' → send to the client/lead phone from the event data (default)
+      const recipientType = tpl.recipientType || 'client';
+      const rawPhone = recipientType === 'owner'
+        ? (profile.phone || data.ownerPhone || '')
+        : (data.phone || '');
+
+      const phone = rawPhone.replace(/\D/g, '');
+      if (!phone) {
+        console.warn(`[AutoNotify] No phone number for recipientType="${recipientType}" on event: ${eventType}. Skipping "${tpl.name}".`);
+        continue;
+      }
+
+      // Build variables from template body using #variable# syntax.
+      // Exclude #phone# — it is the recipient field (phone_number), not a
+      // template variable. Sending it as templateVariable-phone-N too would
+      // duplicate it and confuse Waprochat.
       const varMatches = tpl.body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
-      const variables = varMatches.map((m, i) => {
-        const varName = m.replace(/#/g, '');
-        return { index: i + 1, name: varName, value: data[varName] || '' };
-      });
+      const variables = varMatches
+        .filter(m => m !== '#phone#')
+        .map((m, i) => {
+          const varName = m.replace(/#/g, '');
+          return { index: i + 1, name: varName, value: data[varName] ?? '' };
+        });
 
       const message = {
         templateId: tpl.templateId,
         name: tpl.name,
         body: tpl.body,
-        variables
+        variables,
       };
 
-      await sendWhatsApp(phone, message, ownerId, ownerId);
-      console.log(`[AutoNotify] ✅ Sent "${tpl.name}" to ${phone} for event: ${eventType}`);
+      // Stable processedKey so the server dedup guard works correctly
+      const processedKey = `wa-auto-${ownerId}-${eventType}-${tpl.templateId}-${phone}-${data.entityId || data.invoiceno || data.apptDate || Date.now()}`;
+
+      const resp = await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: phone,
+          message: message.body || 'Template Message',
+          ownerId,
+          type: 'whatsapp',
+          templateId: message.templateId,
+          variables: message.variables,
+          processedKey,
+          body: message.body, // needed for dedup fallback
+        }),
+      });
+
+      const result = await resp.json();
+      if (result?.skipped) {
+        console.log(`[AutoNotify] ⏭️ Skipped duplicate "${tpl.name}" for event: ${eventType}`);
+      } else if (resp.ok && result?.success) {
+        console.log(`[AutoNotify] ✅ Sent "${tpl.name}" to ${phone} for event: ${eventType}`);
+        // Server-side (notify.js) logs to outbox — do NOT log again here
+      } else {
+        console.error(`[AutoNotify] ❌ Failed "${tpl.name}" for event: ${eventType}`, result?.error);
+      }
     } catch (err) {
       console.error(`[AutoNotify] ❌ Failed to send "${tpl.name}" for event: ${eventType}`, err);
     }

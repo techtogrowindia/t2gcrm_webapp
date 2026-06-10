@@ -75,7 +75,10 @@ export default async function handler(req, res) {
         
         if (variables && Array.isArray(variables)) {
           variables.forEach(v => {
-            formData.append(`templateVariable-${v.field}-${v.index}`, v.value || '');
+            // variables are built with `name` not `field` — use name with field as fallback
+            const key = v.name || v.field;
+            if (!key) return;
+            formData.append(`templateVariable-${key}-${v.index}`, v.value || '');
           });
         }
 

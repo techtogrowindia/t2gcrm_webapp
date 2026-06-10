@@ -482,10 +482,15 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         if (profile && form.phone) {
           fireAutoNotifications('lead_created', {
             client: form.name,
+            lead: form.name,
             phone: form.phone,
             email: form.email || '',
+            stage: form.stage || '',
+            source: form.source || '',
             date: new Date().toISOString().split('T')[0],
             bizName: profile.bizName || profile.businessName || '',
+            ownerPhone: profile.phone || '',
+            entityId: form.phone || form.email || form.name,
           }, profile, ownerId).catch(() => {});
         }
       }

@@ -432,6 +432,8 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
           amount: tots.total,
           date: payload.date,
           bizName: profile?.businessName || profile?.bizName || '',
+          ownerPhone: profile?.phone || '',
+          entityId: payload.no,
         }, profile, ownerId).catch(() => {});
       }
     }

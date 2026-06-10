@@ -1600,6 +1600,17 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       </label>
                     </div>
                     <div style={{ fontSize: 11, color: '#15803d', marginTop: 6 }}>When enabled, this template is sent automatically when the selected event occurs — no automation setup needed.</div>
+                    {/* ── Recipient ── */}
+                    <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>📱 Send message to:</div>
+                      <select id="new_wa_recipient" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}>
+                        <option value="client">Client / Lead (their phone number)</option>
+                        <option value="owner">Business Owner (my phone number)</option>
+                      </select>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
+                      <strong>Client</strong> — message goes to the lead/customer's phone. <strong>Business Owner</strong> — message goes to your phone (set in Business Settings → Phone).
+                    </div>
                   </div>
 
                   <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
@@ -1609,29 +1620,31 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       const body = document.getElementById('new_wa_body').value;
                       const autoTrigger = document.getElementById('new_wa_trigger').value;
                       const autoEnabled = document.getElementById('new_wa_autoEnabled').checked;
+                      const recipientType = document.getElementById('new_wa_recipient').value;
                       if (!name || !templateId) return toast('Name and Template ID required', 'error');
                       if (!body.trim()) return toast('Template message body is required', 'error');
 
                       const vars = extractVars(body);
 
                       if (editingWA) {
-                        const updated = whatsappTemplates.map(t => 
-                          t.id === editingWA.id ? { ...t, name, templateId, body, variables: vars, customCurl: editingWA.customCurl, autoTrigger, autoEnabled } : t
+                        const updated = whatsappTemplates.map(t =>
+                          t.id === editingWA.id ? { ...t, name, templateId, body, variables: vars, customCurl: editingWA.customCurl, autoTrigger, autoEnabled, recipientType } : t
                         );
                         await saveTemplatesNow(updated);
                         setEditingWA(null);
                         toast('Template updated & saved!', 'success');
                       } else {
-                        const updated = [...whatsappTemplates, { id: id(), name, templateId, body, variables: vars, autoTrigger, autoEnabled }];
+                        const updated = [...whatsappTemplates, { id: id(), name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientType }];
                         await saveTemplatesNow(updated);
                         toast('Template added & saved!', 'success');
                       }
-                      
+
                       document.getElementById('new_wa_name').value = '';
                       document.getElementById('new_wa_id').value = '';
                       document.getElementById('new_wa_body').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
+                      document.getElementById('new_wa_recipient').value = 'client';
                     }}>{editingWA ? 'Update Template' : 'Add Template'}</button>
                     {editingWA && <button className="btn btn-secondary" onClick={() => {
                       setEditingWA(null);
@@ -1640,6 +1653,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       document.getElementById('new_wa_body').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
+                      document.getElementById('new_wa_recipient').value = 'client';
                     }}>Cancel Edit</button>}
                   </div>
                 </div>
@@ -1664,7 +1678,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                               <span style={{ fontSize: 18 }}>💬</span>
                               <div>
                                 <div style={{ fontWeight: 700, fontSize: 14 }}>{t.name} {isBeingEdited && <span style={{ fontSize: 10, color: '#b45309', fontWeight: 400 }}>(Editing)</span>}</div>
-                                <div style={{ fontSize: 11, color: 'var(--muted)' }}>Template ID: <code style={{ background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: 4 }}>{t.templateId}</code></div>
+                                <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  Template ID: <code style={{ background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: 4 }}>{t.templateId}</code>
+                                  <span style={{ background: (t.recipientType || 'client') === 'owner' ? '#fef9c3' : '#f0fdf4', color: (t.recipientType || 'client') === 'owner' ? '#854d0e' : '#166534', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid', borderColor: (t.recipientType || 'client') === 'owner' ? '#fde68a' : '#86efac' }}>
+                                    📱 {(t.recipientType || 'client') === 'owner' ? 'To: Owner' : 'To: Client'}
+                                  </span>
+                                </div>
                               </div>
                             </div>
                             <div style={{ display: 'flex', gap: 6 }}>
@@ -1676,11 +1695,13 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   const bodyEl = document.getElementById('new_wa_body');
                                   const triggerEl = document.getElementById('new_wa_trigger');
                                   const enabledEl = document.getElementById('new_wa_autoEnabled');
+                                  const recipientEl = document.getElementById('new_wa_recipient');
                                   if (nameEl) nameEl.value = t.name;
                                   if (idEl) idEl.value = t.templateId;
                                   if (bodyEl) bodyEl.value = t.body;
                                   if (triggerEl) triggerEl.value = t.autoTrigger || '';
                                   if (enabledEl) enabledEl.checked = !!t.autoEnabled;
+                                  if (recipientEl) recipientEl.value = t.recipientType || 'client';
                                 }, 0);
                                 window.scrollTo({ top: 0, behavior: 'smooth' });
                               }}>✏️ Edit</button>
