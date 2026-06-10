@@ -211,13 +211,18 @@ export const fireAutoNotifications = async (eventType, data, profile, ownerId) =
   for (const tpl of matching) {
     try {
       // Determine recipient phone based on template's recipientType:
-      //   'owner'  → send to the WhatsApp Notification Number (profile.waNotifPhone),
-      //              falling back to profile.phone then data.ownerPhone
-      //   'client' → send to the client/lead phone from the event data (default)
+      //   'owner'    → WhatsApp Notification Number (profile.waNotifPhone → phone → data.ownerPhone)
+      //   'assignee' → the assigned staff member's phone (data.assigneePhone)
+      //   'client'   → the client/lead phone from the event data (default)
       const recipientType = tpl.recipientType || 'client';
-      const rawPhone = recipientType === 'owner'
-        ? (profile.waNotifPhone || profile.phone || data.ownerPhone || '')
-        : (data.phone || '');
+      let rawPhone;
+      if (recipientType === 'owner') {
+        rawPhone = profile.waNotifPhone || profile.phone || data.ownerPhone || '';
+      } else if (recipientType === 'assignee') {
+        rawPhone = data.assigneePhone || '';
+      } else {
+        rawPhone = data.phone || '';
+      }
 
       const phone = rawPhone.replace(/\D/g, '');
       if (!phone) {

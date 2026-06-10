@@ -52,8 +52,8 @@ const MODULES = [
     id: 'lead_assigned',
     label: '👤 Lead Assigned to Staff',
     trigger: 'lead_assigned',
-    how: 'Fires when a lead is assigned or reassigned to a team member.',
-    recipient: 'Client (lead\'s phone) or Owner',
+    how: 'Fires when a lead is assigned or reassigned to a team member. To alert the STAFF MEMBER that a lead was assigned to them, set "Send message to" → Assigned Staff Member.',
+    recipient: 'Client, Owner, or Assigned Staff Member (their phone in Teams)',
     variables: [
       { name: '#lead#',          desc: 'Lead\'s full name',                    example: 'Rajesh Kumar' },
       { name: '#client#',        desc: 'Same as lead name (alias)',             example: 'Rajesh Kumar' },
@@ -62,7 +62,7 @@ const MODULES = [
       { name: '#leadphoneno#',   desc: 'Lead phone number (use inside body)',   example: '919876543210' },
       { name: '#date#',          desc: 'Today\'s date',                         example: '10/06/2026' },
     ],
-    example: `Hi #client#, your enquiry has been assigned to #assignee#.\nThey will contact you shortly.`,
+    example: `Hi #assignee#, a new lead has been assigned to you:\n#lead# (Stage: #stage#)\nPhone: #leadphoneno#\nPlease follow up.`,
   },
   {
     id: 'customer_created',
@@ -85,7 +85,7 @@ const MODULES = [
     label: '📅 Lead Follow-up Reminder',
     trigger: 'lead_followup',
     how: 'Fired by the daily cron N days before a lead\'s follow-up date. Set "Days before follow-up" on the template (default: 1).',
-    recipient: 'Client (lead\'s phone) or Owner',
+    recipient: 'Client, Owner, or Assigned Staff Member',
     variables: [
       { name: '#lead#',          desc: 'Lead\'s full name',                    example: 'Rajesh Kumar' },
       { name: '#client#',        desc: 'Same as lead name (alias)',             example: 'Rajesh Kumar' },

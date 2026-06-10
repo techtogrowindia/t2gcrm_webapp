@@ -90,6 +90,19 @@ export default async function handler(req, res) {
       const leads = await getLeadsForOwner(ownerId);
       const leadsWithFollowup = leads.filter(l => l.followup);
 
+      // Team members — only fetched if a follow-up template targets the assignee
+      let teamMembers = null;
+      const needsAssignee = followupTemplates.some(t => t.recipientType === 'assignee');
+      if (needsAssignee) {
+        const r = await db.query({ teamMembers: { $: { where: { userId: ownerId } } } });
+        teamMembers = r.teamMembers || [];
+      }
+      const resolveAssigneePhone = (lead) => {
+        if (!teamMembers) return '';
+        const m = teamMembers.find(t => t.name === lead.assign || (t.email && t.email === lead.assign));
+        return m?.phone || '';
+      };
+
       for (const lead of leadsWithFollowup) {
         // followup can be a number (ms) or date string — normalise
         const followupMs = typeof lead.followup === 'number'
@@ -124,9 +137,8 @@ export default async function handler(req, res) {
           if (recipientType === 'owner') {
             rawPhone = profile.waNotifPhone || profile.phone || '';
           } else if (recipientType === 'assignee') {
-            // Send to the assigned staff member's phone (stored in teamMembers)
-            // Resolved at send time by looking up the assignee name
-            rawPhone = lead.assigneePhone || lead.phone || '';
+            // Send to the assigned staff member's phone (resolved from teamMembers)
+            rawPhone = resolveAssigneePhone(lead);
           } else {
             rawPhone = lead.phone || '';
           }

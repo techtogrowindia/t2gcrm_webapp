@@ -460,12 +460,17 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
         // Fire WhatsApp notifications for lead updates
         const profileForNotif = data?.userProfiles?.[0];
-        if (profileForNotif && form.phone) {
+        if (profileForNotif) {
+          // Resolve the assigned staff member's phone (assign stores name or email)
+          const assignedMember = team.find(t =>
+            t.name === form.assign || (t.email && t.email === form.assign)
+          );
           const commonData = {
             client: form.name, lead: form.name,
             phone: form.phone, leadphoneno: form.phone, clientphoneno: form.phone,
             email: form.email || '', stage: form.stage || '',
             source: form.source || '', assignee: form.assign || '',
+            assigneePhone: assignedMember?.phone || '',
             date: new Date().toISOString().split('T')[0],
             bizName: profileForNotif.bizName || profileForNotif.businessName || '',
             ownerPhone: profileForNotif.waNotifPhone || profileForNotif.phone || '',

@@ -1677,10 +1677,11 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       <select id="new_wa_recipient" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}>
                         <option value="client">Client / Lead (their phone number)</option>
                         <option value="owner">Business Owner (my phone number)</option>
+                        <option value="assignee">Assigned Staff Member (their phone number)</option>
                       </select>
                     </div>
                     <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
-                      <strong>Client</strong> — message goes to the lead/customer's phone. <strong>Business Owner</strong> — message goes to your phone (set in Business Settings → Phone).
+                      <strong>Client</strong> — goes to the lead/customer's phone. <strong>Business Owner</strong> — goes to your number (Business Settings → WhatsApp Notification Number). <strong>Assigned Staff Member</strong> — goes to the team member the lead/task is assigned to (their phone in Teams). Best for "a lead was assigned to you" alerts.
                     </div>
                   </div>
 

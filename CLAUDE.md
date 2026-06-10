@@ -277,7 +277,7 @@ Plans are stored in `globalSettings.plans` and define:
 
 3. **`fireAutoNotifications`** (`src/utils/messaging.js`):
    - Finds matching templates (`autoTrigger === eventType && autoEnabled === true`)
-   - Determines recipient phone from `recipientType` (`'client'` → `data.phone`, `'owner'` → `profile.waNotifPhone || profile.phone`)
+   - Determines recipient phone from `recipientType`: `'client'` → `data.phone`; `'owner'` → `profile.waNotifPhone || profile.phone`; `'assignee'` → `data.assigneePhone` (the assigned staff member's phone, resolved from `teamMembers` by matching the lead's `assign` against name/email at the call site)
    - Extracts `#variable#` names from body (two regexes: normal vars + `#+Nday#` date tokens)
    - **Excludes `#phone#`** from variables — it is the `phone_number` recipient field, NOT a template variable
    - Resolves built-in date vars (`#today#`, `#tomorrow#`, `#+Nday#`) at send time
@@ -324,7 +324,7 @@ Plans are stored in `globalSettings.plans` and define:
   variables: [{ index, name, raw }],  // auto-extracted from body on save
   autoTrigger: string,  // event key (see table below) or '' for manual-only
   autoEnabled: boolean, // whether auto-send is active
-  recipientType: string, // 'client' (default) | 'owner'
+  recipientType: string, // 'client' (default) | 'owner' | 'assignee' (assigned staff member's phone — needs data.assigneePhone)
   customCurl: string,   // optional: user-edited curl override (bypasses auto-generation)
 }
 ```
