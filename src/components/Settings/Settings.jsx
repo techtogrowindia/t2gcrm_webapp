@@ -67,6 +67,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     bizExtraEmails: profile?.bizExtraEmails || '',
     slug: profile?.slug || '',
     defaultCurrency: profile?.defaultCurrency || 'INR',
+    waNotifPhone: profile?.waNotifPhone || '',
   });
   const [fin, setFin] = useState({
     qPrefix: profile?.qPrefix || 'QUO-',
@@ -124,6 +125,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         bizExtraEmails: profile.bizExtraEmails || '',
         slug: profile.slug || '',
         defaultCurrency: profile.defaultCurrency || 'INR',
+        waNotifPhone: profile.waNotifPhone || '',
       });
       setFin({
         qPrefix: profile.qPrefix || 'QUO-',
@@ -690,6 +692,17 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                   <div className="fg"><label>GSTIN</label><input value={biz.gstin} onChange={e => setBiz(b => ({ ...b, gstin: e.target.value }))} placeholder="22AAAAA0000A1Z5" /></div>
                   <div className="fg"><label>PAN</label><input value={biz.pan} onChange={e => setBiz(b => ({ ...b, pan: e.target.value }))} placeholder="AAAPZ1234C" /></div>
                   <div className="fg span2"><label>Website</label><input value={biz.website} onChange={e => setBiz(b => ({ ...b, website: e.target.value }))} /></div>
+                  <div className="fg span2">
+                    <label>WhatsApp Notification Number</label>
+                    <input
+                      value={biz.waNotifPhone}
+                      onChange={e => setBiz(b => ({ ...b, waNotifPhone: e.target.value }))}
+                      placeholder="e.g. 919876543210 (with country code, no +)"
+                    />
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                      WhatsApp template messages set to <strong>"Business Owner"</strong> will be sent to this number. Include country code (e.g. 91 for India).
+                    </div>
+                  </div>
                   <div className="fg span2">
                     <label>Additional Notification Emails (comma-separated)</label>
                     <input 
