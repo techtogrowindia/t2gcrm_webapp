@@ -457,6 +457,40 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
         toast('Lead updated!', 'success');
         refetchPage();
+
+        // Fire WhatsApp notifications for lead updates
+        const profileForNotif = data?.userProfiles?.[0];
+        if (profileForNotif && form.phone) {
+          const commonData = {
+            client: form.name, lead: form.name,
+            phone: form.phone, leadphoneno: form.phone, clientphoneno: form.phone,
+            email: form.email || '', stage: form.stage || '',
+            source: form.source || '', assignee: form.assign || '',
+            date: new Date().toISOString().split('T')[0],
+            bizName: profileForNotif.bizName || profileForNotif.businessName || '',
+            ownerPhone: profileForNotif.waNotifPhone || profileForNotif.phone || '',
+            entityId: editData.id,
+          };
+          // Stage changed
+          if (editData.stage !== form.stage && form.stage) {
+            fireAutoNotifications('lead_stage_changed', {
+              ...commonData,
+              fromstage: editData.stage || '',
+              tostage: form.stage,
+            }, profileForNotif, ownerId).catch(() => {});
+          }
+          // Assigned / reassigned
+          if (form.assign && form.assign !== editData.assign) {
+            fireAutoNotifications('lead_assigned', {
+              ...commonData,
+              assignee: form.assign,
+            }, profileForNotif, ownerId).catch(() => {});
+          }
+          // Converted to customer
+          if (isWon(form.stage) && editData.stage !== form.stage) {
+            fireAutoNotifications('customer_created', commonData, profileForNotif, ownerId).catch(() => {});
+          }
+        }
       } else {
         const newId = id();
         const newLeadPayload = { ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() };

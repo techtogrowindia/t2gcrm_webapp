@@ -146,11 +146,21 @@ export const sendWhatsAppMock = async (userId, to, body, metadata = {}) => {
  */
 export const AUTO_TRIGGER_EVENTS = [
   { value: '', label: 'None (Manual Only)' },
+  // Leads
+  { value: 'lead_created', label: 'Lead Created' },
+  { value: 'lead_stage_changed', label: 'Lead Stage Changed' },
+  { value: 'lead_assigned', label: 'Lead Assigned to Staff' },
+  { value: 'customer_created', label: 'Lead Converted to Customer' },
+  // Finance
+  { value: 'quotation_created', label: 'Quotation Created' },
   { value: 'invoice_created', label: 'Invoice Created' },
   { value: 'payment_received', label: 'Payment Received' },
+  // Operations
   { value: 'appointment_booked', label: 'Appointment Booked' },
+  { value: 'task_assigned', label: 'Task Assigned to Staff' },
+  { value: 'amc_expiry', label: 'AMC Expiry Alert' },
+  // E-commerce
   { value: 'order_placed', label: 'Order Placed (E-commerce)' },
-  { value: 'lead_created', label: 'Lead Created' },
 ];
 
 /**

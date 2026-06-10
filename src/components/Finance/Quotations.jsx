@@ -7,6 +7,7 @@ import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
 import { logActivity } from '../../utils/activityLogger';
+import { fireAutoNotifications } from '../../utils/messaging';
 
 const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', disc: 0, adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
 
@@ -308,6 +309,29 @@ export default function Quotations({ user, perms, ownerId, settings }) {
         toast('Quotation saved', 'success');
       }
       
+      // WhatsApp auto-notification for new quotation
+      if (!editData) {
+        const qProfile = data?.userProfiles?.[0];
+        const lMatch2 = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
+        const cMatch2 = customers.find(c => (c.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
+        const recipientPhone = lMatch2?.phone || cMatch2?.phone;
+        if (qProfile && recipientPhone) {
+          fireAutoNotifications('quotation_created', {
+            client: form.client,
+            phone: recipientPhone,
+            clientphoneno: recipientPhone,
+            leadphoneno: recipientPhone,
+            quoteno: payload.no,
+            amount: tots.total,
+            date: new Date().toISOString().split('T')[0],
+            validuntil: form.validUntil || '',
+            bizName: qProfile.bizName || qProfile.businessName || '',
+            ownerPhone: qProfile.waNotifPhone || qProfile.phone || '',
+            entityId: payload.no,
+          }, qProfile, ownerId).catch(() => {});
+        }
+      }
+
       setModal(false);
     } catch { toast('Error saving quotation', 'error'); }
     finally { setSaving(false); }

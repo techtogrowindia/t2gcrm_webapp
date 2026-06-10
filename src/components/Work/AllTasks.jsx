@@ -5,6 +5,7 @@ import { fmtD, stageBadgeClass, prioBadgeClass } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
+import { fireAutoNotifications } from '../../utils/messaging';
 
 const DEFAULT_TASK_STATUSES = ['Pending', 'In Progress', 'Completed'];
 
@@ -205,6 +206,29 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
         const result = await res.json();
         // Backend handles task numbering and creation log
         toast('Task created', 'success');
+
+        // WhatsApp notification when task is assigned to a staff member
+        if (form.assignTo) {
+          const tProfile = profile;
+          const assignedMember = (data?.teamMembers || []).find(t => t.name === form.assignTo);
+          const assignedPhone = assignedMember?.phone || '';
+          if (tProfile && assignedPhone) {
+            fireAutoNotifications('task_assigned', {
+              assignee: form.assignTo,
+              phone: assignedPhone,
+              clientphoneno: assignedPhone,
+              leadphoneno: assignedPhone,
+              task: form.title,
+              client: form.client || '',
+              duedate: form.dueDate || '',
+              priority: form.priority || '',
+              date: new Date().toISOString().split('T')[0],
+              bizName: tProfile.bizName || tProfile.businessName || '',
+              ownerPhone: tProfile.waNotifPhone || tProfile.phone || '',
+              entityId: form.title,
+            }, tProfile, ownerId).catch(() => {});
+          }
+        }
       }
       setModal(false);
     } catch (e) {
