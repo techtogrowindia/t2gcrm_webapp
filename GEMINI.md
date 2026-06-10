@@ -271,6 +271,83 @@ The `COLLECTION_MAP` in `api/data.js` maps module keys to actual InstantDB colle
 
 **Integration:** SMTP config per business (stored in userProfiles, custom for white-label)
 
+## WhatsApp Auto-Notification System (Waprochat)
+
+**Architecture:** Settings UI → `src/utils/messaging.js` → `api/notify.js` → Waprochat API.
+
+### End-to-end flow
+
+1. Owner creates template in Settings → WhatsApp Templates. Body uses `#variableName#` — **names must exactly match the Waprochat template variable names**.
+2. Component calls `fireAutoNotifications(eventType, data, profile, ownerId)` after DB write.
+3. `fireAutoNotifications` finds matching templates, resolves recipient phone, builds variables array, calls `POST /api/notify`.
+4. `api/notify.js` deduplicates, sends to Waprochat as `templateVariable-<name>-<index>=<value>`.
+
+### CRITICAL RULES
+
+1. **Variable names must exactly match Waprochat.** `templateVariable-<name>-<index>` — the `<name>` comes from `#variableName#` in the body.
+2. **`#phone#` is ALWAYS excluded from variables.** It is the `phone_number` recipient field. Use `#leadphoneno#` / `#clientphoneno#` to embed phone number in message body.
+3. **`api/notify.js` is the sole outbox logger for WhatsApp.** `fireAutoNotifications` must NOT call `logToOutbox` — that causes duplicate Messaging Log rows.
+4. **`v.name` not `v.field` in notify.js.** Variables are `{ index, name, value }`. Field key must use `v.name || v.field` (using `v.field` alone = `undefined` = `templateVariable-undefined-N` = Waprochat ignores all variables).
+5. **`processedKey` must be stable per send.** Format: `wa-auto-<ownerId>-<eventType>-<templateId>-<phone>-<entityId>`.
+
+### userProfiles WhatsApp fields
+
+| Field | Purpose |
+|---|---|
+| `waApiToken` | Waprochat API token |
+| `waPhoneId` | Waprochat phone number ID |
+| `whatsappTemplates` | Array of template objects |
+| `waNotifPhone` | Owner's dedicated WhatsApp receive number (priority over `bizPhone`) |
+
+### Template object schema
+
+```js
+{ id, name, templateId, body, variables:[{index,name,raw}],
+  autoTrigger, autoEnabled, recipientType:'client'|'owner', customCurl }
+```
+
+### Auto-trigger events + variables
+
+| Event key | When fires | Key variables |
+|---|---|---|
+| `lead_created` | New lead | `#lead#`, `#client#`, `#leadphoneno#`, `#stage#`, `#source#`, `#email#`, `#date#` |
+| `lead_stage_changed` | Stage edited | `#lead#`, `#client#`, `#fromstage#`, `#tostage#`, `#stage#`, `#leadphoneno#`, `#assignee#` |
+| `lead_assigned` | Assigned/reassigned | `#lead#`, `#client#`, `#assignee#`, `#leadphoneno#`, `#stage#` |
+| `customer_created` | Lead → Won | `#lead#`, `#client#`, `#leadphoneno#`, `#stage#`, `#date#` |
+| `quotation_created` | New quote | `#client#`, `#clientphoneno#`, `#quoteno#`, `#amount#`, `#validuntil#`, `#date#` |
+| `invoice_created` | New invoice | `#client#`, `#clientphoneno#`, `#invoiceno#`, `#amount#`, `#date#` |
+| `payment_received` | Payment logged | `#client#`, `#clientphoneno#`, `#invoiceno#`, `#amount#`, `#date#` |
+| `appointment_booked` | Booking submitted | `#client#`, `#clientphoneno#`, `#service#`, `#apptDate#`, `#apptTime#`, `#date#` |
+| `task_assigned` | New task with assignee | `#assignee#`, `#task#`, `#client#`, `#duedate#`, `#priority#` — sends to **staff phone** |
+| `order_placed` | E-commerce checkout | `#client#`, `#clientphoneno#`, `#orderId#`, `#orderAmount#`, `#date#` |
+
+Built-in date vars (DD/MM/YYYY): `#today#`, `#tomorrow#`, `#+1day#` … `#+Nday#`
+
+### Checklist for adding a new trigger event
+
+1. Add `{ value, label }` to `AUTO_TRIGGER_EVENTS` in `src/utils/messaging.js`
+2. Call `fireAutoNotifications('event_key', data, profile, ownerId)` in the component after DB write
+3. `data` must include: `phone` (recipient), `ownerPhone` (`waNotifPhone||profile.phone`), `entityId` (dedup), `bizName`, `date`, plus all event-specific vars
+4. Add Insert Variable buttons in Settings.jsx WhatsApp Templates tab
+5. Update the event table in CLAUDE.md + GEMINI.md
+
+### Call sites
+
+| File | Events |
+|---|---|
+| `LeadsView.jsx` | `lead_created`, `lead_stage_changed`, `lead_assigned`, `customer_created` |
+| `Invoices.jsx` | `invoice_created`, `payment_received` |
+| `Quotations.jsx` | `quotation_created` |
+| `AllTasks.jsx` | `task_assigned` |
+| `BookingPage.jsx` | `appointment_booked` |
+| `StorePage.jsx` | `order_placed` |
+
+### Fixed bugs (never revert)
+
+- **`v.field` undefined**: `notify.js` used `v.field` — always `undefined`. Fixed to `v.name || v.field`.
+- **Double outbox log**: client-side `logToOutbox` + server-side write = 2 rows. Removed client-side log.
+- **`#phone#` as variable**: was sent as `templateVariable-phone-N` AND `phone_number`. Fixed: always excluded from variables array.
+
 ## Lead Integrations
 
 ### Google Sheets

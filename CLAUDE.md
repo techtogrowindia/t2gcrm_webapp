@@ -265,6 +265,122 @@ Plans are stored in `globalSettings.plans` and define:
 
 **Integration:** SMTP config per business (stored in userProfiles, custom for white-label)
 
+## WhatsApp Auto-Notification System (Waprochat)
+
+**Architecture:** Three-layer system — Settings UI → `src/utils/messaging.js` → `api/notify.js` → Waprochat API.
+
+### How it works end-to-end
+
+1. **Template setup** (Settings → WhatsApp Templates): Owner creates a template matching a Waprochat template. The body uses `#variableName#` placeholders — the **exact same names** as the variable names defined in the Waprochat portal. Template is saved in `userProfiles.whatsappTemplates[]`.
+
+2. **Event fires** (e.g. invoice saved, lead created): The component calls `fireAutoNotifications(eventType, data, profile, ownerId)` from `src/utils/messaging.js`.
+
+3. **`fireAutoNotifications`** (`src/utils/messaging.js`):
+   - Finds matching templates (`autoTrigger === eventType && autoEnabled === true`)
+   - Determines recipient phone from `recipientType` (`'client'` → `data.phone`, `'owner'` → `profile.waNotifPhone || profile.phone`)
+   - Extracts `#variable#` names from body (two regexes: normal vars + `#+Nday#` date tokens)
+   - **Excludes `#phone#`** from variables — it is the `phone_number` recipient field, NOT a template variable
+   - Resolves built-in date vars (`#today#`, `#tomorrow#`, `#+Nday#`) at send time
+   - Resolves other vars by looking up `data[varName]`
+   - Calls `POST /api/notify` with `{ type:'whatsapp', to, templateId, variables, processedKey, ownerId }`
+
+4. **`api/notify.js`**:
+   - Deduplicates via `executedAutomations` collection (minute-window, keyed by `processedKey`)
+   - Fetches `waApiToken` + `waPhoneId` from `userProfiles` (never from client)
+   - Sends to Waprochat: `POST https://portal.waprochat.in/api/v1/whatsapp/send/template`
+   - Form fields: `apiToken`, `phone_number_id`, `template_id`, `phone_number`, `templateVariable-<name>-<index>=<value>`
+   - **`v.name` is used for the field key** (not `v.field` — that was a bug, fixed)
+   - Logs result to `outbox` collection (server-side only — do NOT also log client-side)
+
+### CRITICAL RULES — never break these
+
+1. **Variable names must exactly match Waprochat template variable names.** The CRM sends `templateVariable-<name>-<index>=<value>` where `<name>` is taken directly from the `#variableName#` in the template body. If the Waprochat template defines a variable named `name`, the body must use `#name#` — not `#client#`.
+
+2. **`#phone#` is always excluded from the variables array.** It is sent as the `phone_number` top-level field (the recipient). Including it in `templateVariable-phone-N` too would duplicate it and break the send. If a user needs the phone number inside the message body, they use `#leadphoneno#` or `#clientphoneno#` instead.
+
+3. **Server (`api/notify.js`) is the sole outbox logger for WhatsApp.** `fireAutoNotifications` does NOT call `logToOutbox`. Logging in both places causes duplicate rows in Messaging Logs.
+
+4. **`v.name` not `v.field` in notify.js.** Variables are built with `{ index, name, value }`. The Waprochat field key must use `v.name || v.field` — using `v.field` alone gives `undefined` → every variable posts as `templateVariable-undefined-N` and Waprochat ignores them.
+
+5. **`processedKey` must be stable and unique per send.** Format: `wa-auto-<ownerId>-<eventType>-<templateId>-<phone>-<entityId>`. This prevents duplicates within the minute window.
+
+### userProfiles fields for WhatsApp
+
+| Field | Purpose |
+|---|---|
+| `waApiToken` | Waprochat API token |
+| `waPhoneId` | Waprochat phone number ID |
+| `whatsappTemplates` | Array of template objects (see schema below) |
+| `waNotifPhone` | Owner's dedicated WhatsApp number for `recipientType:'owner'` templates. Takes priority over `bizPhone`. Include country code (e.g. `919876543210`). |
+
+### Template object schema (`userProfiles.whatsappTemplates[]`)
+
+```js
+{
+  id: string,           // internal UUID
+  name: string,         // display name (e.g. "Invoice Notification")
+  templateId: string,   // Waprochat template ID (e.g. "388925")
+  body: string,         // message body with #variable# placeholders
+  variables: [{ index, name, raw }],  // auto-extracted from body on save
+  autoTrigger: string,  // event key (see table below) or '' for manual-only
+  autoEnabled: boolean, // whether auto-send is active
+  recipientType: string, // 'client' (default) | 'owner'
+  customCurl: string,   // optional: user-edited curl override (bypasses auto-generation)
+}
+```
+
+### Auto-trigger events + available variables
+
+| Event key | When fires | Key data variables |
+|---|---|---|
+| `lead_created` | New lead saved | `#lead#`, `#client#`, `#phone#`*, `#leadphoneno#`, `#clientphoneno#`, `#stage#`, `#source#`, `#email#`, `#date#`, `#bizName#` |
+| `lead_stage_changed` | Lead stage edited | `#lead#`, `#client#`, `#fromstage#`, `#tostage#`, `#stage#`, `#phone#`*, `#leadphoneno#`, `#assignee#`, `#date#` |
+| `lead_assigned` | Lead assigned/reassigned | `#lead#`, `#client#`, `#assignee#`, `#phone#`*, `#leadphoneno#`, `#stage#`, `#date#` |
+| `customer_created` | Lead moves to Won | `#lead#`, `#client#`, `#phone#`*, `#leadphoneno#`, `#stage#`, `#date#` |
+| `quotation_created` | New quotation saved | `#client#`, `#phone#`*, `#clientphoneno#`, `#quoteno#`, `#amount#`, `#validuntil#`, `#date#`, `#bizName#` |
+| `invoice_created` | New invoice saved | `#client#`, `#phone#`*, `#clientphoneno#`, `#invoiceno#`, `#amount#`, `#date#`, `#bizName#` |
+| `payment_received` | Payment logged on invoice | `#client#`, `#phone#`*, `#clientphoneno#`, `#invoiceno#`, `#amount#`, `#date#`, `#bizName#` |
+| `appointment_booked` | Booking form submitted | `#client#`, `#phone#`*, `#clientphoneno#`, `#service#`, `#date#`, `#apptDate#`, `#apptTime#`, `#bizName#` |
+| `task_assigned` | New task with assignee | `#assignee#`, `#task#`, `#client#`, `#duedate#`, `#priority#`, `#date#` — **phone = staff member's phone** |
+| `amc_expiry` | Available for manual/cron | `#client#`, `#phone#`*, `#contractNo#`, `#endDate#`, `#date#` |
+| `order_placed` | E-commerce checkout | `#client#`, `#phone#`*, `#clientphoneno#`, `#orderId#`, `#orderAmount#`, `#orderStatus#`, `#date#`, `#bizName#` |
+
+*`#phone#` is the **recipient** field — excluded from template variables. Use `#leadphoneno#` or `#clientphoneno#` to include the phone number inside the message body.
+
+### Built-in date variables (resolved at send time, DD/MM/YYYY)
+
+| Variable | Value |
+|---|---|
+| `#today#` | Today's date |
+| `#tomorrow#` | Tomorrow's date |
+| `#+1day#` | Today + 1 day |
+| `#+Nday#` | Today + N days (any positive integer, e.g. `#+30day#`) |
+
+### How to add a new trigger event (checklist)
+
+1. **`src/utils/messaging.js`** — add `{ value: 'event_key', label: 'Human Label' }` to `AUTO_TRIGGER_EVENTS`.
+2. **Component** where the action happens — call `fireAutoNotifications('event_key', data, profile, ownerId).catch(() => {})` after the DB write succeeds. Import `{ fireAutoNotifications }` from `'../../utils/messaging'`.
+3. **`data` object** — include all variables a user might put in their template body. Follow naming conventions: `client` for customer name, `phone` for recipient, `leadphoneno`/`clientphoneno` for phone-in-body, `date` for ISO date, `bizName` for business name, `ownerPhone` for `waNotifPhone || profile.phone`, `entityId` for a stable dedup identifier.
+4. **`src/components/Settings/Settings.jsx`** — add Insert Variable buttons for the new variables in the `WhatsApp Templates` tab.
+5. **This doc** — add the event row to the table above.
+
+### Call sites (where `fireAutoNotifications` is called)
+
+| File | Event(s) |
+|---|---|
+| `src/components/Leads/LeadsView.jsx` | `lead_created`, `lead_stage_changed`, `lead_assigned`, `customer_created` |
+| `src/components/Finance/Invoices.jsx` | `invoice_created`, `payment_received` |
+| `src/components/Finance/Quotations.jsx` | `quotation_created` |
+| `src/components/Work/AllTasks.jsx` | `task_assigned` |
+| `src/components/Appointments/BookingPage.jsx` | `appointment_booked` |
+| `src/components/Ecommerce/StorePage.jsx` | `order_placed` |
+
+### Known bugs (fixed — never revert)
+
+- **`v.field` undefined bug**: `notify.js` built `templateVariable-${v.field}-${v.index}` but variables are built with `v.name`. Fixed to `v.name || v.field`. Reverting this means ALL template variables silently post as `templateVariable-undefined-N` and Waprochat ignores them — the template body renders with raw `#client#`, `#date#` etc.
+- **Double outbox log**: `sendWhatsApp` in `messaging.js` had a client-side `logToOutbox` AND `notify.js` had a server-side write → 2 log rows per send. Fixed: `fireAutoNotifications` calls `/api/notify` directly, server is the sole logger.
+- **`#phone#` as template variable**: if body contained `#phone#`, it was sent as both `templateVariable-phone-N` AND `phone_number`. Fixed: `#phone#` always excluded from the variables array.
+
 ## Lead Integrations
 
 ### Google Sheets
