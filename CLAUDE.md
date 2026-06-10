@@ -333,7 +333,7 @@ Plans are stored in `globalSettings.plans` and define:
 
 | Event key | When fires | Key data variables |
 |---|---|---|
-| `lead_created` | New lead saved | `#lead#`, `#client#`, `#phone#`*, `#leadphoneno#`, `#clientphoneno#`, `#stage#`, `#source#`, `#email#`, `#date#`, `#bizName#` |
+| `lead_created` | New lead saved | `#lead#`, `#client#`, `#phone#`*, `#leadphoneno#`, `#clientphoneno#`, `#stage#`, `#source#`, `#requirement#`, `#email#`, `#date#`, `#bizName#` |
 | `lead_stage_changed` | Lead stage edited | `#lead#`, `#client#`, `#fromstage#`, `#tostage#`, `#stage#`, `#phone#`*, `#leadphoneno#`, `#assignee#`, `#date#` |
 | `lead_assigned` | Lead assigned/reassigned | `#lead#`, `#client#`, `#assignee#`, `#phone#`*, `#leadphoneno#`, `#stage#`, `#date#` |
 | `customer_created` | Lead moves to Won | `#lead#`, `#client#`, `#phone#`*, `#leadphoneno#`, `#stage#`, `#date#` |

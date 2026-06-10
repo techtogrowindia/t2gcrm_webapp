@@ -1528,6 +1528,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { var: '#clientphoneno#', label: 'Client Phone No' },
                             { var: '#assignee#', label: 'Assignee' },
                             { var: '#stage#', label: 'Lead Stage' },
+                            { var: '#requirement#', label: 'Lead Requirement' },
                             { var: '#fromstage#', label: 'From Stage' },
                             { var: '#tostage#', label: 'To Stage' },
                             { var: '#quoteno#', label: 'Quote No' },

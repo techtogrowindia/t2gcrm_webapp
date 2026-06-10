@@ -470,6 +470,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
             phone: form.phone, leadphoneno: form.phone, clientphoneno: form.phone,
             email: form.email || '', stage: form.stage || '',
             source: form.source || '', assignee: form.assign || '',
+            requirement: form.requirement || '',
             assigneePhone: assignedMember?.phone || '',
             date: new Date().toISOString().split('T')[0],
             bizName: profileForNotif.bizName || profileForNotif.businessName || '',
@@ -528,9 +529,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
             email: form.email || '',
             stage: form.stage || '',
             source: form.source || '',
+            requirement: form.requirement || '',
             date: new Date().toISOString().split('T')[0],
             bizName: profile.bizName || profile.businessName || '',
-            ownerPhone: profile.phone || '',
+            ownerPhone: profile.waNotifPhone || profile.phone || '',
             entityId: form.phone || form.email || form.name,
           }, profile, ownerId).catch(() => {});
         }

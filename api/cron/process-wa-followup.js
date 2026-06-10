@@ -158,6 +158,7 @@ export default async function handler(req, res) {
             email:         lead.email || '',
             stage:         lead.stage || '',
             source:        lead.source || '',
+            requirement:   lead.requirement || '',
             assignee:      lead.assign || '',
             followupdate:  fmtDateTime(followupMs),
             daysLeft:      String(Math.max(0, daysLeft)),
