@@ -169,6 +169,7 @@ function CheckoutModal({ cart, ownerId, ecomName, customerSession, onClose, onSu
         // Fire WhatsApp auto-notification for order placed
         if (profile) {
           fireAutoNotifications('order_placed', {
+            name: form.name,
             client: form.name,
             phone: form.phone,
             email: form.email || '',
@@ -177,6 +178,8 @@ function CheckoutModal({ cart, ownerId, ecomName, customerSession, onClose, onSu
             orderStatus: 'Placed',
             date: new Date().toISOString().split('T')[0],
             bizName: profile?.bizName || '',
+            ownerPhone: profile?.phone || '',
+            entityId: data.orderId || '',
           }, profile, ownerId).catch(() => {});
         }
       }

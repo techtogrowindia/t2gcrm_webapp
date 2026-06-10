@@ -585,12 +585,15 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     const payRecipientPhone = cMatchPay?.phone || lMatchPay?.phone;
     if (payRecipientPhone) {
       fireAutoNotifications('payment_received', {
+        name: payModal.client,
         client: payModal.client,
         phone: payRecipientPhone,
         invoiceno: payModal.no,
         amount: parseFloat(payAmt),
         date: new Date().toISOString().split('T')[0],
         bizName: profile?.businessName || profile?.bizName || '',
+        ownerPhone: profile?.phone || '',
+        entityId: `${payModal.no}-${payAmt}`,
       }, profile, ownerId).catch(() => {});
     }
     
