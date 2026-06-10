@@ -1638,6 +1638,18 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       </label>
                     </div>
                     <div style={{ fontSize: 11, color: '#15803d', marginTop: 6 }}>When enabled, this template is sent automatically when the selected event occurs — no automation setup needed.</div>
+                    {/* ── AMC: days before expiry ── */}
+                    <div id="amc_days_wrap" style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>⏰ Send this alert:</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <input type="number" id="new_wa_days" min="1" max="365" defaultValue="7"
+                          style={{ width: 70, padding: '6px 8px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }} />
+                        <span style={{ fontSize: 13, color: '#166534', fontWeight: 600 }}>days before AMC expiry</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
+                      Set to <strong>7</strong> for a week-before warning, <strong>1</strong> for a final day reminder. Create separate templates for each milestone.
+                    </div>
                     {/* ── Recipient ── */}
                     <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>📱 Send message to:</div>
@@ -1659,6 +1671,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       const autoTrigger = document.getElementById('new_wa_trigger').value;
                       const autoEnabled = document.getElementById('new_wa_autoEnabled').checked;
                       const recipientType = document.getElementById('new_wa_recipient').value;
+                      const daysBeforeExpiry = parseInt(document.getElementById('new_wa_days')?.value || '7', 10) || 7;
                       if (!name || !templateId) return toast('Name and Template ID required', 'error');
                       if (!body.trim()) return toast('Template message body is required', 'error');
 
@@ -1666,13 +1679,13 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
                       if (editingWA) {
                         const updated = whatsappTemplates.map(t =>
-                          t.id === editingWA.id ? { ...t, name, templateId, body, variables: vars, customCurl: editingWA.customCurl, autoTrigger, autoEnabled, recipientType } : t
+                          t.id === editingWA.id ? { ...t, name, templateId, body, variables: vars, customCurl: editingWA.customCurl, autoTrigger, autoEnabled, recipientType, daysBeforeExpiry } : t
                         );
                         await saveTemplatesNow(updated);
                         setEditingWA(null);
                         toast('Template updated & saved!', 'success');
                       } else {
-                        const updated = [...whatsappTemplates, { id: id(), name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientType }];
+                        const updated = [...whatsappTemplates, { id: id(), name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientType, daysBeforeExpiry }];
                         await saveTemplatesNow(updated);
                         toast('Template added & saved!', 'success');
                       }
@@ -1683,6 +1696,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
                       document.getElementById('new_wa_recipient').value = 'client';
+                      if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
                     }}>{editingWA ? 'Update Template' : 'Add Template'}</button>
                     {editingWA && <button className="btn btn-secondary" onClick={() => {
                       setEditingWA(null);
@@ -1692,6 +1706,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
                       document.getElementById('new_wa_recipient').value = 'client';
+                      if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
                     }}>Cancel Edit</button>}
                   </div>
                 </div>
@@ -1721,6 +1736,11 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   <span style={{ background: (t.recipientType || 'client') === 'owner' ? '#fef9c3' : '#f0fdf4', color: (t.recipientType || 'client') === 'owner' ? '#854d0e' : '#166534', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid', borderColor: (t.recipientType || 'client') === 'owner' ? '#fde68a' : '#86efac' }}>
                                     📱 {(t.recipientType || 'client') === 'owner' ? 'To: Owner' : 'To: Client'}
                                   </span>
+                                  {t.autoTrigger === 'amc_expiry' && (
+                                    <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid #bfdbfe' }}>
+                                      ⏰ {t.daysBeforeExpiry || 7}d before expiry
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -1740,6 +1760,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   if (triggerEl) triggerEl.value = t.autoTrigger || '';
                                   if (enabledEl) enabledEl.checked = !!t.autoEnabled;
                                   if (recipientEl) recipientEl.value = t.recipientType || 'client';
+                                  const daysEl = document.getElementById('new_wa_days');
+                                  if (daysEl) daysEl.value = t.daysBeforeExpiry || 7;
                                 }, 0);
                                 window.scrollTo({ top: 0, behavior: 'smooth' });
                               }}>✏️ Edit</button>

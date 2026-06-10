@@ -23,6 +23,7 @@ import attendanceHandler from './api/attendance.js';
 import bookHandler from './api/appointments/book.js';
 import checkoutHandler from './api/ecom/checkout.js';
 import cronHandler from './api/cron/process-automations.js';
+import waAmcCronHandler from './api/cron/process-wa-amc.js';
 import processIntegrationsHandler from './api/cron/process-integrations.js';
 import gsheetsHandler from './api/webhook/gsheets.js';
 import indiamartHandler from './api/webhook/indiamart.js';
@@ -80,6 +81,7 @@ app.all('/api/notify', wrap(notifyHandler));
 app.all('/api/appointments/book', wrap(bookHandler));
 app.all('/api/ecom/checkout', wrap(checkoutHandler));
 app.all('/api/cron/process-automations', wrap(cronHandler));
+app.all('/api/cron/process-wa-amc', wrap(waAmcCronHandler));
 app.all('/api/cron/process-integrations', wrap(processIntegrationsHandler));
 app.all('/api/webhook/gsheets', wrap(gsheetsHandler));
 app.all('/api/webhook/indiamart', wrap(indiamartHandler));
@@ -132,3 +134,28 @@ const runIntegrationsCron = async () => {
 };
 setInterval(runIntegrationsCron, 5 * 60 * 1000);   // every 5 minutes
 setTimeout(runIntegrationsCron, 10 * 1000);        // first run 10s after boot
+
+// WhatsApp AMC expiry reminder — runs once per day.
+// Finds AMC contracts expiring in exactly N days (per template config)
+// and sends a WhatsApp alert via Waprochat. Deduplicates via executedAutomations.
+let waAmcRunning = false;
+const runWaAmcCron = async () => {
+  if (waAmcRunning) return;
+  waAmcRunning = true;
+  try {
+    const mockReq = { method: 'POST', query: {}, body: {} };
+    const mockRes = {
+      setHeader: () => {},
+      status: () => ({ json: () => {}, end: () => {} }),
+      json: () => {},
+      end: () => {},
+    };
+    await waAmcCronHandler(mockReq, mockRes);
+  } catch (e) {
+    console.error('[wa-amc-cron] tick failed:', e?.message || e);
+  } finally {
+    waAmcRunning = false;
+  }
+};
+setInterval(runWaAmcCron, 24 * 60 * 60 * 1000); // once per day
+setTimeout(runWaAmcCron, 30 * 1000);             // first run 30s after boot
