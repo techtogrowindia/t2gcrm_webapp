@@ -1519,6 +1519,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { var: '#orderStatus#', label: 'Order Status' },
                             { var: '#orderAmount#', label: 'Order Total' },
                             { var: '#invoiceno#', label: 'Invoice No' },
+                            { var: '#leadphoneno#', label: 'Lead Phone No' },
+                            { var: '#clientphoneno#', label: 'Client Phone No' },
                             { var: '#today#', label: "Today's Date" },
                             { var: '#tomorrow#', label: "Tomorrow's Date" },
                             { var: '#+1day#', label: '+1 Day' },

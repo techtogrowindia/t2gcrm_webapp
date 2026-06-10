@@ -484,6 +484,8 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
             client: form.name,
             lead: form.name,
             phone: form.phone,
+            leadphoneno: form.phone,
+            clientphoneno: form.phone,
             email: form.email || '',
             stage: form.stage || '',
             source: form.source || '',

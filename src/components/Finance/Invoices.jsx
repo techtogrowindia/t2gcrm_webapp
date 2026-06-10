@@ -428,6 +428,8 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         fireAutoNotifications('invoice_created', {
           client: form.client,
           phone: recipientPhone,
+          clientphoneno: recipientPhone,
+          leadphoneno: recipientPhone,
           invoiceno: payload.no,
           amount: tots.total,
           date: payload.date,
@@ -587,6 +589,8 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
       fireAutoNotifications('payment_received', {
         client: payModal.client,
         phone: payRecipientPhone,
+        clientphoneno: payRecipientPhone,
+        leadphoneno: payRecipientPhone,
         invoiceno: payModal.no,
         amount: parseFloat(payAmt),
         date: new Date().toISOString().split('T')[0],

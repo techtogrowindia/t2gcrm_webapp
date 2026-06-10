@@ -135,6 +135,8 @@ export default function BookingPage() {
             // variable name that matches the Waprochat template definition.
             client: form.name,
             phone: form.phone,
+            clientphoneno: form.phone,
+            leadphoneno: form.phone,
             email: form.email || '',
             apptDate: selectedDate,
             apptTime: selectedTime,

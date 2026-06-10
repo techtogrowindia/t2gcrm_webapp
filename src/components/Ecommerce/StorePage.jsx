@@ -171,6 +171,8 @@ function CheckoutModal({ cart, ownerId, ecomName, customerSession, onClose, onSu
           fireAutoNotifications('order_placed', {
             client: form.name,
             phone: form.phone,
+            clientphoneno: form.phone,
+            leadphoneno: form.phone,
             email: form.email || '',
             orderId: data.orderId || '',
             orderAmount: total,
