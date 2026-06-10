@@ -3,7 +3,7 @@ import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmt, daysLeft } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
-import { sendEmail, sendEmailMock, renderTemplate } from '../../utils/messaging';
+import { sendEmail, sendEmailMock, renderTemplate, fireAutoNotifications } from '../../utils/messaging';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
 import SearchableSelect from '../UI/SearchableSelect';
 import { logActivity } from '../../utils/activityLogger';
@@ -181,6 +181,24 @@ export default function AMC({ user, perms, ownerId }) {
         meta: { amount: payload.amount, status: payload.status },
       });
       toast('AMC updated', 'success');
+
+      // WhatsApp expiry alert — fire if contract is expiring within 30 days
+      if (payload.phone && daysLeft(payload.endDate) <= 30) {
+        fireAutoNotifications('amc_expiry', {
+          client: payload.client,
+          phone: payload.phone,
+          clientphoneno: payload.phone,
+          contractNo: payload.contractNo,
+          endDate: payload.endDate,
+          daysLeft: String(Math.max(0, daysLeft(payload.endDate))),
+          amount: payload.amount,
+          plan: payload.plan || '',
+          date: new Date().toISOString().split('T')[0],
+          bizName: profile?.bizName || profile?.businessName || '',
+          ownerPhone: profile?.waNotifPhone || profile?.phone || '',
+          entityId: `${payload.contractNo}-${payload.endDate}`,
+        }, profile, ownerId).catch(() => {});
+      }
     }
     else {
       const newAmcId = id();
@@ -206,6 +224,24 @@ export default function AMC({ user, perms, ownerId }) {
         meta: { amount: payload.amount, status: payload.status },
       });
       toast('AMC contract created', 'success');
+
+      // WhatsApp expiry alert — fire immediately if contract is already expiring within 30 days
+      if (payload.phone && daysLeft(payload.endDate) <= 30) {
+        fireAutoNotifications('amc_expiry', {
+          client: payload.client,
+          phone: payload.phone,
+          clientphoneno: payload.phone,
+          contractNo: payload.contractNo,
+          endDate: payload.endDate,
+          daysLeft: String(Math.max(0, daysLeft(payload.endDate))),
+          amount: payload.amount,
+          plan: payload.plan || '',
+          date: new Date().toISOString().split('T')[0],
+          bizName: profile?.bizName || profile?.businessName || '',
+          ownerPhone: profile?.waNotifPhone || profile?.phone || '',
+          entityId: `${payload.contractNo}-${payload.endDate}`,
+        }, profile, ownerId).catch(() => {});
+      }
     }
     setModal(false);
   };

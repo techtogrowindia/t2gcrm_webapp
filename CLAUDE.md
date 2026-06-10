@@ -342,7 +342,7 @@ Plans are stored in `globalSettings.plans` and define:
 | `payment_received` | Payment logged on invoice | `#client#`, `#phone#`*, `#clientphoneno#`, `#invoiceno#`, `#amount#`, `#date#`, `#bizName#` |
 | `appointment_booked` | Booking form submitted | `#client#`, `#phone#`*, `#clientphoneno#`, `#service#`, `#date#`, `#apptDate#`, `#apptTime#`, `#bizName#` |
 | `task_assigned` | New task with assignee | `#assignee#`, `#task#`, `#client#`, `#duedate#`, `#priority#`, `#date#` — **phone = staff member's phone** |
-| `amc_expiry` | Available for manual/cron | `#client#`, `#phone#`*, `#contractNo#`, `#endDate#`, `#date#` |
+| `amc_expiry` | AMC saved with endDate ≤ 30 days away | `#client#`, `#phone#`*, `#clientphoneno#`, `#contractNo#`, `#endDate#`, `#daysLeft#`, `#amount#`, `#plan#`, `#date#` |
 | `order_placed` | E-commerce checkout | `#client#`, `#phone#`*, `#clientphoneno#`, `#orderId#`, `#orderAmount#`, `#orderStatus#`, `#date#`, `#bizName#` |
 
 *`#phone#` is the **recipient** field — excluded from template variables. Use `#leadphoneno#` or `#clientphoneno#` to include the phone number inside the message body.
@@ -374,6 +374,7 @@ Plans are stored in `globalSettings.plans` and define:
 | `src/components/Work/AllTasks.jsx` | `task_assigned` |
 | `src/components/Appointments/BookingPage.jsx` | `appointment_booked` |
 | `src/components/Ecommerce/StorePage.jsx` | `order_placed` |
+| `src/components/Clients/AMC.jsx` | `amc_expiry` (fires on save when endDate ≤ 30 days) |
 
 ### Known bugs (fixed — never revert)
 
