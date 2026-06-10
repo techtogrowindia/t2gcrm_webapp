@@ -162,6 +162,26 @@ export const AUTO_TRIGGER_EVENTS = [
  * @param {object} profile - The userProfile object (contains whatsappTemplates, waApiToken, waPhoneId)
  * @param {string} ownerId - The business owner's userId
  */
+// ─── Date variable resolution ─────────────────────────────────────────────────
+// Resolves built-in date tokens at send time (IST-aware):
+//   #today#      → today's date  e.g. 10/06/2026
+//   #tomorrow#   → tomorrow      e.g. 11/06/2026
+//   #+1day#      → today + 1 day
+//   #+7day#      → today + 7 days  (any positive integer)
+const _fmtDate = (d) => {
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}/${d.getFullYear()}`;
+};
+const resolveDateVar = (varName) => {
+  const today = new Date();
+  if (varName === 'today')    return _fmtDate(today);
+  if (varName === 'tomorrow') { const d = new Date(today); d.setDate(d.getDate() + 1); return _fmtDate(d); }
+  const m = varName.match(/^\+(\d+)day$/i);
+  if (m) { const d = new Date(today); d.setDate(d.getDate() + parseInt(m[1])); return _fmtDate(d); }
+  return null; // not a date var
+};
+
 export const fireAutoNotifications = async (eventType, data, profile, ownerId) => {
   if (!profile || !ownerId || !eventType) return;
 
@@ -195,15 +215,22 @@ export const fireAutoNotifications = async (eventType, data, profile, ownerId) =
       }
 
       // Build variables from template body using #variable# syntax.
+      // Also handles built-in date tokens: #today#, #tomorrow#, #+Nday#.
       // Exclude #phone# — it is the recipient field (phone_number), not a
       // template variable. Sending it as templateVariable-phone-N too would
       // duplicate it and confuse Waprochat.
-      const varMatches = tpl.body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
-      const variables = varMatches
+      const normalVars = tpl.body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
+      const dateVars   = tpl.body?.match(/#(\+\d+day)#/gi) || [];
+      const variables = [...normalVars, ...dateVars]
         .filter(m => m !== '#phone#')
         .map((m, i) => {
           const varName = m.replace(/#/g, '');
-          return { index: i + 1, name: varName, value: data[varName] ?? '' };
+          const dateVal = resolveDateVar(varName);
+          return {
+            index: i + 1,
+            name: varName,
+            value: dateVal !== null ? dateVal : (data[varName] ?? ''),
+          };
         });
 
       const message = {

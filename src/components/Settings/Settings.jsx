@@ -1406,8 +1406,9 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
           {active === 'WhatsApp Templates' && (() => {
             // Helper: extract #variable# placeholders from template body
             const extractVars = (body) => {
-              const matches = body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
-              return matches.map((m, i) => ({ index: i + 1, name: m.replace(/#/g, ''), raw: m }));
+              const normal = body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
+              const dateTokens = body?.match(/#(\+\d+day)#/gi) || [];
+              return [...normal, ...dateTokens].map((m, i) => ({ index: i + 1, name: m.replace(/#/g, ''), raw: m }));
             };
 
             const hasWACredentials = !!(waApiToken?.trim() && waPhoneId?.trim());
@@ -1518,6 +1519,14 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { var: '#orderStatus#', label: 'Order Status' },
                             { var: '#orderAmount#', label: 'Order Total' },
                             { var: '#invoiceno#', label: 'Invoice No' },
+                            { var: '#today#', label: "Today's Date" },
+                            { var: '#tomorrow#', label: "Tomorrow's Date" },
+                            { var: '#+1day#', label: '+1 Day' },
+                            { var: '#+2day#', label: '+2 Days' },
+                            { var: '#+3day#', label: '+3 Days' },
+                            { var: '#+7day#', label: '+7 Days' },
+                            { var: '#+15day#', label: '+15 Days' },
+                            { var: '#+30day#', label: '+30 Days' },
                           ].map(v => (
                             <button key={v.var} onClick={() => {
                               const el = document.getElementById('new_wa_body');
