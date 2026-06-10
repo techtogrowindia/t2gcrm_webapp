@@ -357,6 +357,19 @@ Plans are stored in `globalSettings.plans` and define:
 | `#+1day#` | Today + 1 day |
 | `#+Nday#` | Today + N days (any positive integer, e.g. `#+30day#`) |
 
+### In-app Variable Guide (WAVariableGuide.jsx)
+
+**File:** `src/components/Settings/WAVariableGuide.jsx`
+
+This is the single source of truth for all `#variable#` placeholders. It renders as a modal in **Settings → WhatsApp Templates** (opened via the "📖 Variable Guide" button below the Insert Variable buttons).
+
+**SELF-DOCUMENTING RULE:** Whenever a new `#variable#` is added to any `fireAutoNotifications()` call site OR to the date resolver in `messaging.js`, it **MUST** be added to the `MODULES` array (or `DATE_VARS` array) in `WAVariableGuide.jsx` with:
+- `name`: the `#variable#` placeholder
+- `desc`: plain-English description
+- `example`: a realistic example value
+
+If a new event module is added, add a new entry to the `MODULES` array with `id`, `label`, `trigger`, `how`, `recipient`, `variables[]`, and an `example` template body.
+
 ### How to add a new trigger event (checklist)
 
 1. **`src/utils/messaging.js`** — add `{ value: 'event_key', label: 'Human Label' }` to `AUTO_TRIGGER_EVENTS`.

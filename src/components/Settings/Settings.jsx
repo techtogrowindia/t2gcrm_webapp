@@ -5,6 +5,7 @@ import { useToast } from '../../context/ToastContext';
 import { renderTemplate, sendEmailMock, sendEmail, sendWhatsApp, AUTO_TRIGGER_EVENTS } from '../../utils/messaging';
 import { fmtD, INDIAN_STATES, COUNTRIES, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, SYSTEM_STAGES, DEFAULT_UNITS, SUPPORTED_CURRENCIES } from '../../utils/helpers';
 import DocumentTemplate from '../Finance/DocumentTemplate';
+import WAVariableGuide from './WAVariableGuide';
 
 const SETTINGS_GROUPS = [
   {
@@ -164,6 +165,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
   const [editingCFIndex, setEditingCFIndex] = useState(null);
   const [editingWA, setEditingWA] = useState(null);
   const [waFormTrigger, setWaFormTrigger] = useState('');
+  const [showWAGuide, setShowWAGuide] = useState(false);
   const toast = useToast();
 
   const { data } = db.useQuery({
@@ -589,6 +591,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
   };
 
   return (
+    <>
     <div>
       <div className="sh"><div><h2>Settings</h2></div></div>
       <div className="sg">
@@ -1556,6 +1559,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             </button>
                           ))}
                         </div>
+                        <div style={{ marginTop: 8 }}>
+                          <button className="btn btn-sm" style={{ fontSize: 11, padding: '3px 10px', background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 6 }}
+                            onClick={() => setShowWAGuide(true)}>
+                            📖 Variable Guide — what each variable means with examples
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1931,5 +1940,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         </div>
       </div>
     </div>
+
+    {showWAGuide && <WAVariableGuide onClose={() => setShowWAGuide(false)} />}
+    </>
   );
 }
