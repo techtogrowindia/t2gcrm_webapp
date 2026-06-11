@@ -1,5 +1,6 @@
 import { init } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
+// USE_PG_DATA flag handled inside _leads-cache.js — no change needed here.
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;

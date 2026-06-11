@@ -1,10 +1,6 @@
 import { init } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
-import { tenantQuery } from './db-pg.js';
-
-// When USE_PG_DATA=true (dev .env): leads fetched from Postgres (RLS enforced).
-// When unset/false (prod default): leads fetched from InstantDB cache as before.
-const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
+// USE_PG_DATA flag handled inside _leads-cache.js — no change needed here.
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -46,27 +42,8 @@ export default async function handler(req, res) {
 
     if (!ownerId) return res.status(400).json({ error: 'ownerId required' });
 
-    // --- 1. Fetch leads ---------------------------------------------------
-    let leads;
-    if (USE_PG_DATA) {
-      // Postgres path: RLS enforced via tenantQuery — only this tenant's rows
-      // are returned. doc column holds the full original record (same shape as
-      // the InstantDB object) so all downstream filtering works unchanged.
-      const result = await tenantQuery(
-        ownerId,
-        'SELECT doc, created_at, updated_at FROM leads ORDER BY created_at DESC'
-      );
-      leads = result.rows.map(r => ({
-        ...r.doc,
-        // Ensure timestamp fields are numbers (ms) for downstream dateMsOf()
-        createdAt:  r.doc.createdAt  ?? new Date(r.created_at).getTime(),
-        updatedAt:  r.doc.updatedAt  ?? new Date(r.updated_at).getTime(),
-        followup:   r.doc.followup,
-        assignedAt: r.doc.assignedAt,
-      }));
-    } else {
-      leads = await getLeadsForOwner(ownerId);
-    }
+    // --- 1. Fetch (cached or Postgres — see _leads-cache.js) ---------------
+    let leads = await getLeadsForOwner(ownerId);
 
     // Source normalization — mirror client logic
     leads = leads.map(l => (l.source === 'Retailer' || l.source === 'Retailers')
