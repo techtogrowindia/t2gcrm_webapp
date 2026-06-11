@@ -7,6 +7,7 @@ import cors from 'cors';
 // Import Vercel handlers
 import authHandler from './api/auth.js';
 import authPgHandler from './api/auth-pg.js';
+import dataPgHandler from './api/data-pg.js';
 import dataHandler from './api/data.js';
 import secureDataHandler from './api/secure-data.js';
 import financeHandler from './api/finance.js';
@@ -67,6 +68,7 @@ app.all('/api/data/:module', (req, res) => {
 // Standard APIs
 app.all('/api/auth', wrap(authHandler));
 app.all('/api/auth-pg', wrap(authPgHandler));  // Postgres auth (migration)
+app.all('/api/data-pg', wrap(dataPgHandler));  // Postgres writes (migration)
 app.all('/api/data', wrap(dataHandler));
 app.all('/api/secure-data', wrap(secureDataHandler));
 app.all('/api/call-logs', wrap(callLogsHandler));
