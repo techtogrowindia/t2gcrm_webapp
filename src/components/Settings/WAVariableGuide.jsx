@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WhatsApp Template Variable Guide
@@ -232,9 +231,10 @@ const DATE_VARS = [
   { name: '#+Nday#',      desc: 'Today + any N days (e.g. #+45day#)', example: '25/07/2026' },
 ];
 
-export default function WAVariableGuide() {
+// onBack: optional callback — when provided shows a "← Back to Settings" button.
+//         omit when rendering standalone (new tab at /wa-guide).
+export default function WAVariableGuide({ onBack } = {}) {
   const [activeModule, setActiveModule] = useState(null);
-  const { setActiveView } = useApp();
 
   return (
     <div className="reports-view" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -244,9 +244,11 @@ export default function WAVariableGuide() {
           <h2>📖 WhatsApp Template Variable Guide</h2>
           <div className="sub">All <code>#variable#</code> placeholders with descriptions and examples — organised by event type</div>
         </div>
-        <button className="btn btn-secondary btn-sm" onClick={() => setActiveView('settings')}>
-          ← Back to Settings
-        </button>
+        {onBack && (
+          <button className="btn btn-secondary btn-sm" onClick={onBack}>
+            ← Back to Settings
+          </button>
+        )}
       </div>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: 16 }}>

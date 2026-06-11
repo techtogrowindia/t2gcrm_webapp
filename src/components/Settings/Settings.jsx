@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -46,8 +45,6 @@ const DEFAULT_TAX_OPTIONS = [
 
 export default function Settings({ user, profile, isExpired, initialTab, ownerId, perms, teamInfo, memberProfile, settings }) {
   const groups = SETTINGS_GROUPS;
-  const { setActiveView } = useApp();
-
   const [active, setActive] = useState(initialTab || 'Business');
   
   React.useEffect(() => {
@@ -1502,7 +1499,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                   </div>
                   <div style={{ marginTop: 12 }}>
                     <button
-                      onClick={() => setActiveView('wa-guide')}
+                      onClick={() => window.open('/wa-guide', '_blank')}
                       style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
                       📖 Open Variable Guide — all variables with examples (module-wise)
                     </button>
@@ -1589,7 +1586,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         </div>
                         <div style={{ marginTop: 8 }}>
                           <button className="btn btn-sm" style={{ fontSize: 11, padding: '3px 10px', background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 6 }}
-                            onClick={() => setActiveView('wa-guide')}>
+                            onClick={() => window.open('/wa-guide', '_blank')}>
                             📖 Variable Guide — what each variable means with examples
                           </button>
                         </div>

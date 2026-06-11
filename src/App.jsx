@@ -8,6 +8,7 @@ import StorePage from './components/Ecommerce/StorePage';
 import TrackingPage from './components/Ecommerce/TrackingPage';
 import BookingPage from './components/Appointments/BookingPage';
 import UserManual from './components/System/UserManual';
+import WAVariableGuide from './components/Settings/WAVariableGuide';
 import PartnerRegistration from './components/Partners/PartnerRegistration';
 import PartnerApp from './components/Partners/PartnerApp';
 
@@ -102,9 +103,15 @@ function AppInner() {
   const isPublicOrders = path.endsWith('/orders');
   const isPublicBooking = path.endsWith('/book') || path.endsWith('/appointment');
   const isPublicManual = path.endsWith('/manual');
+  const isWAGuide = path.endsWith('/wa-guide');
   const isPartnerReg = path.includes('/partner/register');
 
   if (isPublicManual) return <UserManual isPublic={true} settings={settings} />;
+  if (isWAGuide) return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', padding: 20 }}>
+      <WAVariableGuide standaloneMode />
+    </div>
+  );
   if (isPublicStore) return <StorePage />;
   if (isPublicOrders) return <TrackingPage />;
   if (isPublicBooking) return <BookingPage />;
