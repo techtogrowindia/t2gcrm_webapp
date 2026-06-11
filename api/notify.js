@@ -88,23 +88,31 @@ export default async function handler(req, res) {
         });
         const data = await response.json();
         const success = response.ok && data.status === 'success';
-        const { templateId: tplIdForLog, variables: varsForLog } = req.body || {};
+        const tplIdForLog = req.body?.templateId || templateId;
         const bodyForLog = req.body?.body || req.body?.message || `Template: ${tplIdForLog}`;
+
+        // On failure store the full Waprochat response so the user can see
+        // exactly what the API said (error code, message, etc.)
+        const errorDetail = success
+          ? null
+          : (typeof data === 'object'
+              ? JSON.stringify(data)
+              : String(data || 'Waprochat error'));
 
         // Log to outbox (both success and failure) — server is the sole logger
         await db.transact(tx.outbox[generateId()].update({
           userId: ownerId,
           recipient: formattedPhone,
           type: 'whatsapp',
-          subject: `WhatsApp Template: ${tplIdForLog || templateId}`,
+          subject: `WhatsApp Template: ${tplIdForLog}`,
           content: bodyForLog,
           status: success ? 'Sent' : 'Failed',
-          error: success ? null : (data.message || 'Waprochat error'),
+          error: errorDetail,
           sentAt: Date.now(),
         }));
 
         if (success) return res.status(200).json({ success: true, messageId: data.message_id });
-        return res.status(400).json({ error: data.message || 'Waprochat template fail' });
+        return res.status(400).json({ error: data.message || 'Waprochat template fail', detail: data });
       } else {
         return res.status(400).json({ error: 'Template ID required for WhatsApp' });
       }
