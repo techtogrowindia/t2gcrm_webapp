@@ -1437,8 +1437,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
               const lines = [
                 `curl -X POST \\`,
                 `https://portal.waprochat.in/api/v1/whatsapp/send/template \\`,
-                `-d "apiToken=${waApiToken || '{YOUR_API_TOKEN}'}" \\`,
-                `-d "phone_number_id=${waPhoneId || '{YOUR_PHONE_NUMBER_ID}'}" \\`,
+                `-d "apiToken=${waApiToken ? '••••••••••••••••••••' : '{YOUR_API_TOKEN}'}" \\`,
+                `-d "phone_number_id=${waPhoneId ? '••••••••••••' : '{YOUR_PHONE_NUMBER_ID}'}" \\`,
                 `-d "template_id=${t.templateId || '{template-id}'}" \\`,
               ];
               vars.forEach(v => {
