@@ -210,31 +210,30 @@ export const fireAutoNotifications = async (eventType, data, profile, ownerId) =
 
   for (const tpl of matching) {
     try {
-      // Determine recipient phone based on template's recipientType:
-      //   'owner'    → WhatsApp Notification Number (profile.waNotifPhone → phone → data.ownerPhone)
-      //   'assignee' → the assigned staff member's phone (data.assigneePhone)
-      //   'client'   → the client/lead phone from the event data (default)
-      const recipientType = tpl.recipientType || 'client';
-      let rawPhone;
-      if (recipientType === 'owner') {
-        rawPhone = profile.waNotifPhone || profile.phone || data.ownerPhone || '';
-      } else if (recipientType === 'assignee') {
-        rawPhone = data.assigneePhone || '';
-      } else {
-        rawPhone = data.phone || '';
-      }
+      // Resolve recipient phones — supports multiple recipients (recipientTypes array).
+      // Backward compatible: old templates use recipientType (string).
+      const recipientTypes = tpl.recipientTypes
+        ? (Array.isArray(tpl.recipientTypes) ? tpl.recipientTypes : [tpl.recipientTypes])
+        : [tpl.recipientType || 'client'];
 
-      const phone = rawPhone.replace(/\D/g, '');
-      if (!phone) {
-        console.warn(`[AutoNotify] No phone number for recipientType="${recipientType}" on event: ${eventType}. Skipping "${tpl.name}".`);
+      // Build unique phone list (deduplicate in case two types resolve to same number)
+      const resolvePhone = (rType) => {
+        if (rType === 'owner')    return (profile.waNotifPhone || profile.phone || data.ownerPhone || '').replace(/\D/g, '');
+        if (rType === 'assignee') return (data.assigneePhone || '').replace(/\D/g, '');
+        return (data.phone || '').replace(/\D/g, '');
+      };
+      const phonesToSend = [];
+      const seen = new Set();
+      for (const rType of recipientTypes) {
+        const phone = resolvePhone(rType);
+        if (phone && !seen.has(phone)) { seen.add(phone); phonesToSend.push({ phone, rType }); }
+      }
+      if (phonesToSend.length === 0) {
+        console.warn(`[AutoNotify] No phone numbers resolved for "${tpl.name}" on event: ${eventType}. Skipping.`);
         continue;
       }
 
-      // Build variables from template body using #variable# syntax.
-      // Also handles built-in date tokens: #today#, #tomorrow#, #+Nday#.
-      // Exclude #phone# — it is the recipient field (phone_number), not a
-      // template variable. Sending it as templateVariable-phone-N too would
-      // duplicate it and confuse Waprochat.
+      // Build variables once (same body for all recipients)
       const normalVars = tpl.body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
       const dateVars   = tpl.body?.match(/#(\+\d+day)#/gi) || [];
       const variables = [...normalVars, ...dateVars]
@@ -242,47 +241,40 @@ export const fireAutoNotifications = async (eventType, data, profile, ownerId) =
         .map((m, i) => {
           const varName = m.replace(/#/g, '');
           const dateVal = resolveDateVar(varName);
-          return {
-            index: i + 1,
-            name: varName,
-            value: dateVal !== null ? dateVal : (data[varName] ?? ''),
-          };
+          return { index: i + 1, name: varName, value: dateVal !== null ? dateVal : (data[varName] ?? '') };
         });
 
-      const message = {
-        templateId: tpl.templateId,
-        name: tpl.name,
-        body: tpl.body,
-        variables,
-      };
+      const entityKey = data.entityId || data.invoiceno || data.apptDate || Date.now();
 
-      // Stable processedKey so the server dedup guard works correctly
-      const processedKey = `wa-auto-${ownerId}-${eventType}-${tpl.templateId}-${phone}-${data.entityId || data.invoiceno || data.apptDate || Date.now()}`;
+      // Send one API call per resolved phone number
+      for (const { phone, rType } of phonesToSend) {
+        // Include rType in processedKey so client+owner both fire (different dedup keys)
+        const processedKey = `wa-auto-${ownerId}-${eventType}-${tpl.templateId}-${phone}-${entityKey}-${rType}`;
 
-      const resp = await fetch('/api/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: phone,
-          message: message.body || 'Template Message',
-          ownerId,
-          type: 'whatsapp',
-          templateId: message.templateId,
-          variables: message.variables,
-          processedKey,
-          body: message.body, // needed for dedup fallback
-        }),
-      });
+        const resp = await fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: phone,
+            message: tpl.body || 'Template Message',
+            ownerId,
+            type: 'whatsapp',
+            templateId: tpl.templateId,
+            variables,
+            processedKey,
+            body: tpl.body,
+          }),
+        });
 
-      const result = await resp.json();
-      if (result?.skipped) {
-        console.log(`[AutoNotify] ⏭️ Skipped duplicate "${tpl.name}" for event: ${eventType}`);
-      } else if (resp.ok && result?.success) {
-        console.log(`[AutoNotify] ✅ Sent "${tpl.name}" to ${phone} for event: ${eventType}`);
-        // Server-side (notify.js) logs to outbox — do NOT log again here
-      } else {
-        console.error(`[AutoNotify] ❌ Failed "${tpl.name}" for event: ${eventType}`, result?.error);
-      }
+        const result = await resp.json();
+        if (result?.skipped) {
+          console.log(`[AutoNotify] ⏭️ Skipped duplicate "${tpl.name}" → ${rType} (${phone})`);
+        } else if (resp.ok && result?.success) {
+          console.log(`[AutoNotify] ✅ Sent "${tpl.name}" → ${rType} (${phone}) for event: ${eventType}`);
+        } else {
+          console.error(`[AutoNotify] ❌ Failed "${tpl.name}" → ${rType} (${phone}):`, result?.error);
+        }
+      } // end per-phone loop
     } catch (err) {
       console.error(`[AutoNotify] ❌ Failed to send "${tpl.name}" for event: ${eventType}`, err);
     }

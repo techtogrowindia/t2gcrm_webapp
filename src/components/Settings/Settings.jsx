@@ -164,6 +164,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
   const [editingWA, setEditingWA] = useState(null);
   const [waFormTrigger, setWaFormTrigger] = useState('');
   const [waFormBody, setWaFormBody] = useState(''); // tracks textarea for live curl preview
+  const [waFormRecipients, setWaFormRecipients] = useState(['client']); // multi-select recipients
 
   // Sample template bodies — shown when user selects a trigger on Add New
   const WA_SAMPLE_BODIES = {
@@ -1715,17 +1716,33 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         </div>
                       </>
                     )}
-                    {/* ── Recipient ── */}
-                    <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>📱 Send message to:</div>
-                      <select id="new_wa_recipient" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}>
-                        <option value="client">Client / Lead (their phone number)</option>
-                        <option value="owner">Business Owner (my phone number)</option>
-                        <option value="assignee">Assigned Staff Member (their phone number)</option>
-                      </select>
-                    </div>
-                    <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
-                      <strong>Client</strong> — goes to the lead/customer's phone. <strong>Business Owner</strong> — goes to your number (Business Settings → WhatsApp Notification Number). <strong>Assigned Staff Member</strong> — goes to the team member the lead/task is assigned to (their phone in Teams). Best for "a lead was assigned to you" alerts.
+                    {/* ── Recipients (multi-select checkboxes) ── */}
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#166534', marginBottom: 8 }}>📱 Send message to: <span style={{ fontSize: 10, fontWeight: 400 }}>(select one or more — separate message per recipient)</span></div>
+                      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                        {[
+                          { value: 'client',   label: 'Client / Lead',           hint: "lead/customer's phone" },
+                          { value: 'owner',    label: 'Business Owner',          hint: 'WhatsApp Notification Number' },
+                          { value: 'assignee', label: 'Assigned Staff Member',   hint: "staff member's phone in Teams" },
+                        ].map(opt => (
+                          <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#166534', background: waFormRecipients.includes(opt.value) ? '#dcfce7' : '#f0fdf4', border: `1.5px solid ${waFormRecipients.includes(opt.value) ? '#86efac' : '#d1fae5'}`, borderRadius: 8, padding: '6px 12px' }}>
+                            <input type="checkbox"
+                              checked={waFormRecipients.includes(opt.value)}
+                              onChange={e => setWaFormRecipients(prev =>
+                                e.target.checked ? [...prev, opt.value] : prev.filter(r => r !== opt.value)
+                              )}
+                              style={{ width: 14, height: 14, accentColor: '#16a34a' }}
+                            />
+                            {opt.label}
+                            <span style={{ fontSize: 10, fontWeight: 400, color: '#4ade80' }}>({opt.hint})</span>
+                          </label>
+                        ))}
+                      </div>
+                      {waFormRecipients.length > 1 && (
+                        <div style={{ fontSize: 11, color: '#0369a1', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 6, padding: '5px 10px', marginTop: 8 }}>
+                          ℹ️ {waFormRecipients.length} recipients selected — the API will be called {waFormRecipients.length} times with different phone numbers.
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1736,7 +1753,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       const body = waFormBody;
                       const autoTrigger = document.getElementById('new_wa_trigger').value;
                       const autoEnabled = document.getElementById('new_wa_autoEnabled').checked;
-                      const recipientType = document.getElementById('new_wa_recipient').value;
+                      const recipientTypes = waFormRecipients.length > 0 ? waFormRecipients : ['client'];
                       const daysVal = parseInt(document.getElementById('new_wa_days')?.value || '7', 10) || 7;
                       const daysBeforeExpiry  = autoTrigger === 'amc_expiry'    ? daysVal : undefined;
                       const daysBeforeFollowup = autoTrigger === 'lead_followup' ? daysVal : undefined;
@@ -1744,7 +1761,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       if (!body.trim()) return toast('Template message body is required', 'error');
 
                       const vars = extractVars(body);
-                      const tplObj = { name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientType,
+                      const tplObj = { name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientTypes,
                         ...(daysBeforeExpiry  != null ? { daysBeforeExpiry }  : {}),
                         ...(daysBeforeFollowup != null ? { daysBeforeFollowup } : {}),
                       };
@@ -1766,7 +1783,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       document.getElementById('new_wa_id').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
-                      document.getElementById('new_wa_recipient').value = 'client';
+                      setWaFormRecipients(['client']);
                       if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
                       setWaFormTrigger('');
                       setWaFormBody('');
@@ -1777,7 +1794,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       document.getElementById('new_wa_id').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
-                      document.getElementById('new_wa_recipient').value = 'client';
+                      setWaFormRecipients(['client']);
                       if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
                       setWaFormTrigger('');
                       setWaFormBody('');
@@ -1807,9 +1824,17 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                 <div style={{ fontWeight: 700, fontSize: 14 }}>{t.name} {isBeingEdited && <span style={{ fontSize: 10, color: '#b45309', fontWeight: 400 }}>(Editing)</span>}</div>
                                 <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                                   Template ID: <code style={{ background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: 4 }}>{t.templateId}</code>
-                                  <span style={{ background: (t.recipientType || 'client') === 'owner' ? '#fef9c3' : '#f0fdf4', color: (t.recipientType || 'client') === 'owner' ? '#854d0e' : '#166534', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid', borderColor: (t.recipientType || 'client') === 'owner' ? '#fde68a' : '#86efac' }}>
-                                    📱 {(t.recipientType || 'client') === 'owner' ? 'To: Owner' : 'To: Client'}
-                                  </span>
+                                  {(() => {
+                                    const rTypes = t.recipientTypes
+                                      ? (Array.isArray(t.recipientTypes) ? t.recipientTypes : [t.recipientTypes])
+                                      : [t.recipientType || 'client'];
+                                    const labels = { client: 'Client', owner: 'Owner', assignee: 'Assignee' };
+                                    return rTypes.map(r => (
+                                      <span key={r} style={{ background: r === 'owner' ? '#fef9c3' : r === 'assignee' ? '#eff6ff' : '#f0fdf4', color: r === 'owner' ? '#854d0e' : r === 'assignee' ? '#1d4ed8' : '#166534', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid', borderColor: r === 'owner' ? '#fde68a' : r === 'assignee' ? '#bfdbfe' : '#86efac' }}>
+                                        📱 {labels[r] || r}
+                                      </span>
+                                    ));
+                                  })()}
                                   {t.autoTrigger === 'amc_expiry' && (
                                     <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid #bfdbfe' }}>
                                       ⏰ {t.daysBeforeExpiry || 7}d before expiry
@@ -1832,12 +1857,15 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   const bodyEl = document.getElementById('new_wa_body');
                                   const triggerEl = document.getElementById('new_wa_trigger');
                                   const enabledEl = document.getElementById('new_wa_autoEnabled');
-                                  const recipientEl = document.getElementById('new_wa_recipient');
                                   if (nameEl) nameEl.value = t.name;
                                   if (idEl) idEl.value = t.templateId;
                                   if (triggerEl) triggerEl.value = t.autoTrigger || '';
                                   if (enabledEl) enabledEl.checked = !!t.autoEnabled;
-                                  if (recipientEl) recipientEl.value = t.recipientType || 'client';
+                                  // backward compat: old templates use recipientType (string)
+                                  const saved = t.recipientTypes
+                                    ? (Array.isArray(t.recipientTypes) ? t.recipientTypes : [t.recipientTypes])
+                                    : [t.recipientType || 'client'];
+                                  setWaFormRecipients(saved);
                                   setWaFormTrigger(t.autoTrigger || '');
                                   setWaFormBody(t.body || '');
                                   const daysEl = document.getElementById('new_wa_days');
