@@ -42,7 +42,10 @@ one-time migration/maintenance script goes in that folder, not in `api/` or the 
 - ✅ CRM schema (31 tables) + indexes + RLS + `login_codes` created in prod & dev
 - ✅ `t2gcrm_dev` fully imported & verified (69,547 rows; RLS isolation confirmed)
 - ⬜ `t2gcrm_prod` import (re-run `03-import.mjs` with `PG_URL` → prod when ready)
-- ⬜ App data-layer rewrite (`db.useQuery`/`db.transact` + auth → Postgres), module by module, **dev first**
+- ✅ Postgres+RLS POC validated end-to-end (health, no-tenant-leak, tenant-scoped leads)
+- ✅ `api/db-pg.js` — Postgres pool + `tenantQuery`/`rawQuery`/`tenantTransaction` helpers
+- ✅ `api/auth-pg.js` — password login + magic code + JWT, tested on dev (all 3 flows pass)
+- ⬜ App data-layer rewrite (`db.useQuery`/`db.transact` → Postgres), module by module, **dev first**
 
 ### Schema mapping (InstantDB → Postgres)
 - `userId` → `tenant_id` on every tenant table. **Exception: `callLogSyncState` uses `ownerId`.**
