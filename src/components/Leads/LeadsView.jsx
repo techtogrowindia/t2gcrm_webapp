@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import { fmtD, fmtDT, stageBadgeClass, uid, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_LEAD } from '../../utils/constants';
@@ -308,42 +309,29 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   };
 
   const logActivity = async (leadId, text, extra = {}) => {
-    // `leads` is now only the current page — may not contain this leadId. That's
-    // fine: entityName is informational, we fall back to empty string.
     const lead = leads.find(l => l.id === leadId);
-    await db.transact(db.tx.activityLogs[id()].update({
-      entityId: leadId,
-      entityType: 'lead',
+    const logId = id();
+    const logData = {
+      entityId: leadId, entityType: 'lead',
       entityName: lead?.companyName || lead?.name || '',
       action: extra.action || 'edited',
-      text,
-      userId: ownerId,
-      actorId: user.id, // Auth user.id
-      userName: user.email,
-      teamMemberId: myTeamMember?.id || null, // For reliable team member matching
-      createdAt: Date.now(),
-      ...extra,
-    }));
+      text, userId: ownerId, actorId: user.id,
+      userName: user.email, teamMemberId: myTeamMember?.id || null,
+      createdAt: Date.now(), ...extra,
+    };
+    await dbWrite(dbOp.update('activityLogs', logId, logData));
   };
 
   const logCall = async (lead) => {
     if (!lead?.phone) return;
     const myMember = team.find(t => t.email === user.email);
-    await db.transact(db.tx.callLogs[id()].update({
-      phone: lead.phone,
-      contactName: lead.name || '',
-      direction: 'Outgoing',
-      outcome: 'Connected',
-      duration: 0,
-      notes: '',
-      leadId: lead.id,
-      leadName: lead.name || '',
-      staffEmail: user.email,
-      staffName: myMember?.name || user.email,
-      userId: ownerId,
-      actorId: user.id,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+    await dbWrite(dbOp.update('callLogs', id(), {
+      phone: lead.phone, contactName: lead.name || '',
+      direction: 'Outgoing', outcome: 'Connected', duration: 0, notes: '',
+      leadId: lead.id, leadName: lead.name || '',
+      staffEmail: user.email, staffName: myMember?.name || user.email,
+      userId: ownerId, actorId: user.id,
+      createdAt: Date.now(), updatedAt: Date.now(),
     }));
     await logActivity(lead.id, `📞 Outgoing call to ${lead.phone}`);
     window.location.href = `tel:${lead.phone}`;
@@ -427,7 +415,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         if (form.assign && form.assign !== editData.assign) {
           updates.assignedAt = Date.now();
         }
-        await db.transact(db.tx.leads[editData.id].update(updates));
+        await dbWrite(dbOp.update('leads', editData.id, updates));
 
         if (isWon(form.stage) && editData.stage !== form.stage) {
           await convertToCustomer({ ...editData, ...form }, true);
@@ -439,19 +427,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
         // Structured stage-change log for analytics (Stage Transition Report)
         if (editData.stage !== form.stage && editData.stage && form.stage) {
-          await db.transact(db.tx.activityLogs[id()].update({
-            entityId: editData.id,
-            entityType: 'lead',
+          await dbWrite(dbOp.update('activityLogs', id(), {
+            entityId: editData.id, entityType: 'lead',
             entityName: form.companyName || form.name || '',
-            action: 'stage-change',
-            fromStage: editData.stage,
-            toStage: form.stage,
+            action: 'stage-change', fromStage: editData.stage, toStage: form.stage,
             text: `Stage: ${editData.stage} → ${form.stage}`,
-            userId: ownerId,
-            actorId: user.id,
-            userName: user.email,
-            teamMemberId: myTeamMember?.id || null,
-            createdAt: Date.now()
+            userId: ownerId, actorId: user.id, userName: user.email,
+            teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
           }));
         }
 
@@ -501,19 +483,17 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         const newId = id();
         const newLeadPayload = { ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() };
         if (form.assign) newLeadPayload.assignedAt = newLeadPayload.createdAt;
-        await db.transact(db.tx.leads[newId].update(newLeadPayload));
-        await db.transact(db.tx.activityLogs[id()].update({
-          entityId: newId,
-          entityType: 'lead',
-          entityName: form.companyName || form.name || '',
-          action: 'created',
-          text: `Created lead **${form.name}**${form.followup ? ` | Follow Up set to ${fmtDT(form.followup)}` : ''}`,
-          userId: ownerId,
-          actorId: user.id,
-          userName: user.email,
-          teamMemberId: myTeamMember?.id || null,
-          createdAt: Date.now(),
-        }));
+        await dbWrite([
+          dbOp.update('leads', newId, newLeadPayload),
+          dbOp.update('activityLogs', id(), {
+            entityId: newId, entityType: 'lead',
+            entityName: form.companyName || form.name || '',
+            action: 'created',
+            text: `Created lead **${form.name}**${form.followup ? ` | Follow Up set to ${fmtDT(form.followup)}` : ''}`,
+            userId: ownerId, actorId: user.id, userName: user.email,
+            teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
+          }),
+        ]);
         toast(`Lead "${form.name}" created!`, 'success');
         refetchPage();
         
@@ -856,7 +836,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     for (let i = 0; i < batches.length; i += PARALLEL) {
       const group = batches.slice(i, i + PARALLEL);
       const results = await Promise.allSettled(
-        group.map(batch => db.transact(batch.map(ld => db.tx.leads[id()].update(ld))))
+        group.map(batch => dbWrite(batch.map(ld => dbOp.update('leads', id(), ld))))
       );
       results.forEach((r, idx) => {
         if (r.status === 'fulfilled') ok += group[idx].length;
@@ -873,20 +853,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     // (one row per bulk import instead of one-per-lead — saves thousands of rows at CSV scale)
     if (ok > 0) {
       try {
-        await db.transact(db.tx.activityLogs[id()].update({
-          entityType: 'lead',
-          entityId: 'bulk',
-          entityName: `Bulk import: ${ok} leads`,
-          action: 'bulk-import',
+        await dbWrite(dbOp.update('activityLogs', id(), {
+          entityType: 'lead', entityId: 'bulk',
+          entityName: `Bulk import: ${ok} leads`, action: 'bulk-import',
           text: `Imported ${ok} leads from CSV${failed > 0 ? ` (${failed} failed)` : ''}${duplicateCount > 0 ? ` (${duplicateCount} duplicates skipped)` : ''}`,
-          count: ok,
-          failedCount: failed,
-          duplicateCount: duplicateCount,
-          userId: ownerId,
-          actorId: user.id,
-          userName: user.email,
-          teamMemberId: myTeamMember?.id || null,
-          createdAt: Date.now(),
+          count: ok, failedCount: failed, duplicateCount,
+          userId: ownerId, actorId: user.id, userName: user.email,
+          teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
         }));
       } catch {}
     }
@@ -1021,7 +994,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     for (let i = 0; i < batches.length; i += PARALLEL) {
       const group = batches.slice(i, i + PARALLEL);
       await Promise.all(group.map(batch =>
-        db.transact(batch.map(lid => db.tx.leads[lid].update(updates)))
+        dbWrite(batch.map(lid => dbOp.update('leads', lid, updates)))
       ));
     }
 
@@ -1030,22 +1003,17 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     const summaryParts = [];
     if (pendingBulkAssign) summaryParts.push(`assigned to **${pendingBulkAssign}**`);
     if (pendingBulkStage) summaryParts.push(`stage set to **${pendingBulkStage}**`);
-    await db.transact(db.tx.activityLogs[id()].update({
-      entityType: 'lead',
-      entityId: 'bulk',
-      entityName: `Bulk: ${count} leads`,
-      action: 'bulk-update',
+    await dbWrite(dbOp.update('activityLogs', id(), {
+      entityType: 'lead', entityId: 'bulk',
+      entityName: `Bulk: ${count} leads`, action: 'bulk-update',
       text: `Bulk updated ${count} leads — ${summaryParts.join(', ')}`,
       count,
       bulkFields: {
         ...(pendingBulkAssign ? { assign: pendingBulkAssign } : {}),
         ...(pendingBulkStage ? { stage: pendingBulkStage } : {}),
       },
-      userId: ownerId,
-      actorId: user.id,
-      userName: user.email,
-      teamMemberId: myTeamMember?.id || null,
-      createdAt: Date.now(),
+      userId: ownerId, actorId: user.id, userName: user.email,
+      teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
     }));
 
     // Run Won-stage customer conversions (these still log individually because each creates a customer)
@@ -1092,37 +1060,31 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       // If 'data' is not available, this will cause a runtime error.
       const wonStageName = (data?.userProfiles?.[0]?.wonStage || 'Won');
       const txs = [
-        db.tx.customers[id()].update(payload),
-        db.tx.leads[l.id].update({
-           stage: wonStageName,
-           stageChangedAt: Date.now(),
-           email: l.email || '',
-           phone: l.phone || ''
+        dbOp.update('customers', id(), payload),
+        dbOp.update('leads', l.id, {
+          stage: wonStageName, stageChangedAt: Date.now(),
+          email: l.email || '', phone: l.phone || ''
         }),
-        db.tx.activityLogs[id()].update({
-           entityId: l.id, entityType: 'lead',
-           entityName: l.companyName || l.name || '',
-           action: 'converted',
-           text: `Manually converted **${l.name}** to Customer. Stage changed to ${wonStageName}.`,
-           userId: ownerId, actorId: user.id, userName: user.email,
-           teamMemberId: myTeamMember?.id || null,
-           createdAt: Date.now()
-        })
-      ];
-      // Structured stage-change log for analytics
-      if (l.stage && l.stage !== wonStageName) {
-        txs.push(db.tx.activityLogs[id()].update({
+        dbOp.update('activityLogs', id(), {
           entityId: l.id, entityType: 'lead',
           entityName: l.companyName || l.name || '',
-          action: 'stage-change',
-          fromStage: l.stage, toStage: wonStageName,
+          action: 'converted',
+          text: `Manually converted **${l.name}** to Customer. Stage changed to ${wonStageName}.`,
+          userId: ownerId, actorId: user.id, userName: user.email,
+          teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
+        }),
+      ];
+      if (l.stage && l.stage !== wonStageName) {
+        txs.push(dbOp.update('activityLogs', id(), {
+          entityId: l.id, entityType: 'lead',
+          entityName: l.companyName || l.name || '',
+          action: 'stage-change', fromStage: l.stage, toStage: wonStageName,
           text: `Stage: ${l.stage} → ${wonStageName}`,
           userId: ownerId, actorId: user.id, userName: user.email,
-          teamMemberId: myTeamMember?.id || null,
-          createdAt: Date.now()
+          teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
         }));
       }
-      await db.transact(txs);
+      await dbWrite(txs);
       toast(`${l.name} is now a Customer!`, 'success');
     } catch {
       toast('Error converting to customer', 'error');
@@ -1890,18 +1852,15 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   if (!lid) return;
                   const lead = leads.find(l => l.id === lid);
                   if (!lead || lead.stage === stage) return;
-                  await db.transact(db.tx.leads[lid].update({ stage, stageChangedAt: Date.now() }));
+                  await dbWrite(dbOp.update('leads', lid, { stage, stageChangedAt: Date.now() }));
                   await logActivity(lid, `Stage changed from "${lead.stage}" to "${stage}" (drag & drop)`, { action: 'edited' });
-                  // Structured stage-change log for analytics
-                  await db.transact(db.tx.activityLogs[id()].update({
+                  await dbWrite(dbOp.update('activityLogs', id(), {
                     entityId: lid, entityType: 'lead',
                     entityName: lead.companyName || lead.name || '',
-                    action: 'stage-change',
-                    fromStage: lead.stage, toStage: stage,
+                    action: 'stage-change', fromStage: lead.stage, toStage: stage,
                     text: `Stage: ${lead.stage} → ${stage} (drag)`,
                     userId: ownerId, actorId: user.id, userName: user.email,
-                    teamMemberId: myTeamMember?.id || null,
-                    createdAt: Date.now()
+                    teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
                   }));
                   if (isWon(stage)) {
                     await convertToCustomer(lead, true);
