@@ -45,7 +45,10 @@ one-time migration/maintenance script goes in that folder, not in `api/` or the 
 - ✅ Postgres+RLS POC validated end-to-end (health, no-tenant-leak, tenant-scoped leads)
 - ✅ `api/db-pg.js` — Postgres pool + `tenantQuery`/`rawQuery`/`tenantTransaction` helpers
 - ✅ `api/auth-pg.js` — password login + magic code + JWT, tested on dev (all 3 flows pass)
-- ⬜ App data-layer rewrite (`db.useQuery`/`db.transact` → Postgres), module by module, **dev first**
+- ✅ `api/_leads-cache.js` — `getLeadsForOwner()` reads from Postgres when `USE_PG_DATA=true`; upgrades all 8 callers (leads-page, dashboard-stats, call-logs-page, call-logs, sync-won-leads, team-stats, lead-lookup, process-wa-followup) simultaneously
+- ⬜ call-logs reads (`_call-logs-cache.js`) → Postgres
+- ⬜ Data writes (`db.transact`) → Postgres
+- ⬜ `db.useQuery` in React components → REST API calls
 
 ### Schema mapping (InstantDB → Postgres)
 - `userId` → `tenant_id` on every tenant table. **Exception: `callLogSyncState` uses `ownerId`.**
