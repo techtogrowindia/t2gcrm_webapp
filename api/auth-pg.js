@@ -144,10 +144,16 @@ export default async function handler(req, res) {
       const match = await bcrypt.compare(password, cred.password_hash);
       if (!match) return res.status(401).json({ error: 'Invalid email or password' });
 
-      // Determine tenantId (accountId for owner; account_id for team/partner)
-      const tenantId = cred.is_team || cred.is_partner
-        ? cred.account_id
-        : cred.id; // owner: credential id = userId = tenant id
+      // Resolve tenantId = accounts.id (= userProfiles.userId).
+      // For owners: look up accounts by email (most reliable).
+      // For team/partner: their account_id points to the owner's accounts.id.
+      let tenantId = cred.account_id;
+      if (!cred.is_team && !cred.is_partner) {
+        const { rows: accRows } = await rawQuery(
+          'SELECT id FROM accounts WHERE email = $1', [email]
+        );
+        tenantId = accRows[0]?.id || cred.account_id || cred.id;
+      }
 
       const token = signJwt({
         sub:      cred.id,
@@ -271,7 +277,13 @@ export default async function handler(req, res) {
       [cred.id]
     );
 
-    const tenantId = cred.is_team || cred.is_partner ? cred.account_id : cred.id;
+    let tenantId = cred.account_id;
+    if (!cred.is_team && !cred.is_partner) {
+      const { rows: accRows } = await rawQuery(
+        'SELECT id FROM accounts WHERE email = $1', [email]
+      );
+      tenantId = accRows[0]?.id || cred.account_id || cred.id;
+    }
 
     const token = signJwt({
       sub:      cred.id,
