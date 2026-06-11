@@ -1,8 +1,10 @@
 import { getLeadsForOwner } from './_leads-cache.js';
 import { init } from '@instantdb/admin';
+import { tenantQuery } from './db-pg.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
+const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
 
 let _db = null;
 function getDb() {
@@ -11,10 +13,6 @@ function getDb() {
 }
 
 // POST /api/lead-lookup
-// Point-lookup for a lead and/or customer by phone or email.
-// Used by Appointments, EcomOrders, and other modules that previously
-// subscribed to the full 11k+ leads collection just to do a .find().
-//
 // Body: { ownerId, phone?, email? }
 // Returns: { lead: {...} | null, customer: {...} | null }
 export default async function handler(req, res) {
@@ -29,34 +27,35 @@ export default async function handler(req, res) {
     const normalPhone = (phone || '').trim().toLowerCase();
     const normalEmail = (email || '').trim().toLowerCase();
 
-    // Use shared lead cache (same cache as dashboard-stats / leads-page)
+    // leads — already migrated via _leads-cache.js
     const leads = await getLeadsForOwner(ownerId);
 
-    // Fetch customers directly (typically a much smaller dataset)
-    const db = getDb();
-    const customerResult = await db.query({
-      customers: { $: { where: { userId: ownerId } } },
-    });
-    const customers = customerResult.customers || [];
+    // customers — Postgres or InstantDB
+    let customers;
+    if (USE_PG_DATA) {
+      const result = await tenantQuery(ownerId, 'SELECT doc FROM customers');
+      customers = result.rows.map(r => r.doc);
+    } else {
+      const db = getDb();
+      const result = await db.query({
+        customers: { $: { where: { userId: ownerId } } },
+      });
+      customers = result.customers || [];
+    }
 
-    // Find matching lead
     const matchingLead = leads.find(l => {
       if (normalPhone && (l.phone || '').trim().toLowerCase() === normalPhone) return true;
       if (normalEmail && (l.email || '').trim().toLowerCase() === normalEmail) return true;
       return false;
     }) || null;
 
-    // Find matching customer
     const matchingCustomer = customers.find(c => {
       if (normalPhone && (c.phone || '').trim().toLowerCase() === normalPhone) return true;
       if (normalEmail && (c.email || '').trim().toLowerCase() === normalEmail) return true;
       return false;
     }) || null;
 
-    return res.status(200).json({
-      lead: matchingLead,
-      customer: matchingCustomer,
-    });
+    return res.status(200).json({ lead: matchingLead, customer: matchingCustomer });
   } catch (err) {
     console.error('lead-lookup error:', err);
     return res.status(500).json({ error: err.message });
