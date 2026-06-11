@@ -166,6 +166,23 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
   const [editingCFIndex, setEditingCFIndex] = useState(null);
   const [editingWA, setEditingWA] = useState(null);
   const [waFormTrigger, setWaFormTrigger] = useState('');
+  const [waFormBody, setWaFormBody] = useState(''); // tracks textarea for live curl preview
+
+  // Sample template bodies — shown when user selects a trigger on Add New
+  const WA_SAMPLE_BODIES = {
+    lead_created:        `Hi #client#, thank you for your enquiry!\nWe received your lead (Requirement: #requirement#) from #source# and our team will contact you shortly.\n— #bizName#`,
+    lead_stage_changed:  `Hi #client#, your enquiry status has been updated.\nStage: #fromstage# → #tostage#\nAssigned to: #assignee#\n— #bizName#`,
+    lead_assigned:       `Hi #assignee#, a new lead has been assigned to you:\nName: #lead# | Stage: #stage#\nPhone: #leadphoneno# | Requirement: #requirement#`,
+    customer_created:    `Congratulations #client#! 🎉\nWelcome to the #bizName# family. We look forward to serving you!`,
+    lead_followup:       `Hi #client#, this is a reminder that your follow-up is scheduled on #followupdate# (#daysLeft# day(s) away).\nOur team member #assignee# will connect with you.\n— #bizName#`,
+    quotation_created:   `Hi #client#, your quotation #quoteno# for ₹#amount# is ready.\nValid until: #validuntil#\nReply to confirm — #bizName#`,
+    invoice_created:     `Hi #client#, Invoice #invoiceno# for ₹#amount# has been generated on #date#.\nPlease make payment at your earliest convenience.\n— #bizName#`,
+    payment_received:    `Hi #client#, we have received ₹#amount# for Invoice #invoiceno#.\nThank you for your payment! — #bizName#`,
+    appointment_booked:  `Hi #client#, your appointment for #service# is confirmed!\nDate: #apptDate# at #apptTime#\nSee you soon — #bizName#`,
+    task_assigned:       `Hi #assignee#, you have a new task assigned:\n📋 #task#\nClient: #client# | Due: #duedate# | Priority: #priority#`,
+    amc_expiry:          `Hi #client#, your AMC contract #contractNo# (#plan#) expires on #endDate# — only #daysLeft# days left.\nPlease renew to avoid service interruption. — #bizName#`,
+    order_placed:        `Hi #client#, your order #orderId# for ₹#orderAmount# has been placed!\nStatus: #orderStatus#\nThank you — #bizName#`,
+  };
   const toast = useToast();
 
   const { data } = db.useQuery({
@@ -1505,10 +1522,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                     <div className="fg"><label>Waprochat Template ID *</label><input placeholder="e.g. invoice_notify_01" id="new_wa_id" /></div>
                     <div className="fg span2">
                       <label>Template Message (use <code>#variable#</code> for dynamic values)</label>
-                      <textarea 
-                        placeholder="Hello #client#, this is a reminder for your upcoming #service# on #date#. Thank you!" 
-                        id="new_wa_body" 
-                        style={{ minHeight: 80, lineHeight: 1.6 }} 
+                      <textarea
+                        placeholder="Hello #client#, this is a reminder for your upcoming #service# on #date#. Thank you!"
+                        id="new_wa_body"
+                        value={waFormBody}
+                        onChange={e => setWaFormBody(e.target.value)}
+                        style={{ minHeight: 80, lineHeight: 1.6 }}
                       />
                       <div style={{ marginTop: 8 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase' }}>Insert Variable</div>
@@ -1560,8 +1579,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { var: '#+30day#', label: '+30 Days' },
                           ].map(v => (
                             <button key={v.var} onClick={() => {
-                              const el = document.getElementById('new_wa_body');
-                              if (el) { el.value += v.var; el.focus(); }
+                              setWaFormBody(prev => prev + v.var);
                             }}
                               className="btn btn-sm"
                               style={{ fontSize: 11, padding: '2px 8px', background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: 20, cursor: 'pointer' }}>
@@ -1579,23 +1597,31 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                     </div>
                   </div>
 
-                  {/* ── Curl Preview (only when editing) ── */}
-                  {editingWA && (() => {
-                    // Find the current template from state to get latest customCurl
-                    const currentTpl = whatsappTemplates.find(tpl => tpl.id === editingWA.id) || editingWA;
-                    const editCurl = buildCurl(currentTpl);
-                    const isCustomCurl = !!currentTpl.customCurl;
+                  {/* ── Curl Preview — shown for both Add New and Edit, updates live as body changes ── */}
+                  {(() => {
+                    const isCustomCurl = !!(editingWA && whatsappTemplates.find(tpl => tpl.id === editingWA.id)?.customCurl);
+                    // For Add New: build curl from current form state (waFormBody + id field)
+                    // For Edit: build from the saved template (with custom curl support)
+                    let previewCurl;
+                    if (editingWA) {
+                      const currentTpl = whatsappTemplates.find(tpl => tpl.id === editingWA.id) || editingWA;
+                      previewCurl = buildCurl(currentTpl);
+                    } else {
+                      // Live preview from the form fields
+                      const liveTemplateId = document.getElementById('new_wa_id')?.value || '{template-id}';
+                      const liveTpl = { templateId: liveTemplateId, body: waFormBody };
+                      previewCurl = buildCurl(liveTpl);
+                    }
+                    const hasContent = waFormBody.trim().length > 0 || editingWA;
+                    if (!hasContent) return null;
                     return (
                       <div style={{ marginTop: 16 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>⚡ Curl Command</div>
-                            {isCustomCurl && (
-                              <span style={{ fontSize: 9, padding: '2px 6px', background: '#fef3c7', color: '#92400e', borderRadius: 8, fontWeight: 600, border: '1px solid #fde68a' }}>CUSTOM EDIT</span>
-                            )}
-                            {!isCustomCurl && hasWACredentials && (
-                              <span style={{ fontSize: 9, padding: '2px 6px', background: '#f0fdf4', color: '#166534', borderRadius: 8, fontWeight: 600, border: '1px solid #bbf7d0' }}>AUTO-GENERATED</span>
-                            )}
+                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>⚡ Curl Command Preview</div>
+                            {isCustomCurl && <span style={{ fontSize: 9, padding: '2px 6px', background: '#fef3c7', color: '#92400e', borderRadius: 8, fontWeight: 600, border: '1px solid #fde68a' }}>CUSTOM EDIT</span>}
+                            {!isCustomCurl && hasWACredentials && <span style={{ fontSize: 9, padding: '2px 6px', background: '#f0fdf4', color: '#166534', borderRadius: 8, fontWeight: 600, border: '1px solid #bbf7d0' }}>AUTO-GENERATED</span>}
+                            {!editingWA && <span style={{ fontSize: 9, padding: '2px 6px', background: '#eff6ff', color: '#1d4ed8', borderRadius: 8, fontWeight: 600, border: '1px solid #bfdbfe' }}>LIVE PREVIEW</span>}
                           </div>
                           <div style={{ display: 'flex', gap: 6 }}>
                             {isCustomCurl && (
@@ -1608,39 +1634,43 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                               }}>↺ Reset</button>
                             )}
                             <button className="btn btn-sm" style={{ fontSize: 10, padding: '2px 8px', background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' }} onClick={() => {
-                              navigator.clipboard.writeText(editCurl);
+                              navigator.clipboard.writeText(previewCurl);
                               toast('Curl command copied!', 'success');
                             }}>📋 Copy</button>
                           </div>
                         </div>
                         <textarea
-                          value={editCurl}
-                          onChange={e => {
+                          value={previewCurl}
+                          readOnly={!editingWA}
+                          onChange={editingWA ? e => {
                             const newCurl = e.target.value;
                             setEditingWA({ ...editingWA, customCurl: newCurl });
                             setWhatsappTemplates(whatsappTemplates.map(tpl =>
                               tpl.id === editingWA.id ? { ...tpl, customCurl: newCurl } : tpl
                             ));
-                          }}
+                          } : undefined}
                           spellCheck={false}
-                          style={{ 
+                          style={{
                             width: '100%',
-                            minHeight: 120,
-                            padding: '12px 14px', 
-                            background: '#1e293b', 
-                            color: '#e2e8f0', 
-                            borderRadius: 10, 
-                            fontSize: 11, 
-                            lineHeight: 1.7, 
+                            minHeight: 140,
+                            padding: '12px 14px',
+                            background: '#1e293b',
+                            color: '#e2e8f0',
+                            borderRadius: 10,
+                            fontSize: 11,
+                            lineHeight: 1.7,
                             whiteSpace: 'pre',
                             fontFamily: "'Fira Code', 'SF Mono', 'Consolas', monospace",
                             border: isCustomCurl ? '2px solid #fbbf24' : '1px solid #334155',
                             resize: 'vertical',
                             boxSizing: 'border-box',
+                            cursor: editingWA ? 'text' : 'default',
                           }}
                         />
                         <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
-                          💡 Edit the curl command directly. API Token & Phone Number ID are loaded from your <strong>WhatsApp settings</strong>.
+                          {editingWA
+                            ? '💡 Edit the curl command directly to customise. API Token & Phone Number ID are loaded from your WhatsApp settings.'
+                            : '💡 Live preview — updates as you type the template body. Fill in the Waprochat Template ID above to see it here.'}
                         </div>
                       </div>
                     );
@@ -1651,7 +1681,14 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                     <div style={{ fontSize: 11, fontWeight: 700, color: '#166534', textTransform: 'uppercase', marginBottom: 8 }}>⚡ Auto-Notification Trigger</div>
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                       <select id="new_wa_trigger" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}
-                        onChange={e => setWaFormTrigger(e.target.value)}>
+                        onChange={e => {
+                          const val = e.target.value;
+                          setWaFormTrigger(val);
+                          // Auto-fill sample body only when adding new (not editing)
+                          if (!editingWA && val && WA_SAMPLE_BODIES[val]) {
+                            setWaFormBody(WA_SAMPLE_BODIES[val]);
+                          }
+                        }}>
                         {AUTO_TRIGGER_EVENTS.map(e => <option key={e.value} value={e.value}>{e.label}</option>)}
                       </select>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: '#166534', cursor: 'pointer' }}>
@@ -1699,7 +1736,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                     <button className="btn btn-primary" onClick={async () => {
                       const name = document.getElementById('new_wa_name').value;
                       const templateId = document.getElementById('new_wa_id').value;
-                      const body = document.getElementById('new_wa_body').value;
+                      const body = waFormBody;
                       const autoTrigger = document.getElementById('new_wa_trigger').value;
                       const autoEnabled = document.getElementById('new_wa_autoEnabled').checked;
                       const recipientType = document.getElementById('new_wa_recipient').value;
@@ -1730,23 +1767,23 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
                       document.getElementById('new_wa_name').value = '';
                       document.getElementById('new_wa_id').value = '';
-                      document.getElementById('new_wa_body').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
                       document.getElementById('new_wa_recipient').value = 'client';
                       if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
                       setWaFormTrigger('');
+                      setWaFormBody('');
                     }}>{editingWA ? 'Update Template' : 'Add Template'}</button>
                     {editingWA && <button className="btn btn-secondary" onClick={() => {
                       setEditingWA(null);
                       document.getElementById('new_wa_name').value = '';
                       document.getElementById('new_wa_id').value = '';
-                      document.getElementById('new_wa_body').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
                       document.getElementById('new_wa_recipient').value = 'client';
                       if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
                       setWaFormTrigger('');
+                      setWaFormBody('');
                     }}>Cancel Edit</button>}
                   </div>
                 </div>
@@ -1801,11 +1838,11 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   const recipientEl = document.getElementById('new_wa_recipient');
                                   if (nameEl) nameEl.value = t.name;
                                   if (idEl) idEl.value = t.templateId;
-                                  if (bodyEl) bodyEl.value = t.body;
                                   if (triggerEl) triggerEl.value = t.autoTrigger || '';
                                   if (enabledEl) enabledEl.checked = !!t.autoEnabled;
                                   if (recipientEl) recipientEl.value = t.recipientType || 'client';
                                   setWaFormTrigger(t.autoTrigger || '');
+                                  setWaFormBody(t.body || '');
                                   const daysEl = document.getElementById('new_wa_days');
                                   if (daysEl) {
                                     if (t.autoTrigger === 'lead_followup') daysEl.value = t.daysBeforeFollowup ?? 1;
