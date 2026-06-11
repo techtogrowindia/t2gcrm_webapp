@@ -87,7 +87,23 @@ export default async function handler(req, res) {
           body: formData
         });
         const data = await response.json();
-        if (response.ok && data.status === 'success') return res.status(200).json({ success: true, messageId: data.message_id });
+        const success = response.ok && data.status === 'success';
+        const { templateId: tplIdForLog, variables: varsForLog } = req.body || {};
+        const bodyForLog = req.body?.body || req.body?.message || `Template: ${tplIdForLog}`;
+
+        // Log to outbox (both success and failure) — server is the sole logger
+        await db.transact(tx.outbox[generateId()].update({
+          userId: ownerId,
+          recipient: formattedPhone,
+          type: 'whatsapp',
+          subject: `WhatsApp Template: ${tplIdForLog || templateId}`,
+          content: bodyForLog,
+          status: success ? 'Sent' : 'Failed',
+          error: success ? null : (data.message || 'Waprochat error'),
+          sentAt: Date.now(),
+        }));
+
+        if (success) return res.status(200).json({ success: true, messageId: data.message_id });
         return res.status(400).json({ error: data.message || 'Waprochat template fail' });
       } else {
         return res.status(400).json({ error: 'Template ID required for WhatsApp' });
@@ -128,9 +144,9 @@ export default async function handler(req, res) {
         await db.transact(tx.outbox[generateId()].update({
           userId: ownerId,
           recipient: to,
-          type: 'email',
-          subject: subject || 'Notification',
-          content: body || message,
+          type: type === 'whatsapp' ? 'whatsapp' : 'email',
+          subject: type === 'whatsapp' ? `WhatsApp Template: ${req.body?.templateId || ''}` : (subject || 'Notification'),
+          content: body || message || req.body?.body || '',
           status: 'Failed',
           error: err.message,
           sentAt: Date.now()
