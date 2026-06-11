@@ -6,3 +6,14 @@ dist
 mobile/build/
 mobile/.dart_tool/
 mobile/build/
+
+# Flutter generated build configs — machine-specific absolute paths, never commit
+mobile/ios/Flutter/Generated.xcconfig
+mobile/ios/Flutter/flutter_export_environment.sh
+mobile/macos/Flutter/ephemeral/
+
+# Gradle build cache — machine-specific binaries, never commit
+mobile/android/.gradle/
+
+# Claude Code per-machine local settings — never commit
+.claude/settings.local.json

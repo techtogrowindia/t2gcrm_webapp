@@ -21,6 +21,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Email:** nodemailer (SMTP), EmailJS (frontend)
 - **Styling:** Plain CSS (no external UI library)
 
+## 🐘 PostgreSQL Migration (IN PROGRESS — read before touching the data layer)
+
+We are migrating off InstantDB to a **self-hosted PostgreSQL 17** on the Contabo VPS.
+**Locked-in architecture:** one Postgres instance, **one database per app** (`t2gcrm_prod`,
+`t2gcrm_dev`, `hotel_pms`, `vaultguard`), **row-level multi-tenancy with Row-Level Security
+(RLS)** inside each, **owner(DDL) + app(DML) role split**, localhost-only, **magic-code login
+kept** (reimplemented via a `login_codes` email-OTP table), **no real-time** (REST +
+refetch-after-mutation replaces `db.useQuery`).
+
+### One-time migration scripts live OUTSIDE this repo
+All DB install / schema / import / verify scripts live in **`C:\Users\Gokul\Projects\db migration\`**
+(local machine) and are uploaded directly to the VPS — **never committed to this repo**. Any new
+one-time migration/maintenance script goes in that folder, not in `api/` or the repo root. Files:
+`01-install-postgres.sh`, `02-create-crm-schema.sh`, `03-import.mjs`, `04-verify.mjs`, plus `poc/`
+(the Postgres+RLS proof of concept). See that folder's `README.md`.
+
+### Status
+- ✅ Postgres installed/hardened/tuned; 4 DBs + owner/app roles; nightly backups
+- ✅ CRM schema (31 tables) + indexes + RLS + `login_codes` created in prod & dev
+- ✅ `t2gcrm_dev` fully imported & verified (69,547 rows; RLS isolation confirmed)
+- ⬜ `t2gcrm_prod` import (re-run `03-import.mjs` with `PG_URL` → prod when ready)
+- ⬜ App data-layer rewrite (`db.useQuery`/`db.transact` + auth → Postgres), module by module, **dev first**
+
+### Schema mapping (InstantDB → Postgres)
+- `userId` → `tenant_id` on every tenant table. **Exception: `callLogSyncState` uses `ownerId`.**
+- Hot tables (`leads`, `call_logs`, `activity_logs`) get promoted typed columns + indexes; every
+  other collection is `id + tenant_id + doc jsonb`. The **full original record is always kept in a
+  `doc jsonb` column** → the import is loss-proof.
+- `userProfiles` → `accounts` (id = the tenant's `userId`); `userCredentials` → `credentials`;
+  `globalSettings` → `global_settings`. **Auth tables have no RLS** (needed before tenant is known).
+- RLS policy on every tenant table: `tenant_id = current_setting('app.tenant_id', true)::uuid`,
+  fail-closed. The API must `SET LOCAL app.tenant_id` per request (transaction-local) — see
+  `db migration/poc/db-pg.mjs` for the canonical pooling-safe pattern.
+- **Import runs as the OWNER role** (bypasses RLS to load all tenants); the **app runs as the APP
+  role** (RLS enforced). Owner/app connection strings live in `/root/pg_credentials.txt` on the VPS.
+
+### ⚠️ Until the rewrite ships, the app still runs entirely on InstantDB.
+Postgres holds the dev data but nothing reads it yet. Don't assume Postgres is live in app code.
+
 ## Git Repository
 
 **Remote:** https://github.com/G0kulakrishnan/crm  
