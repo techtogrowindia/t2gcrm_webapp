@@ -264,7 +264,14 @@ export default function MessagingLogs({ user, ownerId }) {
                 </div>
                 {viewMessage.error && (
                   <div style={{ background: '#fee2e2', color: '#991b1b', padding: 12, borderRadius: 8, fontSize: 12 }}>
-                    <strong>Error:</strong> {viewMessage.error}
+                    <strong>Error:</strong>
+                    <pre style={{ margin: '6px 0 0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', fontSize: 12, lineHeight: 1.6 }}>
+                      {(() => {
+                        // Pretty-print if it's JSON, otherwise show as-is
+                        try { return JSON.stringify(JSON.parse(viewMessage.error), null, 2); }
+                        catch { return viewMessage.error; }
+                      })()}
+                    </pre>
                   </div>
                 )}
               </div>

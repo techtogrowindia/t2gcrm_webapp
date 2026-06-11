@@ -87,12 +87,29 @@ export default async function handler(req, res) {
           body: formData
         });
         const data = await response.json();
-        const success = response.ok && data.status === 'success';
+        // Waprochat returns status:"1" or status:"success" on success,
+        // and includes wa_message_id. Accept both forms.
+        const success = response.ok && (
+          data.status === 'success' ||
+          data.status === '1' ||
+          data.status === 1 ||
+          !!data.wa_message_id
+        );
         const tplIdForLog = req.body?.templateId || templateId;
-        const bodyForLog = req.body?.body || req.body?.message || `Template: ${tplIdForLog}`;
+        const rawBody = req.body?.body || req.body?.message || `Template: ${tplIdForLog}`;
 
-        // On failure store the full Waprochat response so the user can see
-        // exactly what the API said (error code, message, etc.)
+        // Resolve #variable# placeholders in the body so the log shows actual
+        // values (e.g. "Hi SWATHI" not "Hi #client#")
+        let resolvedBody = rawBody;
+        if (variables && Array.isArray(variables)) {
+          variables.forEach(v => {
+            if (v.name && v.value != null) {
+              resolvedBody = resolvedBody.replace(new RegExp(`#${v.name}#`, 'g'), v.value);
+            }
+          });
+        }
+
+        // On failure store the full Waprochat response for debugging
         const errorDetail = success
           ? null
           : (typeof data === 'object'
@@ -105,7 +122,7 @@ export default async function handler(req, res) {
           recipient: formattedPhone,
           type: 'whatsapp',
           subject: `WhatsApp Template: ${tplIdForLog}`,
-          content: bodyForLog,
+          content: resolvedBody,
           status: success ? 'Sent' : 'Failed',
           error: errorDetail,
           sentAt: Date.now(),
