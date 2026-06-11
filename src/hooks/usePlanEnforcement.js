@@ -39,7 +39,7 @@ const VIEW_TO_MODULE = {
 };
 
 // Always-allowed views (never blocked by plan)
-const ALWAYS_ALLOWED = ['dashboard', 'userprofile', 'settings', 'admin', 'apidocs', 'manual', 'appointment-settings'];
+const ALWAYS_ALLOWED = ['dashboard', 'userprofile', 'settings', 'admin', 'apidocs', 'manual', 'appointment-settings', 'wa-guide'];
 
 export function usePlanEnforcement(profile, settings) {
   return useMemo(() => {

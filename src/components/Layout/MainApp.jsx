@@ -62,6 +62,7 @@ const AdminPanel = lazyWithRetry(() => import('../Admin/AdminPanel'));
 const ApiDocs = lazyWithRetry(() => import('../Admin/ApiDocs'));
 const Integrations = lazyWithRetry(() => import('../System/Integrations'));
 const UserManual = lazyWithRetry(() => import('../System/UserManual'));
+const WAVariableGuide = lazyWithRetry(() => import('../Settings/WAVariableGuide'));
 const UserProfile = lazyWithRetry(() => import('../Settings/UserProfile'));
 const EcomSettings = lazyWithRetry(() => import('../Ecommerce/EcomSettings'));
 const EcomOrders = lazyWithRetry(() => import('../Ecommerce/EcomOrders'));
@@ -411,6 +412,7 @@ export default function MainApp({ user, settings }) {
     distributor_performance: { component: <Distributors user={user} ownerId={targetUserId} perms={perms} initialTab="Reports" />, label: 'Distributors' },
     userprofile: { component: <UserProfile user={user} profile={profile} perms={perms} memberProfile={memberProfile} ownerId={targetUserId} />, label: 'Public' },
     manual: { component: <UserManual settings={settings} />, label: 'Public' },
+    'wa-guide': { component: <WAVariableGuide />, label: 'WA Guide' },
     settings: { component: <Settings user={user} profile={profile} isExpired={isExpired} ownerId={targetUserId} initialTab={settingsTab} perms={perms} teamInfo={teamMembers.find(m => m.id === teamInfo?.teamMemberId)} memberProfile={memberProfile} settings={settings} />, label: 'Settings' },
     admin: { component: isSuperadmin ? <AdminPanel user={user} /> : null, label: 'Admin' },
     apidocs: { component: isSuperadmin ? <ApiDocs ownerId={targetUserId} /> : null, label: 'API Docs' },

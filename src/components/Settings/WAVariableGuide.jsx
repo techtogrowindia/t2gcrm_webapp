@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useApp } from '../../context/AppContext';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WhatsApp Template Variable Guide
@@ -231,26 +232,26 @@ const DATE_VARS = [
   { name: '#+Nday#',      desc: 'Today + any N days (e.g. #+45day#)', example: '25/07/2026' },
 ];
 
-export default function WAVariableGuide({ onClose }) {
+export default function WAVariableGuide() {
   const [activeModule, setActiveModule] = useState(null);
+  const { setActiveView } = useApp();
 
   return (
-    <div className="mo open" style={{ zIndex: 1100 }}>
-      <div className="mo-box" style={{ width: 760, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
-        {/* Header */}
-        <div className="mo-head">
-          <div>
-            <h3 style={{ margin: 0 }}>📖 WhatsApp Template Variable Guide</h3>
-            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
-              All available <code>#variable#</code> placeholders with descriptions and examples — organised by event type
-            </div>
-          </div>
-          <button className="btn-icon" onClick={onClose}>✕</button>
+    <div className="reports-view" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Page header */}
+      <div className="sh" style={{ marginBottom: 0 }}>
+        <div>
+          <h2>📖 WhatsApp Template Variable Guide</h2>
+          <div className="sub">All <code>#variable#</code> placeholders with descriptions and examples — organised by event type</div>
         </div>
+        <button className="btn btn-secondary btn-sm" onClick={() => setActiveView('settings')}>
+          ← Back to Settings
+        </button>
+      </div>
 
-        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: 16 }}>
           {/* Sidebar — event list */}
-          <div style={{ width: 220, flexShrink: 0, borderRight: '1px solid var(--border)', overflowY: 'auto', padding: '12px 8px', background: 'var(--bg-soft)' }}>
+          <div style={{ width: 220, flexShrink: 0, borderRight: '1px solid var(--border)', overflowY: 'auto', padding: '12px 8px', background: 'var(--bg-soft)', height: 'calc(100vh - 180px)' }}>
             <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', color: 'var(--muted)', padding: '0 8px 8px', letterSpacing: '0.05em' }}>Events</div>
             {MODULES.map(m => (
               <div key={m.id}
@@ -273,7 +274,7 @@ export default function WAVariableGuide({ onClose }) {
           </div>
 
           {/* Main content */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: 20, height: 'calc(100vh - 180px)' }}>
             {!activeModule && (
               <div>
                 {/* Key rules */}
@@ -408,12 +409,8 @@ Offer expires on #+30day#.`}
           </div>
         </div>
 
-        <div className="mo-foot">
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-            💡 When you add new variables in the future, update <code>WAVariableGuide.jsx</code> — it is the single source of truth.
-          </div>
-          <button className="btn btn-primary btn-sm" onClick={onClose}>Close</button>
-        </div>
+      <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', background: 'var(--bg-soft)', fontSize: 11, color: 'var(--muted)' }}>
+        💡 When you add new variables in the future, update <code>WAVariableGuide.jsx</code> — it is the single source of truth for all template authors.
       </div>
     </div>
   );
