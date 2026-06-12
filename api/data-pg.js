@@ -20,7 +20,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const CASCADE = {
   leads:     [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'call_logs', field: 'leadId' }],
   customers: [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'call_logs', field: 'leadId' }, { table: 'amc', field: 'customerId' }],
-  invoices:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }],
+  invoices:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'partner_commissions', field: 'invoiceId' }],
   quotes:    [{ table: 'activity_logs', field: 'entityId' }],
   projects:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'projectId' }, { table: 'expenses', field: 'projectId' }, { table: 'appointments', field: 'entityId' }],
   vendors:   [{ table: 'purchase_orders', field: 'vendorId' }],
@@ -123,6 +123,10 @@ async function execOp(op, tenantId) {
   if (!id) throw new Error('id required for every op');
 
   if (action === 'delete') {
+    // PG ids are uuids — skip legacy non-uuid keys (e.g. "<invId>-comm")
+    // rather than erroring. The proper cascade below handles such children.
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id));
+    if (!isUuid) return [];
     // Returns an array of {sql,params} so a delete can cascade.
     const out = [{ sql: `DELETE FROM ${table} WHERE id=$1`, params: [id] }];
     for (const c of (CASCADE[table] || [])) {
