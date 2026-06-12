@@ -21,25 +21,30 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { pgAuthGetToken } from './useAuthPg';
 
-export function usePgQuery(collections) {
+export function usePgQuery(spec) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Stable key so the effect only re-runs when the collection set changes
-  const key = Array.isArray(collections) ? collections.join(',') : String(collections || '');
-  const list = key ? key.split(',') : [];
+  // spec is either an array of names (['customers']) or an object with
+  // optional where filters ({ activityLogs: { where: { entityId: x } } }).
+  // Build a stable JSON key so the effect re-runs only when it changes.
+  const queries = Array.isArray(spec)
+    ? Object.fromEntries((spec || []).map(c => [c, {}]))
+    : (spec || {});
+  const key = JSON.stringify(queries);
   const mounted = useRef(true);
 
   const fetchData = useCallback(async () => {
-    if (!list.length) { setData({}); setIsLoading(false); return; }
+    const q = JSON.parse(key);
+    if (!Object.keys(q).length) { setData({}); setIsLoading(false); return; }
     const token = pgAuthGetToken();
     if (!token) { setError(new Error('Not authenticated')); setIsLoading(false); return; }
     try {
       const res = await fetch('/api/data-pg', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'query', collections: list }),
+        body: JSON.stringify({ action: 'query', queries: q }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Query failed');

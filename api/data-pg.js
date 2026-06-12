@@ -11,9 +11,19 @@
 // All ops within a batch run in ONE transaction (atomic).
 // ===================================================================
 import crypto from 'crypto';
-import { tenantQuery, tenantTransaction } from './db-pg.js';
+import { tenantQuery, tenantTransaction, rawQuery } from './db-pg.js';
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
+// Cascade-delete rules: deleting a parent also deletes related rows by a
+// doc field. Keeps Postgres orphan-free (mirrors the Hard Delete policy).
+const CASCADE = {
+  leads:     [{ table: 'activity_logs', field: 'entityId' }],
+  customers: [{ table: 'activity_logs', field: 'entityId' }],
+  invoices:  [{ table: 'activity_logs', field: 'entityId' }],
+  quotes:    [{ table: 'activity_logs', field: 'entityId' }],
+  projects:  [{ table: 'activity_logs', field: 'entityId' }],
+};
 
 // ── InstantDB collection → Postgres table name ───────────────────
 const TABLE_MAP = {
@@ -168,10 +178,15 @@ async function execOp(op, tenantId) {
   if (!id) throw new Error('id required for every op');
 
   if (action === 'delete') {
-    return { sql: `DELETE FROM ${table} WHERE id=$1`, params: [id] };
+    // Returns an array of {sql,params} so a delete can cascade.
+    const out = [{ sql: `DELETE FROM ${table} WHERE id=$1`, params: [id] }];
+    for (const c of (CASCADE[table] || [])) {
+      out.push({ sql: `DELETE FROM ${c.table} WHERE doc->>'${c.field}' = $1`, params: [id] });
+    }
+    return out;
   }
   if (action === 'upsert' || action === 'update') {
-    return buildUpsertSql(table, data || {}, tenantId, id);
+    return [buildUpsertSql(table, data || {}, tenantId, id)];
   }
   throw new Error(`Unknown action: ${action}`);
 }
@@ -199,14 +214,44 @@ export default async function handler(req, res) {
   try {
     const { action, collection, id, data, ops, collections } = req.body || {};
 
-    // ── Query (read one or many collections, tenant-scoped via RLS) ──
+    // ── Query (read collections, tenant-scoped via RLS) ──────────────
+    // Accepts either:
+    //   { collections: ['customers','invoices'] }                    (no filter)
+    //   { queries: { activityLogs: { where: { entityId: 'x' } } } }  (filtered)
     if (action === 'query') {
-      const list = Array.isArray(collections) ? collections : [collection];
+      const { queries } = req.body || {};
+      const spec = queries || Object.fromEntries(
+        (Array.isArray(collections) ? collections : [collection]).map(c => [c, {}])
+      );
       const out = {};
-      for (const coll of list) {
+      for (const [coll, cfg] of Object.entries(spec)) {
+        // Special non-tenant collections
+        if (coll === 'userProfiles') {
+          const r = await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
+          out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id, userId: row.id }));
+          continue;
+        }
+        if (coll === 'globalSettings') {
+          const r = await rawQuery('SELECT id, doc FROM global_settings LIMIT 1');
+          out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id }));
+          continue;
+        }
         const table = TABLE_MAP[coll];
         if (!table) { out[coll] = []; continue; }
-        const r = await tenantQuery(tenantId, `SELECT id, doc FROM ${table}`);
+
+        // Optional WHERE on doc fields (equality only)
+        const where = cfg?.where || {};
+        const keys = Object.keys(where);
+        let sql = `SELECT id, doc FROM ${table}`;
+        const params = [];
+        if (keys.length) {
+          const clauses = keys.map((k, i) => {
+            params.push(String(where[k]));
+            return `doc->>'${k}' = $${i + 1}`;
+          });
+          sql += ` WHERE ${clauses.join(' AND ')}`;
+        }
+        const r = await tenantQuery(tenantId, sql, params);
         out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id }));
       }
       return res.status(200).json({ ok: true, data: out });
@@ -216,15 +261,15 @@ export default async function handler(req, res) {
     if (action === 'batch') {
       if (!Array.isArray(ops) || !ops.length)
         return res.status(400).json({ error: 'ops array required for batch' });
-      const queries = await Promise.all(ops.map(op => execOp(op, tenantId)));
-      await tenantTransaction(tenantId, queries);
+      const nested = await Promise.all(ops.map(op => execOp(op, tenantId)));
+      await tenantTransaction(tenantId, nested.flat());
       return res.status(200).json({ ok: true, count: ops.length });
     }
 
     // ── Single op ────────────────────────────────────────────────
     if (!collection || !id) return res.status(400).json({ error: 'collection and id required' });
-    const { sql, params } = await execOp({ action, collection, id, data }, tenantId);
-    await tenantQuery(tenantId, sql, params);
+    const queries = await execOp({ action, collection, id, data }, tenantId);
+    await tenantTransaction(tenantId, queries);
     return res.status(200).json({ ok: true });
 
   } catch (err) {

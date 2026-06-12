@@ -31,6 +31,7 @@ import { usePgQuery } from './usePgQuery';
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
 
 export function useData(instantQuery, pgCollections) {
+  // pgCollections: array of names, or object { coll: { where } } for filters.
   // Both hooks ALWAYS called; the inactive one is fed an empty/null arg.
   const instantResult = db.useQuery(USE_PG_DATA ? null : instantQuery);
   const pgResult      = usePgQuery(USE_PG_DATA ? pgCollections : []);
