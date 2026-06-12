@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
+import { useData } from '../../hooks/useData';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
+
+const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
 import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
 import DocumentTemplate from './DocumentTemplate';
 import { useToast } from '../../context/ToastContext';
@@ -44,7 +48,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const [newCustForm, setNewCustForm] = useState(EMPTY_CUSTOMER);
   const toast = useToast();
 
-  const { data, isLoading } = db.useQuery({
+  const { data, isLoading, refetch } = useData({
     invoices: { $: { where: { userId: ownerId } } },
     products: { $: { where: { userId: ownerId } } },
     customers: { $: { where: { userId: ownerId }, limit: 10000 } },
@@ -52,7 +56,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     teamMembers: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId } } },
     partnerCommissions: { $: { where: { userId: ownerId } } },
-  });
+  }, ['invoices', 'products', 'customers', 'userProfiles', 'teamMembers', 'partnerApplications', 'partnerCommissions']);
   const invoices = useMemo(() => {
     return data?.invoices || [];
   }, [data?.invoices]);
@@ -247,7 +251,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     }
     
     const invId = editData ? editData.id : id();
-    const invAction = db.tx.invoices[invId].update({ ...payload });
+    const invAction = dbOp.update('invoices', invId, { ...payload });
 
     const txs = [invAction];
 
@@ -255,7 +259,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (isAmc && amcStart && amcEnd && (!editData || !editData.amcStart)) {
       const custMatch = customers.find(c => (c.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
       const amcId = id();
-      txs.push(db.tx.amc[amcId].update({
+      txs.push(dbOp.update('amc', amcId, {
         userId: ownerId,
         actorId: user.id,
         client: form.client,
@@ -278,34 +282,34 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     
     if (lMatch) {
       if (payload.status === 'Sent') {
-        txs.push(db.tx.leads[lMatch.id].update({ stage: 'Invoice Sent', stageChangedAt: Date.now() }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('leads', lMatch.id, { stage: 'Invoice Sent', stageChangedAt: Date.now() }));
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Invoice Sent (via Invoice)',
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       } else if (payload.status === 'Draft') {
-        txs.push(db.tx.leads[lMatch.id].update({ 
+        txs.push(dbOp.update('leads', lMatch.id, { 
            stage: 'Invoice Created',
            email: lMatch.email || payload.email || '',
            phone: lMatch.phone || payload.phone || '',
            stageChangedAt: Date.now()
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Invoice Created (via Invoice)',
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       } else if (payload.status === 'Paid' || payload.status === 'Partially Paid') {
-        txs.push(db.tx.customers[id()].update({
+        txs.push(dbOp.update('customers', id(), {
           name: lMatch.name, companyName: lMatch.companyName || '', email: lMatch.email || '', phone: lMatch.phone || '', userId: ownerId, actorId: user.id, createdAt: Date.now(),
           partnerId: lMatch.partnerId || '', distributorId: lMatch.distributorId || payload.distributorId || '', retailerId: lMatch.retailerId || payload.retailerId || ''
         }));
-        txs.push(db.tx.leads[lMatch.id].update({ 
+        txs.push(dbOp.update('leads', lMatch.id, { 
            stage: wonStage,
            email: lMatch.email || payload.email || '',
            phone: lMatch.phone || payload.phone || '',
            stageChangedAt: Date.now()
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: `Lead converted to Customer. Stage changed to ${wonStage} (via Invoice save).`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
@@ -325,7 +329,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (editData) {
       const existing = partnerCommissions.filter(c => c.invoiceId === invId);
       existing.forEach(c => {
-         txs.push(db.tx.partnerCommissions[c.id].delete());
+         txs.push(dbOp.delete('partnerCommissions', c.id));
       });
     }
 
@@ -346,7 +350,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         }
         
         const commAmt = Math.round(tots.total * (effectivePct / 100));
-        txs.push(db.tx.partnerCommissions[id()].update({
+        txs.push(dbOp.update('partnerCommissions', id(), {
           invoiceId: invId,
           partnerId: pId,
           amount: commAmt,
@@ -371,8 +375,8 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         const pMatch = products.find(p => p.name === item.name);
         if (pMatch && pMatch.trackStock) {
           const newStock = (pMatch.stock || 0) - (item.qty || 0);
-          txs.push(db.tx.products[pMatch.id].update({ stock: newStock }));
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('products', pMatch.id, { stock: newStock }));
+          txs.push(dbOp.update('activityLogs', id(), {
             entityId: pMatch.id,
             entityType: 'product',
             text: `Stock reduced by ${item.qty} via Invoice ${payload.no}. New stock: ${newStock}`,
@@ -387,7 +391,8 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
 
     setSaving(true);
     try {
-      await db.transact(txs);
+      await dbWrite(txs);
+      refetch();
 
       // Track team activity (per-module performance)
       const myMember = team.find(t => t.email === user.email);
@@ -453,27 +458,22 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (!canDelete) { toast('Permission denied: cannot delete invoices', 'error'); return; }
     if (!confirm('Delete this invoice? All associated records and activity logs will be removed.')) return;
     try {
-      const res = await fetch('/api/data', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          module: 'invoices',
-          ownerId,
-          actorId: user.id,
-          userName: user.email,
-          id: iid,
-          logText: `Invoice ${invoices.find(v => v.id === iid)?.no} deleted`
-        })
-      });
-      if (!res.ok) throw new Error('Failed to delete invoice');
-      
-      // Cascade delete commission record
-      try {
-        await db.transact(db.tx.partnerCommissions[`${iid}-comm`].delete());
-      } catch (e) {
-         // Silently ignore if no commission record exists
+      if (USE_PG_DATA) {
+        await dbWrite(dbOp.delete('invoices', iid)); // cascade-deletes activity logs
+        try { await dbWrite(dbOp.delete('partnerCommissions', `${iid}-comm`)); } catch (e) {}
+        refetch();
+      } else {
+        const res = await fetch('/api/data', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            module: 'invoices', ownerId, actorId: user.id, userName: user.email,
+            id: iid, logText: `Invoice ${invoices.find(v => v.id === iid)?.no} deleted`
+          })
+        });
+        if (!res.ok) throw new Error('Failed to delete invoice');
+        try { await dbWrite(dbOp.delete('partnerCommissions', `${iid}-comm`)); } catch (e) {}
       }
-
       toast('Invoice deleted', 'error');
     } catch (e) {
       toast('Error deleting invoice', 'error');
@@ -543,23 +543,23 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     const totalPaid = nw.reduce((s, p) => s + p.amount, 0);
     const stat = totalPaid >= payModal.total ? 'Paid' : 'Partially Paid';
     
-    const txs = [db.tx.invoices[payModal.id].update({ payments: nw, status: stat })];
+    const txs = [dbOp.update('invoices', payModal.id, { payments: nw, status: stat })];
     let isNewCustomer = false;
     
     if (stat === 'Paid' || stat === 'Partially Paid') {
       const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (payModal.client || '').trim().toLowerCase() && l.stage !== wonStage);
       if (lMatch) {
-         txs.push(db.tx.customers[id()].update({
+         txs.push(dbOp.update('customers', id(), {
             name: lMatch.name, companyName: lMatch.companyName || '', email: lMatch.email || '', phone: lMatch.phone || '', userId: ownerId, actorId: user.id, createdAt: Date.now(),
             partnerId: lMatch.partnerId || payModal.distributorId || '', distributorId: lMatch.distributorId || payModal.distributorId || '', retailerId: lMatch.retailerId || payModal.retailerId || ''
          }));
-         txs.push(db.tx.leads[lMatch.id].update({ 
+         txs.push(dbOp.update('leads', lMatch.id, { 
             stage: wonStage,
             email: lMatch.email || payModal.email || '', // payModal might not have email/phone, depends on where it comes from
             phone: lMatch.phone || payModal.phone || '',
             stageChangedAt: Date.now()
          }));
-         txs.push(db.tx.activityLogs[id()].update({
+         txs.push(dbOp.update('activityLogs', id(), {
             entityId: lMatch.id, entityType: 'lead', text: `Payment received. Lead converted to Customer. Stage changed to ${wonStage} (via Invoice payment).`,
             userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
          }));
@@ -571,14 +571,15 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (stat === 'Paid') {
       const payComms = partnerCommissions.filter(c => c.invoiceId === payModal.id);
       payComms.forEach(c => {
-        txs.push(db.tx.partnerCommissions[c.id].update({
+        txs.push(dbOp.update('partnerCommissions', c.id, {
           status: 'Pending Payout',
           updatedAt: Date.now()
         }));
       });
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
+    refetch();
     toast('Payment added' + (isNewCustomer ? ' & Lead Converted!' : ''), 'success');
     
     // Fire WhatsApp auto-notification for payment received
@@ -608,7 +609,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (!newCustForm.name.trim()) return toast('Name required', 'error');
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
-    await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+    await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
     setForm(p => ({ ...p, client: newCustForm.name.trim(), distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);
@@ -617,7 +618,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
 
   const saveViewConfig = async (cols) => {
     if (!perms?.isOwner) { toast('Only the business owner can change view configurations', 'error'); return; }
-    if (profile?.id) await db.transact(db.tx.userProfiles[profile.id].update({ invoiceCols: cols }));
+    if (profile?.id) await dbWrite(dbOp.update('userProfiles', profile.id, { invoiceCols: cols }));
     setColModal(false);
     toast('View saved', 'success');
   };

@@ -56,101 +56,24 @@ const TABLE_MAP = {
   callLogs:             'call_logs',
 };
 
-// Hot tables with promoted columns (keep in sync with 02-create-crm-schema.sh)
+// Tables without an updated_at column (append-mostly time-series)
+const NO_UPDATED_AT = new Set(['call_logs', 'activity_logs']);
+
+// Universal MERGE-upsert. doc is shallow-merged (existing.doc || new.doc) so
+// PARTIAL updates only change the provided fields — matching InstantDB's
+// .update() merge semantics. Promoted typed columns (name, stage, followup…)
+// are kept in sync from doc by BEFORE INSERT/UPDATE triggers in the schema
+// (see 02-create-crm-schema.sh + 05-add-write-triggers.sql), so the write
+// path never has to enumerate them.
 function buildUpsertSql(table, data, tenantId, id) {
-  if (table === 'leads') {
-    return {
-      sql: `INSERT INTO leads
-              (id, tenant_id, name, company_name, email, phone, source, stage,
-               assign, requirement, label, notes, product_cat, location,
-               followup, assigned_at, stage_changed_at, actor_id, custom, doc,
-               created_at, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                    COALESCE((SELECT created_at FROM leads WHERE id=$1), now()), now())
-            ON CONFLICT (id) DO UPDATE SET
-              name=$3, company_name=$4, email=$5, phone=$6, source=$7, stage=$8,
-              assign=$9, requirement=$10, label=$11, notes=$12, product_cat=$13,
-              location=$14, followup=$15, assigned_at=$16, stage_changed_at=$17,
-              actor_id=$18, custom=$19, doc=$20, updated_at=now()`,
-      params: [
-        id, tenantId,
-        data.name        || null,
-        data.companyName || null,
-        data.email       || null,
-        data.phone       || null,
-        data.source      || null,
-        data.stage       || null,
-        data.assign      || null,
-        data.requirement || null,
-        data.label       || null,
-        data.notes       || null,
-        data.productCat  || null,
-        data.location    || null,
-        data.followup    ? new Date(data.followup).toISOString()        : null,
-        data.assignedAt  ? new Date(data.assignedAt).toISOString()      : null,
-        data.stageChangedAt ? new Date(data.stageChangedAt).toISOString(): null,
-        data.actorId     || null,
-        JSON.stringify(data.custom || {}),
-        JSON.stringify({ ...data, id }),
-      ],
-    };
-  }
-
-  if (table === 'call_logs') {
-    return {
-      sql: `INSERT INTO call_logs
-              (id, tenant_id, phone, direction, duration, outcome,
-               staff_email, device_id, doc, created_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
-                    COALESCE((SELECT created_at FROM call_logs WHERE id=$1), now()))
-            ON CONFLICT (id) DO UPDATE SET
-              phone=$3, direction=$4, duration=$5, outcome=$6,
-              staff_email=$7, device_id=$8, doc=$9`,
-      params: [
-        id, tenantId,
-        data.phone      || null,
-        data.direction  || null,
-        data.duration != null ? Math.trunc(Number(data.duration)) : null,
-        data.outcome    || null,
-        data.staffEmail || null,
-        data.deviceId   || null,
-        JSON.stringify({ ...data, id }),
-      ],
-    };
-  }
-
-  if (table === 'activity_logs') {
-    return {
-      sql: `INSERT INTO activity_logs
-              (id, tenant_id, entity_type, entity_id, action, user_name,
-               team_member_id, from_stage, to_stage, text, doc, created_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-                    COALESCE((SELECT created_at FROM activity_logs WHERE id=$1), now()))
-            ON CONFLICT (id) DO UPDATE SET
-              entity_type=$3, entity_id=$4, action=$5, user_name=$6,
-              team_member_id=$7, from_stage=$8, to_stage=$9, text=$10, doc=$11`,
-      params: [
-        id, tenantId,
-        data.entityType    || null,
-        data.entityId      || null,
-        data.action        || null,
-        data.userName      || null,
-        data.teamMemberId  || null,
-        data.fromStage     || null,
-        data.toStage       || null,
-        data.text          || null,
-        JSON.stringify({ ...data, id }),
-      ],
-    };
-  }
-
-  // Generic table: id + tenant_id + doc + timestamps
+  const docJson = JSON.stringify({ ...data, id });
+  const setUpdatedAt = NO_UPDATED_AT.has(table) ? '' : ', updated_at = now()';
   return {
-    sql: `INSERT INTO ${table} (id, tenant_id, doc, created_at, updated_at)
-          VALUES ($1, $2, $3,
-                  COALESCE((SELECT created_at FROM ${table} WHERE id=$1), now()), now())
-          ON CONFLICT (id) DO UPDATE SET doc=$3, updated_at=now()`,
-    params: [id, tenantId, JSON.stringify({ ...data, id })],
+    sql: `INSERT INTO ${table} (id, tenant_id, doc)
+          VALUES ($1, $2, $3::jsonb)
+          ON CONFLICT (id) DO UPDATE SET
+            doc = ${table}.doc || EXCLUDED.doc${setUpdatedAt}`,
+    params: [id, tenantId, docJson],
   };
 }
 
@@ -173,6 +96,25 @@ function verifyJwt(token) {
 // ── Execute one op (returns { sql, params } or delete tuple) ─────
 async function execOp(op, tenantId) {
   const { action, collection, id, data } = op;
+
+  // userProfiles -> accounts: partial SHALLOW-MERGE into doc (matches
+  // InstantDB's top-level merge). Always scoped to the JWT tenant.
+  if (collection === 'userProfiles') {
+    if (action === 'delete') return [];
+    return [{
+      sql: `UPDATE accounts SET doc = doc || $1::jsonb, updated_at = now() WHERE id = $2`,
+      params: [JSON.stringify(data || {}), tenantId],
+    }];
+  }
+  // globalSettings -> global_settings: partial merge (single platform row)
+  if (collection === 'globalSettings') {
+    if (action === 'delete') return [];
+    return [{
+      sql: `UPDATE global_settings SET doc = doc || $1::jsonb, updated_at = now()`,
+      params: [JSON.stringify(data || {})],
+    }];
+  }
+
   const table = TABLE_MAP[collection];
   if (!table) throw new Error(`Unknown collection: ${collection}`);
   if (!id) throw new Error('id required for every op');
