@@ -1,5 +1,5 @@
 import { init } from '@instantdb/admin';
-import { opU, runOps } from './_write-ops.js';
+import { opU, runOps, readData } from './_write-ops.js';
 import { getLeadsForOwner } from './_leads-cache.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;

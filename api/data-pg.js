@@ -142,6 +142,42 @@ async function execOp(op, tenantId) {
 
 // Reusable write runner — used by /api/data when USE_PG_DATA=true so the
 // legacy REST endpoint's writes also land in Postgres (one shared code path).
+// Server-side read mirroring db.query({ coll: { $: { where } } }) but from
+// Postgres (RLS-scoped to tenantId). Handles userProfiles→accounts,
+// globalSettings, and simple equality where-filters on doc fields. Operator
+// filters (e.g. { in: [...] }) and userId/ownerId keys are dropped — the caller
+// filters the returned rows in JS, same as before. Cross-tenant lookups (e.g.
+// auth by email) are NOT supported here — those stay on InstantDB.
+export async function pgRead(tenantId, querySpec) {
+  const out = {};
+  for (const [coll, cfg] of Object.entries(querySpec || {})) {
+    if (coll === 'userProfiles') {
+      const r = await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
+      out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id, userId: row.id }));
+      continue;
+    }
+    if (coll === 'globalSettings') {
+      const r = await rawQuery('SELECT id, doc FROM global_settings LIMIT 1');
+      out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id }));
+      continue;
+    }
+    const table = TABLE_MAP[coll];
+    if (!table) { out[coll] = []; continue; }
+    const where = cfg?.$?.where || {};
+    const clauses = []; const params = [];
+    for (const [k, v] of Object.entries(where)) {
+      if (k === 'userId' || k === 'ownerId') continue;       // RLS handles tenant
+      if (v && typeof v === 'object') continue;              // skip operators
+      params.push(String(v));
+      clauses.push(`doc->>'${k}' = $${params.length}`);
+    }
+    const sql = `SELECT id, doc FROM ${table}${clauses.length ? ' WHERE ' + clauses.join(' AND ') : ''}`;
+    const r = await tenantQuery(tenantId, sql, params);
+    out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id }));
+  }
+  return out;
+}
+
 export async function pgRunOps(tenantId, ops) {
   const nested = await Promise.all(ops.map(op => execOp(op, tenantId)));
   await tenantTransaction(tenantId, nested.flat());

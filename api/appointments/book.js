@@ -1,5 +1,5 @@
 import { init, tx, id } from '@instantdb/admin';
-import { opU, runOps } from '../_write-ops.js';
+import { opU, runOps, readData } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -20,7 +20,7 @@ export default async function handler(req, res) {
     }
 
     // Check slot availability (Exclude Cancelled/No Show)
-    const existing = await db.query({
+    const existing = await readData(db, ownerId, {
       appointments: { 
         $: { 
           where: { userId: ownerId, date, time } 
@@ -59,7 +59,7 @@ export default async function handler(req, res) {
     ];
 
     // 2. Lead/Customer Uniqueness & Matching
-    const { leads = [], customers = [] } = await db.query({
+    const { leads = [], customers = [] } = await readData(db, ownerId, {
       leads: { $: { where: { userId: ownerId } } },
       customers: { $: { where: { userId: ownerId } } }
     });

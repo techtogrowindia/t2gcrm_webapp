@@ -1,5 +1,5 @@
 import { init } from '@instantdb/admin';
-import { opU, runOps } from '../_write-ops.js';
+import { opU, runOps, readData } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -94,7 +94,7 @@ export default async function handler(req, res) {
     }
 
     // Fetch user profile
-    const profileResponse = await db.query({
+    const profileResponse = await readData(db, userId, {
       userProfiles: { $: { where: { userId } } }
     });
     const profile = profileResponse.userProfiles?.[0];
@@ -129,7 +129,7 @@ export default async function handler(req, res) {
       if (!Array.isArray(leads)) leads = [leads];
 
       // Fetch existing leads for dedup
-      const leadsRes = await db.query({ leads: { $: { where: { userId } } } });
+      const leadsRes = await readData(db, userId, { leads: { $: { where: { userId } } } });
       const allLeads = leadsRes.leads || [];
       const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
       const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));
@@ -259,7 +259,7 @@ export default async function handler(req, res) {
         const successResponseSample = JSON.stringify(apiData).slice(0, 400);
 
         // Fetch existing leads for dedup
-        const leadsRes = await db.query({ leads: { $: { where: { userId } } } });
+        const leadsRes = await readData(db, userId, { leads: { $: { where: { userId } } } });
         const allLeads = leadsRes.leads || [];
         const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
         const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));

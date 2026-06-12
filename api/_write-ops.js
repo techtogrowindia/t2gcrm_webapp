@@ -11,9 +11,17 @@
 // ownerId in InstantDB (e.g. callLogSyncState), pass that same ownerId.
 // ===================================================================
 import { tx } from '@instantdb/admin';
-import { pgRunOps } from './data-pg.js';
+import { pgRunOps, pgRead } from './data-pg.js';
 
 const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
+
+// Read-side mirror of db.query — routes to Postgres when active. Use in
+// server endpoints that read reference data while writing (keeps read/write
+// on the same backend). Cross-tenant lookups stay on InstantDB (pass-through).
+export async function readData(db, tenantId, querySpec) {
+  if (USE_PG_DATA && tenantId) return pgRead(tenantId, querySpec);
+  return db.query(querySpec);
+}
 
 export const opU = (collection, _id, data) => ({ action: 'upsert', collection, id: _id, data });
 export const opD = (collection, _id) => ({ action: 'delete', collection, id: _id });

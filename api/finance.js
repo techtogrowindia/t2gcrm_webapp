@@ -1,6 +1,6 @@
 import { init } from '@instantdb/admin';
 import { id } from '@instantdb/react';
-import { opU, runOps } from './_write-ops.js';
+import { opU, runOps, readData } from './_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -40,18 +40,18 @@ export default async function handler(req, res) {
       };
 
       const txs = [opU('invoices', invoiceId, payload)];
-      const profile = (await db.query({ userProfiles: { $: { where: { userId } } } })).userProfiles?.[0] || {};
+      const profile = (await readData(db, userId, { userProfiles: { $: { where: { userId } } } })).userProfiles?.[0] || {};
       const wonStage = profile.wonStage || 'Won';
 
       if (customer?.name) {
-        const lMatch = ((await db.query({ leads: { $: { where: { userId } } } })).leads || []).find(l => (l.name || '').trim().toLowerCase() === (customer.name || '').trim().toLowerCase() && l.stage !== wonStage);
+        const lMatch = ((await readData(db, userId, { leads: { $: { where: { userId } } } })).leads || []).find(l => (l.name || '').trim().toLowerCase() === (customer.name || '').trim().toLowerCase() && l.stage !== wonStage);
         if (lMatch) {
           txs.push(opU('leads', lMatch.id, { stage: wonStage, email: lMatch.email || customer.email || '', phone: lMatch.phone || customer.phone || '', stageChangedAt: Date.now() }));
           txs.push(opU('activityLogs', id(), { entityId: lMatch.id, entityType: 'lead', text: `Lead converted to Customer via POS Bill ${invNo}.`, userId, actorId, userName: actorId, createdAt: Date.now() }));
         }
       }
 
-      const prodData = await db.query({ products: { $: { where: { userId, name: { in: cart.map(it => it.name) } } } } });
+      const prodData = await readData(db, userId, { products: { $: { where: { userId, name: { in: cart.map(it => it.name) } } } } });
       const productsMap = (prodData.products || []).reduce((acc, p) => ({ ...acc, [p.name]: p }), {});
 
       for (const item of cart) {

@@ -1,5 +1,5 @@
 import { init } from '@instantdb/admin';
-import { opU, runOps } from '../_write-ops.js';
+import { opU, runOps, readData } from '../_write-ops.js';
 
 // Initialize InstantDB Admin SDK
 // We must use the Admin SDK for backend/serverless environments
@@ -40,7 +40,7 @@ export default async function handler(req, res) {
 
     // 1. Fetch the user's profile to get their Google Sheets mapping configuration
     console.log(`Fetching profile for user: ${userId}`);
-    const profileResponse = await db.query({
+    const profileResponse = await readData(db, userId, {
       userProfiles: {
         $: { where: { userId: userId } }
       }
@@ -145,7 +145,7 @@ export default async function handler(req, res) {
     let existingLead = null;
     if (lead.email || lead.phone) {
       // Find matching existing lead
-      const leadsRes = await db.query({
+      const leadsRes = await readData(db, userId, {
         leads: { $: { where: { userId: userId } } }
       });
       const allLeads = leadsRes.leads || [];

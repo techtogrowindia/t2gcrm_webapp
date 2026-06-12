@@ -1,5 +1,5 @@
 import { init, tx, id } from '@instantdb/admin';
-import { opU, runOps } from './_write-ops.js';
+import { opU, runOps, readData } from './_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -36,7 +36,7 @@ export default async function handler(req, res) {
 
     /* ── GET: List attendance records ── */
     if (method === 'GET') {
-      const { attendance } = await db.query({
+      const { attendance } = await readData(db, ownerId, {
         attendance: { $: { where: { userId: ownerId } } },
       });
 
@@ -81,7 +81,7 @@ export default async function handler(req, res) {
 
       if (action === 'checkin') {
         // Check if already checked in today
-        const { attendance } = await db.query({
+        const { attendance } = await readData(db, ownerId, {
           attendance: { $: { where: { userId: ownerId } } },
         });
         const existing = (attendance || []).find(
@@ -121,7 +121,7 @@ export default async function handler(req, res) {
 
       if (action === 'checkout') {
         // Find today's open check-in
-        const { attendance } = await db.query({
+        const { attendance } = await readData(db, ownerId, {
           attendance: { $: { where: { userId: ownerId } } },
         });
         const openRecord = (attendance || []).find(

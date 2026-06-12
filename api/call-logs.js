@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { init, tx, id } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getCallLogsForOwner, invalidateCallLogsCache } from './_call-logs-cache.js';
-import { opU, opD, runOps } from './_write-ops.js';
+import { opU, opD, runOps, readData } from './_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -131,7 +131,7 @@ export default async function handler(req, res) {
       if (params.action === 'sync-state') {
         const { deviceId } = params;
         if (!deviceId) return res.status(400).json({ error: 'deviceId is required' });
-        const { callLogSyncState } = await db.query({
+        const { callLogSyncState } = await readData(db, ownerId, {
           callLogSyncState: { $: { where: { ownerId, deviceId } } },
         });
         const state = callLogSyncState?.[0] || null;
@@ -147,7 +147,7 @@ export default async function handler(req, res) {
 
       // Use shared leads cache to avoid pulling 11k leads per request
       const [{ callLogs }, leads] = await Promise.all([
-        db.query({ callLogs: { $: { where: { userId: ownerId } } } }),
+        readData(db, ownerId, { callLogs: { $: { where: { userId: ownerId } } } }),
         getLeadsForOwner(ownerId),
       ]);
 
@@ -197,7 +197,7 @@ export default async function handler(req, res) {
       // result is identical whether triggered from the UI or the migration
       // script. Idempotent: running it again on a clean dataset deletes 0.
       if (params.action === 'dedupe-duplicates') {
-        const { callLogs } = await db.query({
+        const { callLogs } = await readData(db, ownerId, {
           callLogs: { $: { where: { userId: ownerId } } },
         });
         const buckets = new Map();
@@ -247,7 +247,7 @@ export default async function handler(req, res) {
           getLeadsForOwner(ownerId),
           getCallLogsForOwner(ownerId),
           deviceId
-            ? db.query({ callLogSyncState: { $: { where: { ownerId, deviceId } } } })
+            ? readData(db, ownerId, { callLogSyncState: { $: { where: { ownerId, deviceId } } } })
             : Promise.resolve({ callLogSyncState: [] }),
         ]);
         const leadMap = Object.fromEntries((leads || []).map(l => [l.phone?.replace(/\D/g, ''), l]));
