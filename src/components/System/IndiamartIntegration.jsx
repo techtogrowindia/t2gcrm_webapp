@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -81,7 +82,7 @@ export default function IndiamartIntegration({ user, ownerId, onBack, existingCo
     } else {
       updated = [...current, config];
     }
-    await db.transact(db.tx.userProfiles[profile.id].update({ indiamart: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { indiamart: updated }));
     toast('IndiaMART integration saved!', 'success');
     onBack();
   };
@@ -90,7 +91,7 @@ export default function IndiamartIntegration({ user, ownerId, onBack, existingCo
     if (!confirm('Are you sure you want to remove this IndiaMART integration?')) return;
     const current = profile.indiamart || [];
     const updated = current.filter((_, i) => i !== editIndex);
-    await db.transact(db.tx.userProfiles[profile.id].update({ indiamart: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { indiamart: updated }));
     toast('Integration removed', 'error');
     onBack();
   };
@@ -172,7 +173,7 @@ export default function IndiamartIntegration({ user, ownerId, onBack, existingCo
       });
 
       if (!lead.name) lead.name = 'Test Lead (IndiaMART)';
-      await db.transact(db.tx.leads[id()].update(lead));
+      await dbWrite(dbOp.update('leads', id(), lead));
       toast('Test lead added to your dashboard!', 'success');
     } catch (e) {
       console.error(e);

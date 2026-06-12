@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmt, fmtD } from '../../utils/helpers';
@@ -77,7 +78,7 @@ export default function POSBilling({ user, perms, ownerId, settings }) {
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
     const custPayload = { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() };
-    await db.transact(db.tx.customers[newId].update(custPayload));
+    await dbWrite(dbOp.update('customers', newId, custPayload));
     setSelectedCust({ id: newId, ...custPayload });
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);

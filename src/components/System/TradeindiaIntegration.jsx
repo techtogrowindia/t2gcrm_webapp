@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -90,7 +91,7 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
     } else {
       updated = [...current, config];
     }
-    await db.transact(db.tx.userProfiles[profile.id].update({ tradeindia: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { tradeindia: updated }));
     toast('TradeIndia integration saved!', 'success');
     onBack();
   };
@@ -99,7 +100,7 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
     if (!confirm('Are you sure you want to remove this TradeIndia integration?')) return;
     const current = profile.tradeindia || [];
     const updated = current.filter((_, i) => i !== editIndex);
-    await db.transact(db.tx.userProfiles[profile.id].update({ tradeindia: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { tradeindia: updated }));
     toast('Integration removed', 'error');
     onBack();
   };
@@ -186,7 +187,7 @@ export default function TradeindiaIntegration({ user, ownerId, onBack, existingC
       });
 
       if (!lead.name) lead.name = 'Test Lead (TradeIndia)';
-      await db.transact(db.tx.leads[id()].update(lead));
+      await dbWrite(dbOp.update('leads', id(), lead));
       toast('Test lead added to your dashboard!', 'success');
     } catch (e) {
       console.error(e);

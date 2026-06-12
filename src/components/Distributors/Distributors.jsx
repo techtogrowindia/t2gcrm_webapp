@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -93,8 +94,8 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
       const resData = await res.json();
       if (!res.ok) throw new Error(resData.error || 'Failed to create partner login');
 
-      await db.transact([
-        db.tx.partnerApplications[pId].update({
+      await dbWrite([
+        dbOp.update('partnerApplications', pId, {
           name: onboardForm.name.trim(),
           email: onboardForm.email.trim(),
           phone: onboardForm.phone.trim(),
@@ -113,7 +114,7 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
           approvedAt: Date.now(),
           userId: ownerId
         }),
-        db.tx.activityLogs[id()].update({
+        dbOp.update('activityLogs', id(), {
           entityId: pId, entityType: 'partner',
           text: `Manually onboarded Partner ${onboardForm.name} as ${onboardForm.role}.`,
           userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
@@ -135,8 +136,8 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
     if (!profile.id) return toast('Profile not found', 'error');
     setSubmitting(true);
     try {
-      await db.transact(
-        db.tx.userProfiles[profile.id].update({
+      await dbWrite(
+        dbOp.update('userProfiles', profile.id, {
           partnerFormConfig: settingsForm,
           defaultDistributorCommission: parseFloat(settingsForm.defaultDistributorCommission) || 0,
           defaultRetailerCommission: parseFloat(settingsForm.defaultRetailerCommission) || 0,
@@ -208,14 +209,14 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
       if (!res.ok) throw new Error(resData.error || 'Failed to create partner login');
 
       // 2. Update the application status in DB
-      await db.transact([
-        db.tx.partnerApplications[approveModal.id].update({
+      await dbWrite([
+        dbOp.update('partnerApplications', approveModal.id, {
           status: 'Approved',
           commission: parseFloat(commission) || 0,
           parentDistributorId: approveModal.role === 'Retailer' ? (parentDist || null) : null,
           approvedAt: Date.now()
         }),
-        db.tx.activityLogs[id()].update({
+        dbOp.update('activityLogs', id(), {
           entityId: approveModal.id,
           entityType: 'partner',
           text: `Partner application approved as ${approveModal.role} with ${commission}% commision.`,
@@ -240,8 +241,8 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
 
   const handleReject = async (appId) => {
     if (!confirm('Are you sure you want to reject this application?')) return;
-    await db.transact(
-      db.tx.partnerApplications[appId].update({ status: 'Rejected', rejectedAt: Date.now() })
+    await dbWrite(
+      dbOp.update('partnerApplications', appId, { status: 'Rejected', rejectedAt: Date.now() })
     );
     toast('Application rejected.', 'error');
   };
@@ -374,7 +375,7 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
                               : (profile?.defaultRetailerCommission || ''));
                           }}>Approve</button>
                           <button className="btn btn-secondary btn-sm" style={{ color: '#d97706', borderColor: '#fcd34d' }} onClick={async () => {
-                             await db.transact(db.tx.partnerApplications[a.id].update({ status: 'Pending' }));
+                             await dbWrite(dbOp.update('partnerApplications', a.id, { status: 'Pending' }));
                              toast('Moved back to Pending', 'success');
                           }}>Pending</button>
                         </div>
@@ -1324,7 +1325,7 @@ function PayoutsView({ applications, commissions, toast }) {
 
     try {
       const txs = [...selectedIds].map(id => 
-        db.tx.partnerCommissions[id].update({
+        dbOp.update('partnerCommissions', id, {
           status: 'Paid',
           paidAt: Date.now(),
           updatedAt: Date.now()
@@ -1332,7 +1333,7 @@ function PayoutsView({ applications, commissions, toast }) {
       );
       // Batch execute
       for (let i = 0; i < txs.length; i += 25) {
-        await db.transact(txs.slice(i, i + 25));
+        await dbWrite(txs.slice(i, i + 25));
       }
       toast(`Marked ${selectedIds.size} commissions as Paid.`, 'success');
       setSelectedIds(new Set());
@@ -1350,8 +1351,8 @@ function PayoutsView({ applications, commissions, toast }) {
     if (!confirm(`Are you sure you want to change the status to "${displayNames[newRawStatus]}"?`)) return;
 
     try {
-      await db.transact([
-        db.tx.partnerCommissions[commId].update({
+      await dbWrite([
+        dbOp.update('partnerCommissions', commId, {
           status: newRawStatus,
           updatedAt: Date.now(),
           ...(newRawStatus === 'Paid' ? { paidAt: Date.now() } : {})
@@ -1368,8 +1369,8 @@ function PayoutsView({ applications, commissions, toast }) {
     const newAmt = parseFloat(editModal.amount);
     if (isNaN(newAmt) || newAmt < 0) return toast('Invalid amount', 'error');
     try {
-      await db.transact(
-        db.tx.partnerCommissions[editModal.id].update({
+      await dbWrite(
+        dbOp.update('partnerCommissions', editModal.id, {
           amount: Math.round(newAmt),
           editNote: (editModal.editNote || '').trim() || null,
           isEdited: true,
@@ -1817,9 +1818,9 @@ function HierarchyView({ availableDistributors, allApprovedPartners, ownerId, us
         updateData.parentDistributorId = newParentId || null;
       }
 
-      await db.transact([
-        db.tx.partnerApplications[editingPartner.id].update(updateData),
-        db.tx.activityLogs[id()].update({
+      await dbWrite([
+        dbOp.update('partnerApplications', editingPartner.id, updateData),
+        dbOp.update('activityLogs', id(), {
           entityId: editingPartner.id,
           entityType: 'partner',
           text: `Partner "${editingPartner.name}" updated by admin.${newPassword ? ' Password was reset.' : ''}`,
@@ -1842,14 +1843,14 @@ function HierarchyView({ availableDistributors, allApprovedPartners, ownerId, us
     const confirmMsg = `Are you sure you want to delete partner "${partner.name || partner.companyName}"?\n\nThis will also delete:\n• Their login credentials\n• All commission records\n\nThis action cannot be undone.`;
     if (!window.confirm(confirmMsg)) return;
     try {
-      const txs = [db.tx.partnerApplications[partner.id].delete()];
+      const txs = [dbOp.delete('partnerApplications', partner.id)];
       // Delete associated commissions
       const commData = await db.query({ partnerCommissions: { $: { where: { partnerId: partner.id, userId: ownerId } } } });
-      (commData?.partnerCommissions || []).forEach(c => txs.push(db.tx.partnerCommissions[c.id].delete()));
+      (commData?.partnerCommissions || []).forEach(c => txs.push(dbOp.delete('partnerCommissions', c.id)));
       // Cascade: delete all historical activity logs for this partner (hard delete policy)
       const logData = await db.query({ activityLogs: { $: { where: { entityId: partner.id } } } });
-      (logData?.activityLogs || []).forEach(l => txs.push(db.tx.activityLogs[l.id].delete()));
-      await db.transact(txs);
+      (logData?.activityLogs || []).forEach(l => txs.push(dbOp.delete('activityLogs', l.id)));
+      await dbWrite(txs);
       // Delete credentials via API
       if (partner.email) {
         await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete-partner-credentials', email: partner.email.trim().toLowerCase() }) }).catch(() => {});
@@ -1862,7 +1863,7 @@ function HierarchyView({ availableDistributors, allApprovedPartners, ownerId, us
 
   const saveViewConfig = async (cols, size) => {
     try {
-      await db.transact(db.tx.userProfiles[profile.id].update({ partnerCols: cols, partnerPageSize: size }));
+      await dbWrite(dbOp.update('userProfiles', profile.id, { partnerCols: cols, partnerPageSize: size }));
       toast('View configuration saved', 'success');
       setColModal(false);
     } catch (err) {

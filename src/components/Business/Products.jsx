@@ -1,4 +1,5 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmt, stageBadgeClass, DEFAULT_UNITS, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
@@ -93,7 +94,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
     // 2. Backfill AMCs
     (data.amcs || []).filter(a => !a.productId).forEach(a => {
       const pMatch = products.find(p => p.name === a.plan);
-      if (pMatch) txs.push(db.tx.amcs[a.id].update({ productId: pMatch.id, sku: pMatch.code }));
+      if (pMatch) txs.push(dbOp.update('amcs', a.id, { productId: pMatch.id, sku: pMatch.code }));
     });
 
     // 3. Backfill Invoices
@@ -107,7 +108,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
         }
         return it;
       });
-      if (changed) txs.push(db.tx.invoices[inv.id].update({ items: Array.isArray(inv.items) ? items : JSON.stringify(items) }));
+      if (changed) txs.push(dbOp.update('invoices', inv.id, { items: Array.isArray(inv.items) ? items : JSON.stringify(items) }));
     });
 
     // 4. Backfill Quotes
@@ -121,7 +122,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
         }
         return it;
       });
-      if (changed) txs.push(db.tx.quotes[q.id].update({ items: Array.isArray(q.items) ? items : JSON.stringify(items) }));
+      if (changed) txs.push(dbOp.update('quotes', q.id, { items: Array.isArray(q.items) ? items : JSON.stringify(items) }));
     });
 
     // 5. Backfill Purchase Orders
@@ -134,7 +135,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
         }
         return it;
       });
-      if (changed) txs.push(db.tx.purchaseOrders[po.id].update({ items }));
+      if (changed) txs.push(dbOp.update('purchaseOrders', po.id, { items }));
     });
 
     if (txs.length > 0) {
@@ -145,7 +146,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
       
       console.log(`Running migration for ${txs.length} records...`);
       for (let i = 0; i < txs.length; i += 25) {
-        db.transact(txs.slice(i, i + 25));
+        dbWrite(txs.slice(i, i + 25));
       }
     }
   }, [data]);
@@ -183,8 +184,8 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
       userId: ownerId 
     };
     if (!payload.code) payload.code = '';
-    if (editData) { await db.transact(db.tx.products[editData.id].update(payload)); toast('Updated', 'success'); }
-    else { await db.transact(db.tx.products[id()].update(payload)); toast('Product created', 'success'); }
+    if (editData) { await dbWrite(dbOp.update('products', editData.id, payload)); toast('Updated', 'success'); }
+    else { await dbWrite(dbOp.update('products', id(), payload)); toast('Product created', 'success'); }
     setModal(false);
   };
 
@@ -194,14 +195,14 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
     if (delta === 0) return;
     const newStock = (stockModal.stock || 0) + delta;
     const txs = [
-      db.tx.products[stockModal.id].update({ stock: newStock }),
-      db.tx.activityLogs[id()].update({
+      dbOp.update('products', stockModal.id, { stock: newStock }),
+      dbOp.update('activityLogs', id(), {
         entityId: stockModal.id, entityType: 'product',
         text: `Stock adjusted by ${delta > 0 ? '+' : ''}${delta} (${adjustForm.reason}). New stock: ${newStock}`,
         userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
       })
     ];
-    await db.transact(txs);
+    await dbWrite(txs);
     toast('Stock updated', 'success');
     setStockModal(null);
     setAdjustForm({ delta: 0, reason: 'Purchase' });
@@ -210,7 +211,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
   const del = async (pid) => { 
     if (!canDelete) { toast('Permission denied: cannot delete products', 'error'); return; }
     if (!confirm('Delete?')) return; 
-    await db.transact(db.tx.products[pid].delete()); 
+    await dbWrite(dbOp.delete('products', pid)); 
     toast('Deleted', 'error'); 
   };
 
@@ -227,8 +228,8 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
 
   const bulkEcomAction = async (enable) => {
     if (selectedIds.size === 0) return toast('Select products first', 'error');
-    const txs = [...selectedIds].map(pid => db.tx.products[pid].update({ listInEcom: enable }));
-    await db.transact(txs);
+    const txs = [...selectedIds].map(pid => dbOp.update('products', pid, { listInEcom: enable }));
+    await dbWrite(txs);
     toast(`${selectedIds.size} products ${enable ? 'added to' : 'removed from'} E-com store`, 'success');
     setSelectedIds(new Set());
   };
@@ -250,7 +251,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
     try {
       const txs = csvPreview.map(row => {
         const newId = id();
-        return db.tx.products[newId].update({
+        return dbOp.update('products', newId, {
           name: row['Name'] || '',
           category: row['Category'] || 'General',
           type: row['Type'] || 'Product',
@@ -273,7 +274,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
       });
       // Batch in chunks of 25
       for (let i = 0; i < txs.length; i += 25) {
-        await db.transact(txs.slice(i, i + 25));
+        await dbWrite(txs.slice(i, i + 25));
       }
       toast(`✅ Imported ${csvPreview.length} products successfully`, 'success');
       setBulkModal(false);
@@ -440,7 +441,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
                       <td>{p.tax}%</td>
                       <td>
                         <button
-                          onClick={() => db.transact(db.tx.products[p.id].update({ listInEcom: !p.listInEcom }))}
+                          onClick={() => dbWrite(dbOp.update('products', p.id, { listInEcom: !p.listInEcom }))}
                           style={{ background: p.listInEcom ? '#ecfdf5' : 'var(--bg-soft)', color: p.listInEcom ? '#065f46' : 'var(--muted)', border: `1px solid ${p.listInEcom ? '#6ee7b7' : 'var(--border)'}`, borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}
                           title={p.listInEcom ? 'Listed in E-com Store' : 'Not listed in E-com'}
                         >
@@ -449,7 +450,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
                       </td>
                       <td>
                         <button
-                          onClick={() => db.transact(db.tx.products[p.id].update({ isPartnerAvailable: !p.isPartnerAvailable }))}
+                          onClick={() => dbWrite(dbOp.update('products', p.id, { isPartnerAvailable: !p.isPartnerAvailable }))}
                           style={{ background: p.isPartnerAvailable ? '#eff6ff' : 'var(--bg-soft)', color: p.isPartnerAvailable ? '#1d4ed8' : 'var(--muted)', border: `1px solid ${p.isPartnerAvailable ? '#93c5fd' : 'var(--border)'}`, borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}
                           title={p.isPartnerAvailable ? 'Available to Partners' : 'Hidden from Partners'}
                         >

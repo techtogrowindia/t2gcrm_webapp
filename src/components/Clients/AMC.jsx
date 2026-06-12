@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmt, daysLeft } from '../../utils/helpers';
@@ -39,7 +40,7 @@ export default function AMC({ user, perms, ownerId }) {
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
     const custPayload = { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() };
-    await db.transact(db.tx.customers[newId].update(custPayload));
+    await dbWrite(dbOp.update('customers', newId, custPayload));
     setForm(p => ({ ...p, client: custPayload.name, email: custPayload.email, phone: custPayload.phone }));
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);
@@ -173,7 +174,7 @@ export default function AMC({ user, perms, ownerId }) {
     const myMember = team.find(t => t.email === user.email);
     const teamMemberId = myMember?.id || null;
     if (editData) {
-      await db.transact(db.tx.amc[editData.id].update(payload));
+      await dbWrite(dbOp.update('amc', editData.id, payload));
       await logActivity({
         entityType: 'amc', entityId: editData.id, entityName: payload.contractNo || payload.client,
         action: 'edited', text: `Edited AMC **${payload.contractNo}** (${payload.client}, ₹${payload.amount})`,
@@ -202,21 +203,21 @@ export default function AMC({ user, perms, ownerId }) {
     }
     else {
       const newAmcId = id();
-      const txs = [db.tx.amc[newAmcId].update(payload)];
+      const txs = [dbOp.update('amc', newAmcId, payload)];
       const wonStage = profile.wonStage || 'Won';
       const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase() && l.stage !== wonStage);
       if (lMatch) {
-        txs.push(db.tx.leads[lMatch.id].update({ 
+        txs.push(dbOp.update('leads', lMatch.id, { 
            stage: wonStage,
            email: lMatch.email || payload.email || '',
            phone: lMatch.phone || payload.phone || ''
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: `AMC Contract created (${payload.contractNo || 'N/A'}). Stage changed to ${wonStage}.`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       }
-      await db.transact(txs);
+      await dbWrite(txs);
       await logActivity({
         entityType: 'amc', entityId: newAmcId, entityName: payload.contractNo || payload.client,
         action: 'created', text: `Created AMC **${payload.contractNo}** for ${payload.client} (₹${payload.amount})`,
@@ -250,17 +251,17 @@ export default function AMC({ user, perms, ownerId }) {
     if (!canDelete) { toast('Permission denied: cannot delete AMC', 'error'); return; }
     if (!confirm('Delete?')) return;
     const a = amcList.find(x => x.id === aid);
-    const txs = [db.tx.amc[aid].delete()];
+    const txs = [dbOp.delete('amc', aid)];
     if (a) {
       const lMatch = modalLeads.find(l => l.name === a.client);
       if (lMatch) {
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
           entityId: lMatch.id, entityType: 'lead', text: `AMC Contract ${a.contractNo || ''} was deleted.`,
           userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       }
     }
-    await db.transact(txs);
+    await dbWrite(txs);
     toast('Deleted', 'error');
   };
 
@@ -312,7 +313,7 @@ export default function AMC({ user, perms, ownerId }) {
     };
 
     const txs = [
-      db.tx.amc[a.id].update({
+      dbOp.update('amc', a.id, {
         startDate: newStartStr,
         endDate: newEndStr,
         amount: paidAmount,
@@ -350,10 +351,10 @@ export default function AMC({ user, perms, ownerId }) {
         notes: ''
       };
 
-      txs.push(db.tx.invoices[id()].update(invoicePayload));
+      txs.push(dbOp.update('invoices', id(), invoicePayload));
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
 
     const myMember = team.find(t => t.email === user.email);
     await logActivity({
@@ -392,7 +393,7 @@ export default function AMC({ user, perms, ownerId }) {
 
   const toggleFollowUp = async (a) => {
     if (!canEdit) { toast('Permission denied', 'error'); return; }
-    await db.transact(db.tx.amc[a.id].update({ needsFollowUp: !a.needsFollowUp }));
+    await dbWrite(dbOp.update('amc', a.id, { needsFollowUp: !a.needsFollowUp }));
     toast(a.needsFollowUp ? 'Follow-up removed' : 'Marked for follow-up', 'success');
   };
 
@@ -437,7 +438,7 @@ export default function AMC({ user, perms, ownerId }) {
       items: [{ name: a.plan || 'AMC Plan', qty: 1, rate: a.amount, taxRate: a.taxRate || 0 }]
     };
 
-    await db.transact(db.tx.invoices[id()].update(invoicePayload));
+    await dbWrite(dbOp.update('invoices', id(), invoicePayload));
     toast(`Draft Invoice ${no} created!`, 'success');
   };
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 
@@ -95,10 +96,10 @@ export default function PartnerRegistration({ params }) {
       };
       delete payload.distributorPhone;
       
-      await db.transact(db.tx.partnerApplications[applicationId].update(payload));
+      await dbWrite(dbOp.update('partnerApplications', applicationId, payload));
       
       // Also add a notification for the admin
-      await db.transact(db.tx.notifications[id()].update({
+      await dbWrite(dbOp.update('notifications', id(), {
         userId: ownerId,
         title: 'New Partner Application',
         body: `${form.name} applied to be a ${form.role}.`,

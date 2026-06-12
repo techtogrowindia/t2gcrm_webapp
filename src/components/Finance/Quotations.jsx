@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
@@ -224,12 +225,12 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     setSaving(true);
     const txs = [];
     const qId = editData ? editData.id : id();
-    txs.push(db.tx.quotes[qId].update(payload));
+    txs.push(dbOp.update('quotes', qId, payload));
 
     // Handle AMC contract creation
     if (form.isAmc && form.amcStart && form.amcEnd) {
       const amcId = id();
-      txs.push(db.tx.amcs[amcId].update({
+      txs.push(dbOp.update('amcs', amcId, {
         id: amcId,
         userId: ownerId,
         actorId: user.id,
@@ -252,24 +253,24 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase() && l.stage !== wonStage);
     if (lMatch) {
        if (payload.status === 'Sent') {
-          txs.push(db.tx.leads[lMatch.id].update({ 
+          txs.push(dbOp.update('leads', lMatch.id, { 
              stage: 'Quotation Sent',
              email: lMatch.email || payload.email || '',
              phone: lMatch.phone || payload.phone || '',
              stageChangedAt: Date.now()
           }));
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('activityLogs', id(), {
              entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Quotation Sent (via Quotation)',
              userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
           }));
        } else if (payload.status === 'Draft' || payload.status === 'Created') {
-           txs.push(db.tx.leads[lMatch.id].update({ 
+           txs.push(dbOp.update('leads', lMatch.id, { 
               stage: 'Quotation Created',
               email: lMatch.email || payload.email || '',
               phone: lMatch.phone || payload.phone || '',
               stageChangedAt: Date.now()
            }));
-           txs.push(db.tx.activityLogs[id()].update({
+           txs.push(dbOp.update('activityLogs', id(), {
               entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Quotation Created (via Quotation)',
               userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
            }));
@@ -277,7 +278,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     }
 
     try {
-      await db.transact(txs);
+      await dbWrite(txs);
 
       // Track team activity (per-module performance)
       const myMember = (data?.teamMembers || []).find(t => t.email === user.email);
@@ -381,26 +382,26 @@ export default function Quotations({ user, perms, ownerId, settings }) {
       delete payload.id;
       
       const txs = [
-        db.tx.invoices[id()].update(payload),
-        db.tx.quotes[q.id].update({ status: 'Completed' })
+        dbOp.update('invoices', id(), payload),
+        dbOp.update('quotes', q.id, { status: 'Completed' })
       ];
 
       // Sync lead stage
       const lMatch = modalLeads.find(l => l.name === q.client && l.stage !== wonStage);
       if (lMatch) {
-        txs.push(db.tx.leads[lMatch.id].update({ 
+        txs.push(dbOp.update('leads', lMatch.id, { 
            stage: 'Invoice Created',
            email: lMatch.email || q.email || '',
            phone: lMatch.phone || q.phone || '',
            stageChangedAt: Date.now()
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: `Quotation converted to Invoice (${invNo}). Stage changed to Invoice Created.`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       }
 
-      await db.transact(txs);
+      await dbWrite(txs);
       toast('Converted to Invoice successfully!', 'success');
     } catch { toast('Error converting', 'error'); }
   };
@@ -903,7 +904,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                 if (!newCustForm.name.trim()) return toast('Name required', 'error');
                 if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
                 const newId = id();
-                await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), companyName: newCustForm.companyName || '', userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+                await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), companyName: newCustForm.companyName || '', userId: ownerId, actorId: user.id, createdAt: Date.now() }));
                 setForm(p => ({ ...p, client: newCustForm.name.trim(), distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
                 setCustModal(false);
                 setNewCustForm(EMPTY_CUSTOMER);

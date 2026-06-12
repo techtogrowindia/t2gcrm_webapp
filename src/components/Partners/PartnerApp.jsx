@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -208,8 +209,8 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
       }
 
       const leadId = id();
-      await db.transact([
-        db.tx.leads[leadId].update({
+      await dbWrite([
+        dbOp.update('leads', leadId, {
           name: form.name.trim(),
           phone: form.phone.trim(),
           email: form.email.trim(),
@@ -226,7 +227,7 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
           createdAt: Date.now(),
           updatedAt: Date.now()
         }),
-        db.tx.activityLogs[id()].update({
+        dbOp.update('activityLogs', id(), {
           entityId: leadId,
           entityType: 'lead',
           text: `Requirement added by Channel Partner`,
@@ -602,12 +603,12 @@ function ProfileSettingsView({ ownerId, partnerId }) {
         ? `Profile updated by partner: ${changes.join(', ')}`
         : 'Profile updated by partner (no field changes detected)';
 
-      await db.transact([
-        db.tx.partnerApplications[partnerId].update({
+      await dbWrite([
+        dbOp.update('partnerApplications', partnerId, {
           ...form,
           updatedAt: Date.now()
         }),
-        db.tx.activityLogs[id()].update({
+        dbOp.update('activityLogs', id(), {
           entityId: partnerId,
           entityType: 'partner',
           text: logText,

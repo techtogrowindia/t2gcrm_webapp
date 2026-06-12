@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -19,7 +20,7 @@ export default function UserProfile({ user, profile, perms, memberProfile, owner
     try {
       if (isTeamMember) {
         const mId = memberProfile?.id || id();
-        await db.transact(db.tx.memberProfiles[mId].update({
+        await dbWrite(dbOp.update('memberProfiles', mId, {
           userId: user.id,
           ownerUserId: ownerId,
           email: form.email.toLowerCase(),
@@ -30,7 +31,7 @@ export default function UserProfile({ user, profile, perms, memberProfile, owner
         toast('Profile updated successfully!', 'success');
       } else {
         const pId = profile?.id || id();
-        await db.transact(db.tx.userProfiles[pId].update({
+        await dbWrite(dbOp.update('userProfiles', pId, {
           userId: user.id,
           fullName: form.fullName,
           email: form.email.toLowerCase(),

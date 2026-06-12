@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id as genId } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -197,12 +198,12 @@ export default function Integrations({ user, ownerId }) {
           if (lead.email) emailSet.add(lead.email.toLowerCase());
           if (lead.phone) phoneSet.add(lead.phone);
 
-          batch.push(db.tx.leads[genId()].update(lead));
+          batch.push(dbOp.update('leads', genId(), lead));
           added++;
 
           // Flush batch every 50 leads
           if (batch.length >= 50) {
-            await db.transact(batch);
+            await dbWrite(batch);
             batch = [];
           }
         } catch {
@@ -211,7 +212,7 @@ export default function Integrations({ user, ownerId }) {
       }
 
       // Flush remaining batch
-      if (batch.length > 0) await db.transact(batch);
+      if (batch.length > 0) await dbWrite(batch);
 
       // Start cooldown for this specific sheet
       startCooldown(cdKey);
@@ -229,13 +230,13 @@ export default function Integrations({ user, ownerId }) {
   const handleDeleteSheet = async (index) => {
     if (!confirm('Are you sure you want to delete this sheet integration?')) return;
     const updated = gsheets.filter((_, i) => i !== index);
-    await db.transact(db.tx.userProfiles[profile.id].update({ gsheets: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { gsheets: updated }));
     toast('Integration deleted', 'error');
   };
 
   const handleToggleSheet = async (index) => {
     const updated = gsheets.map((gs, i) => i === index ? { ...gs, disabled: !gs.disabled } : gs);
-    await db.transact(db.tx.userProfiles[profile.id].update({ gsheets: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { gsheets: updated }));
     toast(updated[index].disabled ? 'Integration disabled' : 'Integration enabled', 'info');
   };
 
@@ -248,11 +249,11 @@ export default function Integrations({ user, ownerId }) {
       const configs = profile[pid] || [];
       if (action === 'delete') {
         if (!confirm(`Are you sure you want to disconnect all ${pid} integrations?`)) return;
-        await db.transact(db.tx.userProfiles[profileId].update({ [pid]: [] }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [pid]: [] }));
         toast('Disconnected', 'error');
       } else if (action === 'toggle') {
         const updated = configs.map(c => ({ ...c, disabled: !c.disabled }));
-        await db.transact(db.tx.userProfiles[profileId].update({ [pid]: updated }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [pid]: updated }));
         toast(configs[0]?.disabled ? 'Enabled' : 'Disabled', 'info');
       }
       return;
@@ -264,23 +265,23 @@ export default function Integrations({ user, ownerId }) {
     if (action === 'delete') {
       if (!confirm(`Are you sure you want to disconnect ${pid}?`)) return;
       if (pid === 'gsheets') {
-        await db.transact(db.tx.userProfiles[profileId].update({ gsheets: [], gsheetsDisabled: false }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { gsheets: [], gsheetsDisabled: false }));
       } else {
-        await db.transact(db.tx.userProfiles[profileId].update({ [field]: { connected: false, disabled: false } }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [field]: { connected: false, disabled: false } }));
       }
       toast('Disconnected', 'error');
     } else if (action === 'toggle') {
       if (pid === 'gsheets') {
-        await db.transact(db.tx.userProfiles[profileId].update({ gsheetsDisabled: !profile.gsheetsDisabled }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { gsheetsDisabled: !profile.gsheetsDisabled }));
         toast(profile.gsheetsDisabled ? 'Enabled' : 'Disabled', 'info');
       } else {
-        await db.transact(db.tx.userProfiles[profileId].update({ [field]: { ...current, disabled: !current.disabled } }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [field]: { ...current, disabled: !current.disabled } }));
         toast(current.disabled ? 'Enabled' : 'Disabled', 'info');
       }
     } else if (action === 'connect') {
       setSyncing(pid);
       setTimeout(async () => {
-        await db.transact(db.tx.userProfiles[profileId].update({ [field]: { connected: true, disabled: false } }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [field]: { connected: true, disabled: false } }));
         setSyncing(null);
         toast(`Connected!`, 'success');
       }, 1500);
@@ -365,7 +366,7 @@ export default function Integrations({ user, ownerId }) {
   const handleToggleIntConfig = async (type, index) => {
     const configs = profile[type] || [];
     const updated = configs.map((c, i) => i === index ? { ...c, disabled: !c.disabled } : c);
-    await db.transact(db.tx.userProfiles[profile.id].update({ [type]: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { [type]: updated }));
     toast(updated[index].disabled ? 'Integration disabled' : 'Integration enabled', 'info');
   };
 
@@ -373,7 +374,7 @@ export default function Integrations({ user, ownerId }) {
     if (!confirm('Are you sure you want to delete this integration?')) return;
     const configs = profile[type] || [];
     const updated = configs.filter((_, i) => i !== index);
-    await db.transact(db.tx.userProfiles[profile.id].update({ [type]: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { [type]: updated }));
     toast('Integration deleted', 'error');
   };
 

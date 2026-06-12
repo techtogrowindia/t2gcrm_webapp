@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useApp } from '../../context/AppContext';
@@ -255,7 +256,7 @@ export default function MainApp({ user, settings }) {
          syncRef.current = true;
          const memberId = id();
          const teamRec = discoveredMember || teamMembers.find(m => m.id === teamInfo?.teamMemberId);
-         db.transact(db.tx.memberProfiles[memberId].update({
+         dbWrite(dbOp.update('memberProfiles', memberId, {
             userId: user.id,
             ownerUserId: targetUserId,
             email: user.email,
@@ -283,7 +284,7 @@ export default function MainApp({ user, settings }) {
       console.log("🛠 [MainApp] Creating user profile for:", user.email, "Role:", role);
 
       const profileId = id();
-      db.transact(db.tx.userProfiles[profileId].update({
+      dbWrite(dbOp.update('userProfiles', profileId, {
         userId: user.id,
         email: user.email,
         fullName: regData.fullName || '',
@@ -310,7 +311,7 @@ export default function MainApp({ user, settings }) {
       if (profile.userId !== user.id && !isTeamMember && !syncRef.current) {
         syncRef.current = true;
         console.log("🔗 [MainApp] Adopting admin-created profile — updating userId from", profile.userId, "to", user.id);
-        db.transact(db.tx.userProfiles[profile.id].update({ userId: user.id }))
+        dbWrite(dbOp.update('userProfiles', profile.id, { userId: user.id }))
           .then(() => { console.log("✅ [MainApp] Profile userId adopted successfully"); syncRef.current = false; })
           .catch(e => { console.error("❌ [MainApp] Profile adoption failed", e); syncRef.current = false; });
       }
@@ -334,7 +335,7 @@ export default function MainApp({ user, settings }) {
         }
         
         console.log("⚡ [MainApp] Metadata Sync Required:", updates);
-        db.transact(db.tx.userProfiles[profile.id].update(updates))
+        dbWrite(dbOp.update('userProfiles', profile.id, updates))
           .then(() => console.log("✅ [MainApp] Metadata synced successfully"))
           .catch(e => console.error("❌ [MainApp] Metadata sync failed", e));
       }
@@ -343,7 +344,7 @@ export default function MainApp({ user, settings }) {
     // 3. Strict Role Cleanup: Demote unauthorized superadmins
     if (profile && profile.role === 'superadmin' && user.email !== SUPERADMIN_KEY) {
       console.warn("🛡 [MainApp] Unauthorized Superadmin detected. Demoting:", user.email);
-      db.transact(db.tx.userProfiles[profile.id].update({ role: 'user' }))
+      dbWrite(dbOp.update('userProfiles', profile.id, { role: 'user' }))
         .then(() => { toast('Profile role updated', 'info'); console.log("✅ [MainApp] User demoted to 'user'"); })
         .catch(e => console.error("❌ [MainApp] Demotion failed", e));
     }
@@ -526,7 +527,7 @@ export default function MainApp({ user, settings }) {
                 if (!fn || !bn || !ph) { toast('All fields are required', 'error'); return; }
                 setSetupSaving(true);
                 try {
-                  await db.transact(db.tx.userProfiles[profile.id].update({ fullName: fn, bizName: bn, phone: ph }));
+                  await dbWrite(dbOp.update('userProfiles', profile.id, { fullName: fn, bizName: bn, phone: ph }));
                   toast('Profile saved! Welcome! 🎉', 'success');
                 } catch (e) { toast(e.message, 'error'); }
                 finally { setSetupSaving(false); }

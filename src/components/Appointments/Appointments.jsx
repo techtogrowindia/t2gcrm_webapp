@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { logActivity } from '../../utils/activityLogger';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD } from '../../utils/helpers';
@@ -130,7 +131,7 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
 
   const saveConfig = async () => {
     if (profile) {
-      await db.transact(db.tx.userProfiles[profile.id].update({ apptConfig: tempConf }));
+      await dbWrite(dbOp.update('userProfiles', profile.id, { apptConfig: tempConf }));
       setDateFilter(tempConf.dateFilter);
       setStatusFilter(tempConf.statusFilter);
     }
@@ -141,7 +142,7 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
   const saveSettings = async () => {
     const cleanSlug = (settingsForm.slug || '').toLowerCase().trim().replace(/[^a-z0-9-]/g, '-');
     const txs = [
-      db.tx.appointmentSettings[settingsId].update({
+      dbOp.update('appointmentSettings', settingsId, {
         userId: ownerId,
         workingHours: JSON.stringify(settingsForm.workingHours),
         holidays: JSON.stringify(settingsForm.holidays),
@@ -155,10 +156,10 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
     ];
 
     if (profile?.id) {
-      txs.push(db.tx.userProfiles[profile.id].update({ slug: cleanSlug }));
+      txs.push(dbOp.update('userProfiles', profile.id, { slug: cleanSlug }));
     }
     if (ecom?.id) {
-      txs.push(db.tx.ecomSettings[ecom.id].update({ ecomName: cleanSlug }));
+      txs.push(dbOp.update('ecomSettings', ecom.id, { ecomName: cleanSlug }));
     }
 
     let logText = [];
@@ -188,7 +189,7 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
     }
 
     if (logText.length > 0) {
-      txs.push(db.tx.activityLogs[id()].update({
+      txs.push(dbOp.update('activityLogs', id(), {
         entityId: settingsId,
         entityType: 'appointmentSettings',
         text: logText.join(' | '),
@@ -197,7 +198,7 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
       }));
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
     toast('Availability settings saved!', 'success');
   };
 
@@ -214,13 +215,13 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
       return true; // No status change needed
     }
 
-    const txs = [db.tx.appointments[apptId].update({ status, updatedAt: Date.now() })];
+    const txs = [dbOp.update('appointments', apptId, { status, updatedAt: Date.now() })];
     
     if (status === 'Completed' && appt) {
       const existingCustomer = customers.find(c => c.phone === appt.customerPhone || (c.email && c.email === appt.customerEmail));
       if (!existingCustomer && appt.customerPhone) {
         const newCustomerId = id();
-        txs.push(db.tx.customers[newCustomerId].update({
+        txs.push(dbOp.update('customers', newCustomerId, {
           userId: ownerId,
           name: appt.customerName || 'Unknown',
           phone: appt.customerPhone || '',
@@ -228,7 +229,7 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
           createdAt: Date.now()
         }));
         
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
           entityId: newCustomerId, entityType: 'customer', text: `Auto-converted from Appointment (${apptId.slice(0,8)}) upon completion.`,
           userId: ownerId, createdAt: Date.now()
         }));
@@ -244,12 +245,12 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
         const lookupData = await lookupRes.json();
         const existingLead = lookupData.lead;
         if (existingLead && existingLead.stage !== 'Converted') {
-          txs.push(db.tx.leads[existingLead.id].update({ stage: 'Converted', updatedAt: Date.now() }));
+          txs.push(dbOp.update('leads', existingLead.id, { stage: 'Converted', updatedAt: Date.now() }));
         }
       } catch (e) { console.warn('Lead lookup failed:', e); }
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
     if (appt && appt.status !== status) {
       await logActivity({
         entityType: 'appointment', entityId: apptId,
@@ -266,7 +267,7 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
 
   const reschedule = async () => {
     if (!rsForm.date || !rsForm.time) { toast('Date and time required', 'error'); return; }
-    await db.transact(db.tx.appointments[rescheduleModal.id].update({ date: rsForm.date, time: rsForm.time, updatedAt: Date.now() }));
+    await dbWrite(dbOp.update('appointments', rescheduleModal.id, { date: rsForm.date, time: rsForm.time, updatedAt: Date.now() }));
     toast('Appointment rescheduled', 'success');
     setRescheduleModal(null);
   };
@@ -290,19 +291,19 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
       masterNotes = masterNotes ? `${masterNotes}\n${entry}` : entry;
     }
 
-    const txs = [db.tx.appointments[editModal.id].update({ 
+    const txs = [dbOp.update('appointments', editModal.id, { 
       notes: apptNotes,
       updatedAt: Date.now() 
     })];
 
     if (matchingLead && newNote.trim()) {
-      txs.push(db.tx.leads[matchingLead.id].update({
+      txs.push(dbOp.update('leads', matchingLead.id, {
         notes: masterNotes,
         updatedAt: Date.now()
       }));
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
     if (newNote.trim()) {
       await logActivity({
         entityType: 'appointment', entityId: editModal.id,
@@ -622,8 +623,8 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
                     const newHolidays = [...settingsForm.holidays, val].sort();
                     setSettingsForm(p => ({ ...p, holidays: newHolidays }));
                     el.value = '';
-                    await db.tx.appointmentSettings[settingsId].update({ holidays: JSON.stringify(newHolidays) });
-                    await db.tx.activityLogs[id()].update({ entityId: settingsId, entityType: 'appointmentSettings', text: `Added holiday: ${val}`, userId: ownerId, createdAt: Date.now() });
+                    await dbOp.update('appointmentSettings', settingsId, { holidays: JSON.stringify(newHolidays) });
+                    await dbOp.update('activityLogs', id(), { entityId: settingsId, entityType: 'appointmentSettings', text: `Added holiday: ${val}`, userId: ownerId, createdAt: Date.now() });
                     toast('Holiday added & saved!', 'success');
                   }
                 }}>Add</button>
@@ -642,8 +643,8 @@ export default function Appointments({ user, ownerId, perms, initialTab, setting
                       <button onClick={async () => {
                         const newHolidays = settingsForm.holidays.filter(x => x !== h);
                         setSettingsForm(p => ({ ...p, holidays: newHolidays }));
-                        await db.tx.appointmentSettings[settingsId].update({ holidays: JSON.stringify(newHolidays) });
-                        await db.tx.activityLogs[id()].update({ entityId: settingsId, entityType: 'appointmentSettings', text: `Removed holiday: ${h}`, userId: ownerId, createdAt: Date.now() });
+                        await dbOp.update('appointmentSettings', settingsId, { holidays: JSON.stringify(newHolidays) });
+                        await dbOp.update('activityLogs', id(), { entityId: settingsId, entityType: 'appointmentSettings', text: `Removed holiday: ${h}`, userId: ownerId, createdAt: Date.now() });
                         toast('Holiday removed!', 'success');
                       }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#991b1b', fontWeight: 800, lineHeight: 1 }}>✕</button>
                     </span>

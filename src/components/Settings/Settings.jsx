@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -226,14 +227,14 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         updated = true;
         // Also update leads currently in this stage
         (data?.leads || []).filter(l => l.stage === m.old).forEach(l => {
-          txs.push(db.tx.leads[l.id].update({ stage: m.new }));
+          txs.push(dbOp.update('leads', l.id, { stage: m.new }));
         });
       }
     });
 
     if (updated) {
-      txs.push(db.tx.userProfiles[profileId].update({ stages: nl }));
-      db.transact(txs).then(() => {
+      txs.push(dbOp.update('userProfiles', profileId, { stages: nl }));
+      dbWrite(txs).then(() => {
          console.log("✅ Stages migrated successfully (Drafted -> Created)");
       }).catch(e => console.error("❌ Stage migration failed:", e));
     }
@@ -247,20 +248,20 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
     const rawProfile = data?.userProfiles?.[0];
     if (rawProfile && rawProfile.labels && !rawProfile.requirements) {
-      txs.push(db.tx.userProfiles[profileId].update({ requirements: rawProfile.labels }));
+      txs.push(dbOp.update('userProfiles', profileId, { requirements: rawProfile.labels }));
       updated = true;
     }
 
     (data?.leads || []).forEach(l => {
       // If legacy label exists but requirement is empty, migrate it
       if (l.label && !l.requirement) {
-        txs.push(db.tx.leads[l.id].update({ requirement: l.label }));
+        txs.push(dbOp.update('leads', l.id, { requirement: l.label }));
         updated = true;
       }
     });
 
     if (updated && txs.length > 0) {
-      db.transact(txs).then(() => {
+      dbWrite(txs).then(() => {
          console.log("✅ Labels migrated to Requirements successfully");
       }).catch(e => console.error("❌ Label migration failed:", e));
     }
@@ -278,18 +279,18 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     const newName = 'Service Type';
     const updatedCFs = [...cfs];
     updatedCFs[conflictIdx] = { ...updatedCFs[conflictIdx], name: newName };
-    txs.push(db.tx.userProfiles[profileId].update({ customFields: updatedCFs }));
+    txs.push(dbOp.update('userProfiles', profileId, { customFields: updatedCFs }));
 
     // Migrate lead custom data: move custom.requirement -> custom["Service Type"]
     (data?.leads || []).forEach(l => {
       if (l.custom?.requirement) {
         const newCustom = { ...l.custom, [newName]: l.custom.requirement };
         delete newCustom.requirement;
-        txs.push(db.tx.leads[l.id].update({ custom: newCustom }));
+        txs.push(dbOp.update('leads', l.id, { custom: newCustom }));
       }
     });
 
-    db.transact(txs).then(() => {
+    dbWrite(txs).then(() => {
       console.log('✅ Custom field "requirement" renamed to "Service Type"');
     }).catch(e => console.error('❌ Custom field rename failed:', e));
   }, [profileId, data?.userProfiles, data?.leads]);
@@ -306,7 +307,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
       // Auto-save if fieldName is provided
       if (fieldName && profileId) {
         try {
-          await db.transact(db.tx.userProfiles[profileId].update({ [fieldName]: result }));
+          await dbWrite(dbOp.update('userProfiles', profileId, { [fieldName]: result }));
           toast(`${fieldName === 'logo' ? 'Logo' : 'QR Code'} auto-saved!`, 'success');
         } catch (err) {
           console.error(`Auto-save failed for ${fieldName}:`, err);
@@ -342,21 +343,21 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     };
 
     const txs = [];
-    if (profileId) txs.push(db.tx.userProfiles[profileId].update(payload));
+    if (profileId) txs.push(dbOp.update('userProfiles', profileId, payload));
 
     // Global Slug Sync: Force update linked modules to the new slug
     const ecomId = data?.ecomSettings?.[0]?.id;
     if (ecomId) {
-      txs.push(db.tx.ecomSettings[ecomId].update({ ecomName: cleanSlug }));
+      txs.push(dbOp.update('ecomSettings', ecomId, { ecomName: cleanSlug }));
     }
     
     const apptId = data?.appointmentSettings?.[0]?.id;
     if (apptId) {
-      txs.push(db.tx.appointmentSettings[apptId].update({ slug: cleanSlug }));
+      txs.push(dbOp.update('appointmentSettings', apptId, { slug: cleanSlug }));
     }
 
     try {
-      if (txs.length > 0) await db.transact(txs);
+      if (txs.length > 0) await dbWrite(txs);
       setBiz(b => ({ ...b, slug: cleanSlug })); // Update local state with cleaned slug
       toast('Business Profile & URLs synced successfully! 🚀', 'success');
     } catch (err) {
@@ -366,14 +367,14 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const saveFin = async () => {
     const payload = { ...fin, userId: ownerId };
-    if (profileId) await db.transact(db.tx.userProfiles[profileId].update(payload));
+    if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, payload));
     toast('Finance settings saved!', 'success');
   };
 
   const saveList = async (key, list, extra = {}) => {
     const payload = { [key]: list, userId: ownerId, ...extra };
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update(payload)); }
-    else { await db.transact(db.tx.userProfiles[id()].update({ ...payload, userId: ownerId })); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, payload)); }
+    else { await dbWrite(dbOp.update('userProfiles', id(), { ...payload, userId: ownerId })); }
     toast('Saved!', 'success');
   };
 
@@ -441,12 +442,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
       }
 
       if (updated) {
-        txs.push(db.tx.leads[l.id].update(updates));
+        txs.push(dbOp.update('leads', l.id, updates));
       }
     });
 
     if (txs.length > 0) {
-      await db.transact(txs);
+      await dbWrite(txs);
       toast(`Synced details for ${count} leads and updated stages for ${stageCount} leads!`, 'success');
     } else {
       toast('All lead data is already in sync', 'info');
@@ -516,7 +517,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         const currentVisible = data?.userProfiles?.[0]?.partnerVisibleRequirements || [];
         const updatedVisible = currentVisible.map(r => r === currentVal ? newVal.trim() : r);
         const payload = { requirements: newList, partnerVisibleRequirements: updatedVisible, userId: ownerId };
-        db.transact(db.tx.userProfiles[profileId].update(payload))
+        dbWrite(dbOp.update('userProfiles', profileId, payload))
           .then(() => toast('Saved!', 'success'))
           .catch(e => toast('Save failed: ' + e.message, 'error'));
       } else {
@@ -533,7 +534,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const saveSMTP = async () => {
     const payload = { smtpHost, smtpPort, smtpUser, smtpPass, smtpSender: smtpUser, userId: ownerId };
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update(payload)); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, payload)); }
     toast('SMTP settings saved!', 'success');
   };
 
@@ -563,7 +564,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const saveWA = async () => {
     const payload = { waApiToken, waPhoneId, whatsappTemplates, userId: ownerId };
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update(payload)); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, payload)); }
     
     if (!waApiToken.trim() || !waPhoneId.trim()) {
       toast('Templates saved! (Note: WhatsApp API info is still missing)', 'warning');
@@ -788,7 +789,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       {biz.logo && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={async () => {
                         if (!window.confirm('Remove the brand logo? This cannot be undone.')) return;
                         setBiz(b => ({ ...b, logo: null }));
-                        if (profileId) await db.transact(db.tx.userProfiles[profileId].update({ logo: null }));
+                        if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, { logo: null }));
                       }}>Remove</button>}
                     </div>
                   </div>
@@ -839,7 +840,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         checked={profile?.teamCanSeeAllLeads !== false}
                         onChange={async (e) => {
                           if (profileId) {
-                            await db.transact(db.tx.userProfiles[profileId].update({ teamCanSeeAllLeads: e.target.checked }));
+                            await dbWrite(dbOp.update('userProfiles', profileId, { teamCanSeeAllLeads: e.target.checked }));
                             toast(e.target.checked ? 'Team members can now see all leads' : 'Team members can only see their assigned leads', 'success');
                           }
                         }}
@@ -875,7 +876,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         disabled={profile?.teamCanSeeAllLeads !== false}
                         onChange={async (e) => {
                           if (profileId) {
-                            await db.transact(db.tx.userProfiles[profileId].update({ teamCanSeeUnassignedLeads: e.target.checked }));
+                            await dbWrite(dbOp.update('userProfiles', profileId, { teamCanSeeUnassignedLeads: e.target.checked }));
                             toast(e.target.checked ? 'Team members can now see unassigned leads' : 'Team members can no longer see unassigned leads', 'success');
                           }
                         }}
@@ -1118,12 +1119,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   if (s === wonStage) extra.wonStage = newVal;
                                   if (s === lostStage) extra.lostStage = newVal;
                                   
-                                  const txs = [db.tx.userProfiles[profileId].update({ stages: nl, ...extra })];
+                                  const txs = [dbOp.update('userProfiles', profileId, { stages: nl, ...extra })];
                                   // Update leads
                                   (data?.leads || []).filter(l => l.stage === s).forEach(l => {
-                                     txs.push(db.tx.leads[l.id].update({ stage: newVal }));
+                                     txs.push(dbOp.update('leads', l.id, { stage: newVal }));
                                   });
-                                  db.transact(txs).then(() => toast('Stage updated!', 'success'));
+                                  dbWrite(txs).then(() => toast('Stage updated!', 'success'));
                                }
                                setEditingStageIdx(null); 
                             }
@@ -1137,11 +1138,11 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                 const extra = {};
                                 if (s === wonStage) extra.wonStage = newVal;
                                 
-                                const txs = [db.tx.userProfiles[profileId].update({ stages: nl, ...extra })];
+                                const txs = [dbOp.update('userProfiles', profileId, { stages: nl, ...extra })];
                                 (data?.leads || []).filter(l => l.stage === s).forEach(l => {
-                                   txs.push(db.tx.leads[l.id].update({ stage: newVal }));
+                                   txs.push(dbOp.update('leads', l.id, { stage: newVal }));
                                 });
-                                db.transact(txs).then(() => toast('Stage updated!', 'success'));
+                                dbWrite(txs).then(() => toast('Stage updated!', 'success'));
                              }
                              setEditingStageIdx(null); 
                           }}
@@ -1453,7 +1454,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
             const saveTemplatesNow = async (newTemplates) => {
               setWhatsappTemplates(newTemplates);
               const payload = { waApiToken, waPhoneId, whatsappTemplates: newTemplates, userId: ownerId };
-              if (profileId) await db.transact(db.tx.userProfiles[profileId].update(payload));
+              if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, payload));
             };
 
             return (

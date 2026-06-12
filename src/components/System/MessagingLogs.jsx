@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, stageBadgeClass } from '../../utils/helpers';
@@ -89,7 +90,7 @@ export default function MessagingLogs({ user, ownerId }) {
       const batchSize = 50;
       for (let i = 0; i < oldLogs.length; i += batchSize) {
         const batch = oldLogs.slice(i, i + batchSize);
-        await db.transact(batch.map(l => db.tx.outbox[l.id].delete()));
+        await dbWrite(batch.map(l => dbOp.delete('outbox', l.id)));
       }
       alert(`Deleted ${oldLogs.length} old logs successfully.`);
     } catch (e) {

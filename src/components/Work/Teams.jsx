@@ -1,4 +1,5 @@
 import React, { useState, useMemo, lazy, Suspense } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -153,8 +154,8 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     if (!form.name.trim() || !form.email.trim()) { toast('Name and email required', 'error'); return; }
     const normalizedEmail = form.email.trim().toLowerCase();
     const payload = { ...form, email: normalizedEmail, userId: ownerId };
-    if (editData) { await db.transact(db.tx.teamMembers[editData.id].update(payload)); toast('Member updated', 'success'); }
-    else { await db.transact(db.tx.teamMembers[id()].update(payload)); toast('Member added', 'success'); }
+    if (editData) { await dbWrite(dbOp.update('teamMembers', editData.id, payload)); toast('Member updated', 'success'); }
+    else { await dbWrite(dbOp.update('teamMembers', id(), payload)); toast('Member added', 'success'); }
     setModal(false);
   };
 
@@ -183,7 +184,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
   };
   const toggleActive = async (m) => { 
     if (!canEdit) { toast('Permission denied', 'error'); return; }
-    await db.transact(db.tx.teamMembers[m.id].update({ active: !m.active })); 
+    await dbWrite(dbOp.update('teamMembers', m.id, { active: !m.active })); 
   };
 
   const saveRole = async () => {
@@ -205,8 +206,8 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
       }
       newRoles.push({ name: roleForm.name.trim(), perms: roleForm.perms });
     }
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update({ roles: newRoles })); }
-    else { await db.transact(db.tx.userProfiles[id()].update({ roles: newRoles, userId: ownerId })); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, { roles: newRoles })); }
+    else { await dbWrite(dbOp.update('userProfiles', id(), { roles: newRoles, userId: ownerId })); }
     toast('Role saved', 'success');
     setRoleModal(false);
   };
@@ -215,7 +216,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     if (!canDelete) { toast('Permission denied: cannot delete roles', 'error'); return; }
     if (!confirm('Delete this role?')) return;
     const newRoles = roles.filter(r => r.name !== rName);
-    if (profileId) await db.transact(db.tx.userProfiles[profileId].update({ roles: newRoles }));
+    if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, { roles: newRoles }));
     toast('Role deleted', 'error');
   };
 
@@ -264,7 +265,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
       if (res.ok) {
         toast(`Password set for ${pwdModal.name}!`, 'success');
         // Mark as having password
-        await db.transact(db.tx.teamMembers[pwdModal.id].update({ hasPassword: true }));
+        await dbWrite(dbOp.update('teamMembers', pwdModal.id, { hasPassword: true }));
         setPwdModal(null);
         setPwdForm({ password: '', confirm: '' });
       } else {

@@ -61,8 +61,36 @@ export function usePgQuery(spec) {
     mounted.current = true;
     setIsLoading(true);
     fetchData();
-    return () => { mounted.current = false; };
+    // Refetch on any write (dbWrite dispatches 'pg-data-changed') so the UI
+    // reflects mutations without per-component refetch calls.
+    const onChange = () => fetchData();
+    window.addEventListener('pg-data-changed', onChange);
+    return () => { mounted.current = false; window.removeEventListener('pg-data-changed', onChange); };
   }, [fetchData]);
 
   return { data, isLoading, error, refetch: fetchData };
+}
+
+// Translate an InstantDB query object — { coll: { $: { where } } } — into the
+// pg spec { coll: { where } }, stripping userId (RLS handles tenant) and any
+// complex operator objects. Used by the db.useQuery wrapper in instant.js.
+export function instantToPgSpec(query) {
+  if (!query) return {};
+  const spec = {};
+  for (const [coll, cfg] of Object.entries(query)) {
+    const where = cfg?.$?.where || {};
+    const filtered = {};
+    for (const [k, v] of Object.entries(where)) {
+      if (k === 'userId') continue;                 // tenant — RLS scopes it
+      if (v && typeof v === 'object') continue;     // skip or/and/in operators
+      filtered[k] = v;
+    }
+    spec[coll] = Object.keys(filtered).length ? { where: filtered } : {};
+  }
+  return spec;
+}
+
+// Hook form for the wrapper: takes an InstantDB query, returns InstantDB-shaped result.
+export function useInstantPgQuery(query) {
+  return usePgQuery(instantToPgSpec(query));
 }

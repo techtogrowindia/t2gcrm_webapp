@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, stageBadgeClass, prioBadgeClass } from '../../utils/helpers';
@@ -106,10 +107,10 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
         if (currentMax < 100) currentMax = 100;
         
         const updates = withoutNum.map((t, idx) => {
-          return db.tx.tasks[t.id].update({ taskNumber: currentMax + idx + 1 });
+          return dbOp.update('tasks', t.id, { taskNumber: currentMax + idx + 1 });
         });
         
-        db.transact(updates).then(() => {
+        dbWrite(updates).then(() => {
           console.log(`Migrated ${updates.length} tasks with numbers.`);
         });
       }
@@ -255,7 +256,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
     if (!newCustForm.name.trim()) return toast('Name required', 'error');
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
-    await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+    await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
     setForm(p => ({ ...p, client: newCustForm.name.trim() }));
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);
@@ -264,7 +265,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
 
   const saveViewConfig = async (cols, stages, size) => {
     if (!isOwner) return toast('Only owner can change view config', 'error');
-    await db.transact(db.tx.userProfiles[profile.id].update({ taskCols: cols, taskStages: stages, taskPageSize: size }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { taskCols: cols, taskStages: stages, taskPageSize: size }));
     setColModal(false);
     toast('View saved', 'success');
   };

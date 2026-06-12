@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmt, stageBadgeClass } from '../../utils/helpers';
@@ -50,7 +51,7 @@ export default function Expenses({ user, perms, ownerId }) {
     };
     const isEdit = !!editData;
     const expId = isEdit ? editData.id : id();
-    await db.transact(db.tx.expenses[expId].update(payload));
+    await dbWrite(dbOp.update('expenses', expId, payload));
     await logActivity({
       entityType: 'expense', entityId: expId,
       entityName: form.desc,
@@ -66,13 +67,13 @@ export default function Expenses({ user, perms, ownerId }) {
   const del = async (eid) => { 
     if (!canDelete) { toast('Permission denied: cannot delete expenses', 'error'); return; }
     if (!confirm('Delete?')) return; 
-    await db.transact(db.tx.expenses[eid].delete()); 
+    await dbWrite(dbOp.delete('expenses', eid)); 
     toast('Deleted', 'error'); 
   };
   const changeStatus = async (eid, s) => {
     if (!canEdit) { toast('Permission denied: cannot change status', 'error'); return; }
     const exp = expenses.find(e => e.id === eid);
-    await db.transact(db.tx.expenses[eid].update({ status: s }));
+    await dbWrite(dbOp.update('expenses', eid, { status: s }));
     await logActivity({
       entityType: 'expense', entityId: eid,
       entityName: exp?.desc || '',

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -78,7 +79,7 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
     } else {
       updated = [...current, config];
     }
-    await db.transact(db.tx.userProfiles[profile.id].update({ justdial: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { justdial: updated }));
     toast('JustDial integration saved!', 'success');
     onBack();
   };
@@ -87,7 +88,7 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
     if (!confirm('Are you sure you want to remove this JustDial integration?')) return;
     const current = profile.justdial || [];
     const updated = current.filter((_, i) => i !== editIndex);
-    await db.transact(db.tx.userProfiles[profile.id].update({ justdial: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { justdial: updated }));
     toast('Integration removed', 'error');
     onBack();
   };
@@ -172,7 +173,7 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
       });
 
       if (!lead.name) lead.name = 'Test Lead (JustDial)';
-      await db.transact(db.tx.leads[id()].update(lead));
+      await dbWrite(dbOp.update('leads', id(), lead));
       toast('Test lead added to your dashboard!', 'success');
     } catch (e) {
       console.error(e);

@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmtDT, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
@@ -236,15 +237,15 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
       }
 
       const newLeadId = id();
-      await db.transact([
-        db.tx.leads[newLeadId].update({
+      await dbWrite([
+        dbOp.update('leads', newLeadId, {
           ...addLeadForm,
           userId: ownerId,
           actorId: user.id,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }),
-        db.tx.callLogs[addLeadLog.id].update({
+        dbOp.update('callLogs', addLeadLog.id, {
           leadId: newLeadId,
           leadName: addLeadForm.name,
           updatedAt: Date.now(),
@@ -381,12 +382,12 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     };
     try {
       if (editData) {
-        await db.transact(db.tx.callLogs[editData.id].update(payload));
+        await dbWrite(dbOp.update('callLogs', editData.id, payload));
         toast('Call log updated', 'success');
       } else {
         payload.createdAt = Date.now();
         payload.actorId = user.id;
-        await db.transact(db.tx.callLogs[id()].update(payload));
+        await dbWrite(dbOp.update('callLogs', id(), payload));
         toast('Call logged', 'success');
       }
       setModal(false);
@@ -402,7 +403,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     try {
       // Hard delete (per CLAUDE.md rule) — also runs as a single transaction
       // so the rows disappear atomically.
-      await db.transact(ids.map(id => db.tx.callLogs[id].delete()));
+      await dbWrite(ids.map(id => dbOp.delete('callLogs', id)));
       toast(ids.length === 1 ? 'Call log deleted' : `${ids.length} attempts deleted`, 'success');
       refetchPage();
     } catch (e) { toast(e.message, 'error'); }

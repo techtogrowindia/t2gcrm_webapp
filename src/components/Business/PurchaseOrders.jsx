@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmt, stageBadgeClass } from '../../utils/helpers';
@@ -109,7 +110,7 @@ export default function PurchaseOrders({ user, perms, ownerId }) {
     };
     const isEdit = !!editData;
     const poId = isEdit ? editData.id : id();
-    await db.transact(db.tx.purchaseOrders[poId].update(payload));
+    await dbWrite(dbOp.update('purchaseOrders', poId, payload));
     await logActivity({
       entityType: 'purchaseOrder', entityId: poId,
       entityName: payload.poNo || payload.vendor,
@@ -129,20 +130,20 @@ export default function PurchaseOrders({ user, perms, ownerId }) {
   const changeStatus = async (po, newStatus) => {
     if (newStatus === 'Received' && po.status !== 'Received') {
       // Update stock for each tracked product in the PO
-      const txs = [db.tx.purchaseOrders[po.id].update({ status: newStatus, receivedAt: Date.now() })];
+      const txs = [dbOp.update('purchaseOrders', po.id, { status: newStatus, receivedAt: Date.now() })];
       for (const item of (po.items || [])) {
         const prod = products.find(p => p.id === item.productId || p.name === item.name);
         if (prod && prod.trackStock) {
           const newStock = (prod.stock || 0) + (item.qty || 0);
-          txs.push(db.tx.products[prod.id].update({ stock: newStock }));
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('products', prod.id, { stock: newStock }));
+          txs.push(dbOp.update('activityLogs', id(), {
             entityId: prod.id, entityType: 'product',
             text: `Stock increased by ${item.qty} via PO ${po.poNo}. New stock: ${newStock}`,
             userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
           }));
         }
       }
-      await db.transact(txs);
+      await dbWrite(txs);
       await logActivity({
         entityType: 'purchaseOrder', entityId: po.id,
         entityName: po.poNo || po.vendor,
@@ -153,7 +154,7 @@ export default function PurchaseOrders({ user, perms, ownerId }) {
       });
       toast(`PO marked Received — stock updated for ${po.items?.length || 0} items`, 'success');
     } else {
-      await db.transact(db.tx.purchaseOrders[po.id].update({ status: newStatus }));
+      await dbWrite(dbOp.update('purchaseOrders', po.id, { status: newStatus }));
       await logActivity({
         entityType: 'purchaseOrder', entityId: po.id,
         entityName: po.poNo || po.vendor,
@@ -169,7 +170,7 @@ export default function PurchaseOrders({ user, perms, ownerId }) {
   const del = async (oid) => {
     if (!canDelete) { toast('Permission denied', 'error'); return; }
     if (!confirm('Delete this Purchase Order?')) return;
-    await db.transact(db.tx.purchaseOrders[oid].delete());
+    await dbWrite(dbOp.delete('purchaseOrders', oid));
     toast('Deleted', 'error');
   };
 
@@ -188,7 +189,7 @@ export default function PurchaseOrders({ user, perms, ownerId }) {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed');
-      await db.transact(db.tx.purchaseOrders[po.id].update({ status: 'Sent', sentAt: Date.now() }));
+      await dbWrite(dbOp.update('purchaseOrders', po.id, { status: 'Sent', sentAt: Date.now() }));
       toast(`PO sent to ${po.vendorEmail}`, 'success');
     } catch (e) {
       toast('Email failed: ' + e.message, 'error');

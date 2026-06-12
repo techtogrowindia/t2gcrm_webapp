@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmt, fmtD } from '../../utils/helpers';
@@ -114,11 +115,11 @@ export default function AdminPanel({ user }) {
   /* ──────────── COUPON ──────────── */
   const saveCoupon = async () => {
     if (!couponForm.code.trim()) { toast('Code required', 'error'); return; }
-    await db.transact(db.tx.coupons[id()].update({ ...couponForm, createdBy: user.id, active: true, usedCount: 0 }));
+    await dbWrite(dbOp.update('coupons', id(), { ...couponForm, createdBy: user.id, active: true, usedCount: 0 }));
     toast('Coupon created', 'success');
     setCouponModal(false);
   };
-  const delCoupon = async (cid) => { await db.transact(db.tx.coupons[cid].delete()); toast('Deleted', 'error'); };
+  const delCoupon = async (cid) => { await dbWrite(dbOp.delete('coupons', cid)); toast('Deleted', 'error'); };
 
   /* ──────── ORPHAN SCAN / CLEANUP ──────── */
   const scanOrphans = async () => {
@@ -162,12 +163,12 @@ export default function AdminPanel({ user }) {
     const planObj = plans.find(p => p.name === planName);
     const duration = planObj?.duration || 7;
     const newExpiry = Date.now() + (duration * 24 * 60 * 60 * 1000);
-    await db.transact(db.tx.userProfiles[uid].update({ plan: planName, planExpiry: newExpiry }));
+    await dbWrite(dbOp.update('userProfiles', uid, { plan: planName, planExpiry: newExpiry }));
     toast(`Plan updated to ${planName}`, 'success');
   };
 
   const banUser = async (uid, banned) => {
-    await db.transact(db.tx.userProfiles[uid].update({ banned: !banned }));
+    await dbWrite(dbOp.update('userProfiles', uid, { banned: !banned }));
     toast(!banned ? 'User banned' : 'User reinstated', !banned ? 'error' : 'success');
   };
 
@@ -204,14 +205,14 @@ export default function AdminPanel({ user }) {
     if (!editUserData || !editUserForm.expiry) { toast('Select an expiry date', 'error'); return; }
     const newExpiry = new Date(editUserForm.expiry).getTime();
     if (!window.confirm(`Set plan expiry for ${editUserData.email} to ${editUserForm.expiry}?`)) return;
-    await db.transact(db.tx.userProfiles[editUserData.id].update({ planExpiry: newExpiry }));
+    await dbWrite(dbOp.update('userProfiles', editUserData.id, { planExpiry: newExpiry }));
     toast('Expiry updated', 'success');
   };
 
   const updateUserRole = async () => {
     if (!editUserData) return;
     if (!window.confirm(`Change role of ${editUserData.email} to "${editUserForm.role}"?`)) return;
-    await db.transact(db.tx.userProfiles[editUserData.id].update({ role: editUserForm.role }));
+    await dbWrite(dbOp.update('userProfiles', editUserData.id, { role: editUserForm.role }));
     toast(`Role updated to ${editUserForm.role}`, 'success');
   };
 
@@ -222,21 +223,21 @@ export default function AdminPanel({ user }) {
         const dur = plans.find(p => p.name === (u.plan || 'Trial'))?.duration || 7;
         updates.planExpiry = Date.now() + (dur * 24 * 60 * 60 * 1000);
       }
-      return Object.keys(updates).length ? db.tx.userProfiles[u.id].update(updates) : null;
+      return Object.keys(updates).length ? dbOp.update('userProfiles', u.id, updates) : null;
     }).filter(Boolean);
-    if (txs.length) { await db.transact(txs); toast(`Repaired ${txs.length} profiles`, 'success'); }
+    if (txs.length) { await dbWrite(txs); toast(`Repaired ${txs.length} profiles`, 'success'); }
     else toast('All profiles look healthy', 'info');
   };
 
   const updateEmail = async (uid, email) => {
     if (!email.includes('@')) return;
-    await db.transact(db.tx.userProfiles[uid].update({ email: email.trim() }));
+    await dbWrite(dbOp.update('userProfiles', uid, { email: email.trim() }));
     toast('Email updated', 'success');
   };
 
   const updatePhone = async (uid, phone) => {
     if (!phone?.trim()) return;
-    await db.transact(db.tx.userProfiles[uid].update({ phone: phone.trim() }));
+    await dbWrite(dbOp.update('userProfiles', uid, { phone: phone.trim() }));
     toast('Phone updated', 'success');
   };
 
@@ -320,7 +321,7 @@ export default function AdminPanel({ user }) {
     };
     if (editPlanIdx !== null) newPlans[editPlanIdx] = planEntry;
     else newPlans.push(planEntry);
-    await db.transact(db.tx.globalSettings[settingsId].update({ plans: JSON.stringify(newPlans) }));
+    await dbWrite(dbOp.update('globalSettings', settingsId, { plans: JSON.stringify(newPlans) }));
     toast(editPlanIdx !== null ? 'Plan updated' : 'Plan created', 'success');
     setPlanModal(false); setEditPlanIdx(null); setPlanForm(EMPTY_PLAN);
   };
@@ -328,21 +329,21 @@ export default function AdminPanel({ user }) {
   const deletePlan = async (idx) => {
     if (!window.confirm(`Delete plan "${plans[idx].name}"?`)) return;
     const newPlans = plans.filter((_, i) => i !== idx);
-    await db.transact(db.tx.globalSettings[settingsId].update({ plans: JSON.stringify(newPlans) }));
+    await dbWrite(dbOp.update('globalSettings', settingsId, { plans: JSON.stringify(newPlans) }));
     toast('Plan deleted', 'error');
   };
 
   const togglePlanVisibility = async (idx) => {
     const newPlans = [...plans];
     newPlans[idx] = { ...newPlans[idx], hidden: !newPlans[idx].hidden };
-    await db.transact(db.tx.globalSettings[settingsId].update({ plans: JSON.stringify(newPlans) }));
+    await dbWrite(dbOp.update('globalSettings', settingsId, { plans: JSON.stringify(newPlans) }));
     toast(newPlans[idx].hidden ? `"${newPlans[idx].name}" is now hidden from users` : `"${newPlans[idx].name}" is now visible to all`, 'success');
   };
 
   /* ──────────── SETTINGS ──────────── */
   const saveSettings = async () => {
     try {
-      await db.transact(db.tx.globalSettings[settingsId].update({
+      await dbWrite(dbOp.update('globalSettings', settingsId, {
         brandName: settingsForm.brandName || '',
         brandShort: settingsForm.brandShort || '',
         brandLogo: settingsForm.brandLogo || '',

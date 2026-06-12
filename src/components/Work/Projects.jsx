@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { stageBadgeClass, prioBadgeClass, fmtD } from '../../utils/helpers';
@@ -274,7 +275,7 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
     if (!newCustForm.name.trim()) return toast('Name required', 'error');
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
-    await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+    await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
     if (projModal) setProjForm(p => ({ ...p, client: newCustForm.name.trim() }));
     if (taskModal) setTaskForm(p => ({ ...p, client: newCustForm.name.trim() }));
     setCustModal(false);

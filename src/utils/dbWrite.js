@@ -55,6 +55,9 @@ export async function dbWrite(opsInput) {
     });
     const result = await res.json();
     if (!res.ok) throw new Error(result.error || 'Write to Postgres failed');
+    // Notify all active usePgQuery hooks to refetch (PG is not real-time).
+    // This gives refetch-after-mutation app-wide without per-component calls.
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('pg-data-changed'));
     return result;
   }
 

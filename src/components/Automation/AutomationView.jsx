@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -308,7 +309,7 @@ export default function AutomationView({ user, ownerId }) {
     const tplName = prompt('Template name:', a.name);
     if (!tplName) return;
     const acts = Array.isArray(a.actions) && a.actions.length > 0 ? a.actions : (a.action ? [a.action] : []);
-    await db.transact(db.tx.automationTemplates[id()].update({
+    await dbWrite(dbOp.update('automationTemplates', id(), {
       name: tplName.trim(),
       subject: a.subject || '',
       body: a.template || '',
@@ -363,24 +364,24 @@ export default function AutomationView({ user, ownerId }) {
     };
     if (editingFlowId) {
       // Update existing automation
-      await db.transact(db.tx.automations[editingFlowId].update(payload));
+      await dbWrite(dbOp.update('automations', editingFlowId, payload));
       toast(`Automation "${flowName}" updated! ✅`, 'success');
     } else {
       // Create new automation
-      await db.transact(db.tx.automations[id()].update({ ...payload, active: true, createdAt: Date.now() }));
+      await dbWrite(dbOp.update('automations', id(), { ...payload, active: true, createdAt: Date.now() }));
       toast(`Automation "${flowName}" created! ✅`, 'success');
     }
     setModal(false); resetForm();
   };
 
   const toggleFlow = async (a) => {
-    await db.transact(db.tx.automations[a.id].update({ active: !a.active }));
+    await dbWrite(dbOp.update('automations', a.id, { active: !a.active }));
     toast(`Flow ${a.active ? 'paused' : 'activated'}`, a.active ? 'warning' : 'success');
   };
 
   const delFlow = async (aid) => {
     if (!confirm('Delete this automation?')) return;
-    await db.transact(db.tx.automations[aid].delete());
+    await dbWrite(dbOp.delete('automations', aid));
     toast('Automation deleted', 'error');
   };
 
@@ -402,7 +403,7 @@ export default function AutomationView({ user, ownerId }) {
   // ─── Saved Templates CRUD ────────────────────────────────────────────────────
   const saveTpl = async () => {
     if (!saveTplName.trim()) { toast('Enter a template name', 'error'); return; }
-    await db.transact(db.tx.automationTemplates[id()].update({
+    await dbWrite(dbOp.update('automationTemplates', id(), {
       name: saveTplName.trim(), subject: emailSubject, body: template,
       actions: selectedActs,   // store multiple
       action: selectedActs[0], // fallback
@@ -421,7 +422,7 @@ export default function AutomationView({ user, ownerId }) {
 
   const deleteSavedTpl = async (tid) => {
     if (!confirm('Delete this template?')) return;
-    await db.transact(db.tx.automationTemplates[tid].delete());
+    await dbWrite(dbOp.delete('automationTemplates', tid));
     toast('Template deleted', 'error');
   };
 
@@ -432,7 +433,7 @@ export default function AutomationView({ user, ownerId }) {
 
   const saveEditTpl = async () => {
     if (!editTplData) return;
-    await db.transact(db.tx.automationTemplates[editTplData.id].update({
+    await dbWrite(dbOp.update('automationTemplates', editTplData.id, {
       name: editTplData.name,
       subject: editTplData.subject,
       body: editTplData.body,

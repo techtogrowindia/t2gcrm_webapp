@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -229,7 +230,7 @@ export default function Campaigns({ user, perms, ownerId }) {
 
     if (isEditingCustom) {
       // Overwrite existing custom template
-      await db.transact(db.tx.campaignTemplates[selectedTemplate].update({ subject, body, updatedAt: Date.now() }));
+      await dbWrite(dbOp.update('campaignTemplates', selectedTemplate, { subject, body, updatedAt: Date.now() }));
       toast('Template updated successfully', 'success');
     } else {
       // Save as a brand new template
@@ -237,7 +238,7 @@ export default function Campaigns({ user, perms, ownerId }) {
       if (!templateName || !templateName.trim()) return;
 
       const newTid = id();
-      await db.transact(db.tx.campaignTemplates[newTid].update({
+      await dbWrite(dbOp.update('campaignTemplates', newTid, {
         userId: ownerId,
         name: templateName.trim(),
         subject,
@@ -253,7 +254,7 @@ export default function Campaigns({ user, perms, ownerId }) {
   const handleDeleteTemplate = async () => {
     if (!canDelete) { toast('Permission denied: cannot delete templates', 'error'); return; }
     if (!confirm('Are you sure you want to delete this custom template?')) return;
-    await db.transact(db.tx.campaignTemplates[selectedTemplate].delete());
+    await dbWrite(dbOp.delete('campaignTemplates', selectedTemplate));
     setSelectedTemplate('blank');
     setSubject('');
     setBody('');
@@ -273,7 +274,7 @@ export default function Campaigns({ user, perms, ownerId }) {
       if (skedDate < new Date()) return toast('Scheduled time must be in the future.', 'error');
       
       const campId = id();
-      await db.transact(db.tx.campaigns[campId].update({
+      await dbWrite(dbOp.update('campaigns', campId, {
         userId: ownerId,
         name: campaignName,
         channel: channel,
@@ -304,7 +305,7 @@ export default function Campaigns({ user, perms, ownerId }) {
     let sentCount = 0;
     
     // Create the campaign record first
-    await db.transact(db.tx.campaigns[campId].update({
+    await dbWrite(dbOp.update('campaigns', campId, {
       userId: ownerId,
       name: campaignName,
       channel: channel,
@@ -330,7 +331,7 @@ export default function Campaigns({ user, perms, ownerId }) {
         await sendEmail(effEmail, pSubj, pBody, ownerId, profile?.bizName, ownerId);
         
         // Log to timeline
-          await db.transact(db.tx.activityLogs[id()].update({
+          await dbWrite(dbOp.update('activityLogs', id(), {
             entityId: recipient.entityId,
             entityType: recipient.type.toLowerCase(),
             text: logText,
@@ -351,7 +352,7 @@ export default function Campaigns({ user, perms, ownerId }) {
     }
     
     // Update campaign status
-    await db.transact(db.tx.campaigns[campId].update({
+    await dbWrite(dbOp.update('campaigns', campId, {
       status: 'Completed',
       sentCount: sentCount
     }));
@@ -826,7 +827,7 @@ export default function Campaigns({ user, perms, ownerId }) {
                       <button className="btn btn-secondary btn-sm" onClick={() => { loadTemplate(t.id); setTab('compose'); }}>Edit / Use</button>
                       <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={async () => {
                         if (!canDelete) { toast('Permission denied', 'error'); return; }
-                        if (confirm('Delete this template?')) await db.transact(db.tx.campaignTemplates[t.id].delete());
+                        if (confirm('Delete this template?')) await dbWrite(dbOp.delete('campaignTemplates', t.id));
                       }}>Delete</button>
                     </div>
                   </td>
