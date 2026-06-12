@@ -1,5 +1,6 @@
 import { init } from '@instantdb/admin';
 import { id } from '@instantdb/react';
+import { opU, runOps } from './_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -38,15 +39,15 @@ export default async function handler(req, res) {
         total, status: 'Paid', payMode, userId, actorId, createdAt: Date.now(), type: 'POS', taxAmt
       };
 
-      const txs = [db.tx.invoices[invoiceId].update(payload)];
+      const txs = [opU('invoices', invoiceId, payload)];
       const profile = (await db.query({ userProfiles: { $: { where: { userId } } } })).userProfiles?.[0] || {};
       const wonStage = profile.wonStage || 'Won';
 
       if (customer?.name) {
         const lMatch = ((await db.query({ leads: { $: { where: { userId } } } })).leads || []).find(l => (l.name || '').trim().toLowerCase() === (customer.name || '').trim().toLowerCase() && l.stage !== wonStage);
         if (lMatch) {
-          txs.push(db.tx.leads[lMatch.id].update({ stage: wonStage, email: lMatch.email || customer.email || '', phone: lMatch.phone || customer.phone || '', stageChangedAt: Date.now() }));
-          txs.push(db.tx.activityLogs[id()].update({ entityId: lMatch.id, entityType: 'lead', text: `Lead converted to Customer via POS Bill ${invNo}.`, userId, actorId, userName: actorId, createdAt: Date.now() }));
+          txs.push(opU('leads', lMatch.id, { stage: wonStage, email: lMatch.email || customer.email || '', phone: lMatch.phone || customer.phone || '', stageChangedAt: Date.now() }));
+          txs.push(opU('activityLogs', id(), { entityId: lMatch.id, entityType: 'lead', text: `Lead converted to Customer via POS Bill ${invNo}.`, userId, actorId, userName: actorId, createdAt: Date.now() }));
         }
       }
 
@@ -58,12 +59,12 @@ export default async function handler(req, res) {
         if (dbProd && dbProd.trackStock) {
           const newStock = (dbProd.stock || 0) - item.qty;
           if (newStock < 0) return res.status(400).json({ error: `Insufficient stock for ${item.name}` });
-          txs.push(db.tx.products[dbProd.id].update({ stock: newStock }));
-          txs.push(db.tx.activityLogs[id()].update({ entityId: dbProd.id, entityType: 'product', text: `Stock reduced by ${item.qty} via POS Bill ${invNo}.`, userId, actorId, userName: 'POS System', createdAt: Date.now() }));
+          txs.push(opU('products', dbProd.id, { stock: newStock }));
+          txs.push(opU('activityLogs', id(), { entityId: dbProd.id, entityType: 'product', text: `Stock reduced by ${item.qty} via POS Bill ${invNo}.`, userId, actorId, userName: 'POS System', createdAt: Date.now() }));
         }
       }
 
-      await db.transact(txs);
+      await runOps(db, userId, txs);
       return res.status(200).json({ success: true, invoice: { id: invoiceId, ...payload } });
     }
 

@@ -1,4 +1,5 @@
 import { init } from '@instantdb/admin';
+import { opU, runOps } from './_write-ops.js';
 import { getLeadsForOwner } from './_leads-cache.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
@@ -56,7 +57,7 @@ export default async function handler(req, res) {
       const txs = [];
       chunk.forEach(l => {
         const newId = id();
-        txs.push(db.tx.customers[newId].update({
+        txs.push(opU('customers', newId, {
           name: l.name,
           companyName: l.companyName || '',
           email: l.email || '',
@@ -66,7 +67,7 @@ export default async function handler(req, res) {
           actorId: userId || '',
           createdAt: Date.now(),
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(opU('activityLogs', id(), {
           entityId: newId,
           entityType: 'customer',
           text: `Customer created via Sync from Lead "${l.name}"`,
@@ -76,7 +77,7 @@ export default async function handler(req, res) {
           createdAt: Date.now(),
         }));
       });
-      await db.transact(txs);
+      await runOps(db, ownerId, txs);
       synced += chunk.length;
     }
 

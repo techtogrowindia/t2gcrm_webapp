@@ -3,6 +3,8 @@ const require = createRequire(import.meta.url);
 import { init, tx, id as generateId } from '@instantdb/admin';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
+import { rawQuery, tenantQuery } from './db-pg.js';
+import { opU, runOps, USE_PG_DATA } from './_write-ops.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -38,23 +40,30 @@ export default async function handler(req, res) {
     const dedupeId = crypto.createHash('md5').update(dedupeKeyString).digest('hex');
     const dedupeUUID = `${dedupeId.slice(0,8)}-${dedupeId.slice(8,12)}-${dedupeId.slice(12,16)}-${dedupeId.slice(16,20)}-${dedupeId.slice(20,32)}`;
 
-    const { executedAutomations } = await db.query({ 
-      executedAutomations: { $: { where: { id: dedupeUUID } } } 
-    });
+    let alreadySent = false;
+    if (USE_PG_DATA) {
+      const r = await tenantQuery(ownerId, 'SELECT id FROM executed_automations WHERE id = $1', [dedupeUUID]);
+      alreadySent = r.rows.length > 0;
+    } else {
+      const { executedAutomations } = await db.query({ executedAutomations: { $: { where: { id: dedupeUUID } } } });
+      alreadySent = executedAutomations?.length > 0;
+    }
 
-    if (executedAutomations?.length > 0) {
+    if (alreadySent) {
       console.log(`[NOTIFY] 🛡️ Dedupe: Skipping duplicate notification (ID: ${dedupeUUID})`);
       return res.status(200).json({ success: true, skipped: true, message: 'Duplicate blocked by server-side guard' });
     }
-    
-    await db.transact(tx.executedAutomations[dedupeUUID].update({
+
+    await runOps(db, ownerId, [opU('executedAutomations', dedupeUUID, {
       key: dedupeKeyString,
       userId: ownerId,
       createdAt: Date.now()
-    }));
+    })]);
     // ------------------------------------------------
 
-    const profile = (await db.query({ userProfiles: { $: { where: { userId: ownerId }, limit: 1 } } })).userProfiles?.[0];
+    const profile = USE_PG_DATA
+      ? (await rawQuery('SELECT doc FROM accounts WHERE id = $1', [ownerId])).rows[0]?.doc
+      : (await db.query({ userProfiles: { $: { where: { userId: ownerId }, limit: 1 } } })).userProfiles?.[0];
 
     if (type === 'whatsapp') {
       const waApiToken = profile?.waApiToken;
@@ -117,7 +126,7 @@ export default async function handler(req, res) {
               : String(data || 'Waprochat error'));
 
         // Log to outbox (both success and failure) — server is the sole logger
-        await db.transact(tx.outbox[generateId()].update({
+        await runOps(db, ownerId, [opU('outbox', generateId(), {
           userId: ownerId,
           recipient: formattedPhone,
           type: 'whatsapp',
@@ -126,7 +135,7 @@ export default async function handler(req, res) {
           status: success ? 'Sent' : 'Failed',
           error: errorDetail,
           sentAt: Date.now(),
-        }));
+        })]);
 
         if (success) return res.status(200).json({ success: true, messageId: data.message_id });
         return res.status(400).json({ error: data.message || 'Waprochat template fail', detail: data });
@@ -148,7 +157,7 @@ export default async function handler(req, res) {
     const info = await transporter.sendMail({ from: biz ? `"${biz}" <${user}>` : user, to, subject: subject || 'Notification', text: body || message, html: (body || message).replace(/\n/g, '<br/>') });
     
     // Log to Outbox for UI visibility
-    await db.transact(tx.outbox[generateId()].update({
+    await runOps(db, ownerId, [opU('outbox', generateId(), {
       userId: ownerId,
       recipient: to,
       type: 'email',
@@ -156,7 +165,7 @@ export default async function handler(req, res) {
       content: body || message,
       status: 'Sent',
       sentAt: Date.now()
-    }));
+    })]);
 
     return res.status(200).json({ success: true, messageId: info.messageId });
 
@@ -166,7 +175,7 @@ export default async function handler(req, res) {
     // Attempt to log failure to outbox if we have enough info
     try {
       if (db && ownerId && to) {
-        await db.transact(tx.outbox[generateId()].update({
+        await runOps(db, ownerId, [opU('outbox', generateId(), {
           userId: ownerId,
           recipient: to,
           type: type === 'whatsapp' ? 'whatsapp' : 'email',
@@ -175,7 +184,7 @@ export default async function handler(req, res) {
           status: 'Failed',
           error: err.message,
           sentAt: Date.now()
-        }));
+        })]);
       }
     } catch (logErr) {
       console.error('Failed to log error to outbox:', logErr);
