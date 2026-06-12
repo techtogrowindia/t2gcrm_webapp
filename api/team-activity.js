@@ -37,13 +37,14 @@ export default async function handler(req, res) {
       // Push date filter to SQL — only fetch rows in range (much faster at scale)
       const result = await tenantQuery(
         ownerId,
-        `SELECT doc, created_at FROM activity_logs
+        `SELECT id, doc, created_at FROM activity_logs
          WHERE created_at >= $1 AND created_at <= $2
          ORDER BY created_at DESC`,
         [new Date(sMs).toISOString(), new Date(eMs).toISOString()]
       );
       all = result.rows.map(r => ({
         ...r.doc,
+        id: r.id,
         createdAt: r.doc.createdAt ?? new Date(r.created_at).getTime(),
       }));
       return res.status(200).json({ logs: all, total: all.length, inRange: all.length });

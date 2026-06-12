@@ -33,8 +33,8 @@ export default async function handler(req, res) {
     // customers — Postgres or InstantDB
     let customers;
     if (USE_PG_DATA) {
-      const result = await tenantQuery(ownerId, 'SELECT doc FROM customers');
-      customers = result.rows.map(r => r.doc);
+      const result = await tenantQuery(ownerId, 'SELECT id, doc FROM customers');
+      customers = result.rows.map(r => ({ ...r.doc, id: r.id }));
     } else {
       const db = getDb();
       const result = await db.query({

@@ -23,10 +23,11 @@ function getDb() {
 async function getCallLogsFromPg(ownerId) {
   const result = await tenantQuery(
     ownerId,
-    'SELECT doc, created_at FROM call_logs ORDER BY created_at DESC'
+    'SELECT id, doc, created_at FROM call_logs ORDER BY created_at DESC'
   );
   return result.rows.map(r => ({
     ...r.doc,
+    id: r.id,
     createdAt: r.doc.createdAt ?? new Date(r.created_at).getTime(),
   }));
 }

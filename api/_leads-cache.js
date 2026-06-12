@@ -26,10 +26,11 @@ function getDb() {
 async function getLeadsFromPg(ownerId) {
   const result = await tenantQuery(
     ownerId,
-    'SELECT doc, created_at, updated_at FROM leads ORDER BY created_at DESC'
+    'SELECT id, doc, created_at, updated_at FROM leads ORDER BY created_at DESC'
   );
   return result.rows.map(r => ({
     ...r.doc,
+    id: r.id, // id ALWAYS comes from the column — doc may not contain it
     // Ensure timestamp fields are numbers (ms) for all downstream logic
     createdAt:  r.doc.createdAt  ?? new Date(r.created_at).getTime(),
     updatedAt:  r.doc.updatedAt  ?? new Date(r.updated_at).getTime(),

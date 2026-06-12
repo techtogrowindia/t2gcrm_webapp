@@ -11,7 +11,7 @@
 // All ops within a batch run in ONE transaction (atomic).
 // ===================================================================
 import crypto from 'crypto';
-import { tenantQuery, tenantTransaction, rawQuery } from './db-pg.js';
+import { tenantQuery, tenantTransaction } from './db-pg.js';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -81,7 +81,7 @@ function buildUpsertSql(table, data, tenantId, id) {
         data.stageChangedAt ? new Date(data.stageChangedAt).toISOString(): null,
         data.actorId     || null,
         JSON.stringify(data.custom || {}),
-        JSON.stringify(data),
+        JSON.stringify({ ...data, id }),
       ],
     };
   }
@@ -104,7 +104,7 @@ function buildUpsertSql(table, data, tenantId, id) {
         data.outcome    || null,
         data.staffEmail || null,
         data.deviceId   || null,
-        JSON.stringify(data),
+        JSON.stringify({ ...data, id }),
       ],
     };
   }
@@ -129,7 +129,7 @@ function buildUpsertSql(table, data, tenantId, id) {
         data.fromStage     || null,
         data.toStage       || null,
         data.text          || null,
-        JSON.stringify(data),
+        JSON.stringify({ ...data, id }),
       ],
     };
   }
@@ -140,7 +140,7 @@ function buildUpsertSql(table, data, tenantId, id) {
           VALUES ($1, $2, $3,
                   COALESCE((SELECT created_at FROM ${table} WHERE id=$1), now()), now())
           ON CONFLICT (id) DO UPDATE SET doc=$3, updated_at=now()`,
-    params: [id, tenantId, JSON.stringify(data)],
+    params: [id, tenantId, JSON.stringify({ ...data, id })],
   };
 }
 

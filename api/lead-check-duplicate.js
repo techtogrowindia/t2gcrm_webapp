@@ -30,11 +30,11 @@ export default async function handler(req, res) {
     let leads, customers;
     if (USE_PG_DATA) {
       const [lr, cr] = await Promise.all([
-        tenantQuery(ownerId, 'SELECT doc FROM leads'),
-        tenantQuery(ownerId, 'SELECT doc FROM customers'),
+        tenantQuery(ownerId, 'SELECT id, doc FROM leads'),
+        tenantQuery(ownerId, 'SELECT id, doc FROM customers'),
       ]);
-      leads     = lr.rows.map(r => r.doc);
-      customers = cr.rows.map(r => r.doc);
+      leads     = lr.rows.map(r => ({ ...r.doc, id: r.id }));
+      customers = cr.rows.map(r => ({ ...r.doc, id: r.id }));
     } else {
       const db = init({ appId: APP_ID, adminToken: ADMIN_TOKEN });
       const result = await db.query({
