@@ -47,16 +47,31 @@ one-time migration/maintenance script goes in that folder, not in `api/` or the 
 - ✅ `api/auth-pg.js` — password login + magic code + JWT, tested on dev (all 3 flows pass)
 - ✅ `api/_leads-cache.js` — `getLeadsForOwner()` reads from Postgres when `USE_PG_DATA=true`; upgrades all 8 callers (leads-page, dashboard-stats, call-logs-page, call-logs, sync-won-leads, team-stats, lead-lookup, process-wa-followup) simultaneously
 - ⬜ call-logs reads (`_call-logs-cache.js`) → Postgres
-- 🔄 Data writes (`db.transact`) → Postgres via `api/data-pg.js` + `src/utils/dbWrite.js` (JWT-auth, `VITE_USE_PG_DATA` flag). **LeadsView.jsx done** (all 18 writes). 31 components remain.
-- ⬜ `db.useQuery` in React components → REST API calls
+- ✅ Data writes — ALL `db.transact` across ~35 components → `dbWrite`/`dbOp`; `/api/data`
+  REST writes (POST/PATCH/DELETE) also route to Postgres via `runOps`/`pgRunOps`.
+- ✅ Reads — `db.useQuery` is **wrapped globally in `src/instant.js`** (Proxy): when
+  `VITE_USE_PG_DATA=true`, every `db.useQuery` call app-wide reads from Postgres via
+  `usePgQuery` (no per-component change). `dbWrite` dispatches a `pg-data-changed` window
+  event → all `usePgQuery` hooks refetch (app-wide refetch-after-mutation, no real-time).
+- ✅ Whole CRM running on Postgres on **dev** (auth + reads + writes). Prod untouched.
+- ⬜ Prod cutover (after dev soak): run `03-import.mjs` + `05-add-write-triggers.sql` against
+  `t2gcrm_prod`, set the 3 flags in prod `.env`, build + restart.
 
-**Write migration pattern:** replace `db.transact(db.tx.X[id].update(d))` with
-`dbWrite(dbOp.update('X', id, d))`; deletes with `dbOp.delete('X', id)`; multi-doc with
-`dbWrite([dbOp...., dbOp....])` (atomic batch). `dbWrite` routes to `/api/data-pg` (Postgres,
-JWT) when `VITE_USE_PG_DATA=true`, else `db.transact` (InstantDB). **Gotcha:** records' `id`
-lives in the PG column, not necessarily in `doc` — read mappers MUST do `{ ...r.doc, id: r.id }`
-and `data-pg.js` embeds `id` in `doc` on write. Forgetting this makes `excludeLeadId`-style
-self-exclusion fail (lead matched itself as duplicate).
+### Write/read architecture (how it works)
+- **Writes:** `dbWrite(dbOp.update('X', id, d))` / `dbOp.delete('X', id)` / `dbWrite([...])`
+  (atomic batch) → `/api/data-pg` (JWT). **MERGE-upsert** — `doc = existing.doc || new.doc`,
+  so PARTIAL updates only change provided fields (matches InstantDB `.update`). Promoted typed
+  columns are maintained by **BEFORE INSERT/UPDATE triggers** (`05-add-write-triggers.sql`), not
+  the write path. `userProfiles`/`globalSettings` writes shallow-merge into `accounts`/
+  `global_settings` (scoped to JWT tenant). Cascade deletes via `CASCADE` map in `data-pg.js`.
+- **Reads:** `data-pg` `action:'query'` returns `{ ...doc, id: r.id }` (id ALWAYS from column),
+  `userProfiles`→`accounts`, `globalSettings`→`global_settings`, optional `where` equality filter.
+- **Gotcha:** records' `id` lives in the PG column, not necessarily in `doc`. All read mappers do
+  `{ ...r.doc, id: r.id }`; `data-pg` embeds `id` in `doc` on write. Forgetting this broke
+  `excludeLeadId` (lead matched itself as duplicate).
+- **Not yet in PG:** `memberStats` (team perf aggregates) + task auto-numbering — skipped
+  gracefully (`execOp` returns `[]` for non-schema collections). MainApp profile creation still
+  InstantDB. `_leads-cache.js`/`_call-logs-cache.js` already PG-backed.
 
 ### Schema mapping (InstantDB → Postgres)
 - `userId` → `tenant_id` on every tenant table. **Exception: `callLogSyncState` uses `ownerId`.**
