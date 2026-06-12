@@ -197,7 +197,20 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { action, collection, id, data, ops } = req.body || {};
+    const { action, collection, id, data, ops, collections } = req.body || {};
+
+    // ── Query (read one or many collections, tenant-scoped via RLS) ──
+    if (action === 'query') {
+      const list = Array.isArray(collections) ? collections : [collection];
+      const out = {};
+      for (const coll of list) {
+        const table = TABLE_MAP[coll];
+        if (!table) { out[coll] = []; continue; }
+        const r = await tenantQuery(tenantId, `SELECT id, doc FROM ${table}`);
+        out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id }));
+      }
+      return res.status(200).json({ ok: true, data: out });
+    }
 
     // ── Batch (atomic) ───────────────────────────────────────────
     if (action === 'batch') {

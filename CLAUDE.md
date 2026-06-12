@@ -47,8 +47,16 @@ one-time migration/maintenance script goes in that folder, not in `api/` or the 
 - ✅ `api/auth-pg.js` — password login + magic code + JWT, tested on dev (all 3 flows pass)
 - ✅ `api/_leads-cache.js` — `getLeadsForOwner()` reads from Postgres when `USE_PG_DATA=true`; upgrades all 8 callers (leads-page, dashboard-stats, call-logs-page, call-logs, sync-won-leads, team-stats, lead-lookup, process-wa-followup) simultaneously
 - ⬜ call-logs reads (`_call-logs-cache.js`) → Postgres
-- ⬜ Data writes (`db.transact`) → Postgres
+- 🔄 Data writes (`db.transact`) → Postgres via `api/data-pg.js` + `src/utils/dbWrite.js` (JWT-auth, `VITE_USE_PG_DATA` flag). **LeadsView.jsx done** (all 18 writes). 31 components remain.
 - ⬜ `db.useQuery` in React components → REST API calls
+
+**Write migration pattern:** replace `db.transact(db.tx.X[id].update(d))` with
+`dbWrite(dbOp.update('X', id, d))`; deletes with `dbOp.delete('X', id)`; multi-doc with
+`dbWrite([dbOp...., dbOp....])` (atomic batch). `dbWrite` routes to `/api/data-pg` (Postgres,
+JWT) when `VITE_USE_PG_DATA=true`, else `db.transact` (InstantDB). **Gotcha:** records' `id`
+lives in the PG column, not necessarily in `doc` — read mappers MUST do `{ ...r.doc, id: r.id }`
+and `data-pg.js` embeds `id` in `doc` on write. Forgetting this makes `excludeLeadId`-style
+self-exclusion fail (lead matched itself as duplicate).
 
 ### Schema mapping (InstantDB → Postgres)
 - `userId` → `tenant_id` on every tenant table. **Exception: `callLogSyncState` uses `ownerId`.**
