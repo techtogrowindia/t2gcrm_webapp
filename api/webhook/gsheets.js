@@ -1,4 +1,5 @@
 import { init } from '@instantdb/admin';
+import { opU, runOps } from '../_write-ops.js';
 
 // Initialize InstantDB Admin SDK
 // We must use the Admin SDK for backend/serverless environments
@@ -160,7 +161,7 @@ export default async function handler(req, res) {
       const createDateStr = new Date(existingLead.createdAt || Date.now()).toLocaleString();
       
       txs.push(
-        db.tx.activityLogs[logId].update({
+        opU('activityLogs', logId, {
           entityId: existingLead.id,
           entityType: 'lead',
           text: `Lead submitted again from Google Sheets.\nOriginal creation date: ${createDateStr}\n**Resubmitted on: ${new Date().toLocaleString()}**`,
@@ -169,16 +170,16 @@ export default async function handler(req, res) {
           userName: 'System (Webhook)',
           createdAt: Date.now()
         }),
-        db.tx.leads[existingLead.id].update({ updatedAt: Date.now() })
+        opU('leads', existingLead.id, { updatedAt: Date.now() })
       );
       console.log(`Lead already exists (${existingLead.id}). Added activity log instead.`);
     } else {
-      txs.push(db.tx.leads[leadId].update(lead));
+      txs.push(opU('leads', leadId, lead));
       console.log(`Successfully added lead ${leadId} for user ${userId}`);
     }
 
     // 4. Save the lead or activity log directly into InstantDB using the Admin SDK
-    await db.transact(txs);
+    await runOps(db, userId, txs);
 
     // Return success response to Apps Script
     return res.status(200).json({ 
