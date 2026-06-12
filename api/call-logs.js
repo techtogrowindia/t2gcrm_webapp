@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { init, tx, id } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getCallLogsForOwner, invalidateCallLogsCache } from './_call-logs-cache.js';
+import { opU, opD, runOps } from './_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -221,10 +222,7 @@ export default async function handler(req, res) {
             }
           }
         }
-        // Batch deletes in chunks of 50 to stay under InstantDB tx limits
-        for (let i = 0; i < toDelete.length; i += 50) {
-          await db.transact(toDelete.slice(i, i + 50).map(id => tx.callLogs[id].delete()));
-        }
+        await runOps(db, ownerId, toDelete.map(cid => opD('callLogs', cid)));
         if (toDelete.length > 0) invalidateCallLogsCache(ownerId);
         return res.status(200).json({
           success: true,
@@ -294,7 +292,7 @@ export default async function handler(req, res) {
         if (accepted.length === 0) {
           // No new calls — update lastSyncAt so we know the device checked in
           if (deviceId && syncStateRecord) {
-            await db.transact(tx.callLogSyncState[syncStateRecord.id].update({ lastSyncAt: now }));
+            await runOps(db, ownerId, [opU('callLogSyncState', syncStateRecord.id, { lastSyncAt: now })]);
           }
           return res.status(200).json({
             success: true, created: 0, skipped, rejectedOld,
@@ -303,10 +301,10 @@ export default async function handler(req, res) {
           });
         }
 
-        const callTxs = accepted.map(entry => {
+        const callOps = accepted.map(entry => {
           const cleanPhone = entry.phone?.replace(/\D/g, '') || '';
           const matched = leadMap[cleanPhone] || null;
-          return tx.callLogs[entry._id].update({
+          return opU('callLogs', entry._id, {
             phone: entry.phone || '',
             contactName: entry.contactName || matched?.name || '',
             direction: entry.direction || 'Incoming',
@@ -324,11 +322,7 @@ export default async function handler(req, res) {
             source: 'android',
           });
         });
-
-        // Batch in groups of 50 to stay within InstantDB transaction limits
-        for (let i = 0; i < callTxs.length; i += 50) {
-          await db.transact(callTxs.slice(i, i + 50));
-        }
+        await runOps(db, ownerId, callOps);
 
         // Update device sync state — store the max createdAt of everything accepted.
         // This is the server's authoritative record of how far this device has synced.
@@ -336,13 +330,13 @@ export default async function handler(req, res) {
         // returns nextSyncFrom = this value, so only new calls need to be sent.
         const newLastSyncedAt = Math.max(...accepted.map(e => e._ts));
         if (deviceId) {
-          const syncStateTx = syncStateRecord
-            ? tx.callLogSyncState[syncStateRecord.id].update({
+          const syncStateOp = syncStateRecord
+            ? opU('callLogSyncState', syncStateRecord.id, {
                 lastSyncedAt: Math.max(deviceLastSyncedAt, newLastSyncedAt),
                 lastSyncAt: now,
                 totalSynced: (syncStateRecord.totalSynced || 0) + accepted.length,
               })
-            : tx.callLogSyncState[id()].update({
+            : opU('callLogSyncState', id(), {
                 deviceId,
                 ownerId,
                 staffEmail: accepted[0]?.staffEmail || '',
@@ -352,7 +346,7 @@ export default async function handler(req, res) {
                 totalSynced: accepted.length,
                 createdAt: now,
               });
-          await db.transact(syncStateTx);
+          await runOps(db, ownerId, [syncStateOp]);
         }
 
         // Invalidate call logs cache so next read reflects the new rows
@@ -394,7 +388,7 @@ export default async function handler(req, res) {
       }
 
       const newId = singleStableId;
-      await db.transact(tx.callLogs[newId].update({
+      await runOps(db, ownerId, [opU('callLogs', newId, {
         phone: singleData.phone || '',
         contactName: singleData.contactName || matched?.name || '',
         direction: singleData.direction || 'Outgoing',
@@ -412,7 +406,7 @@ export default async function handler(req, res) {
         createdAt: Number(singleData.createdAt) || now,
         updatedAt: now,
         source: singleData.source || 'api',
-      }));
+      })]);
 
       // Invalidate cache so next read reflects the new row
       invalidateCallLogsCache(ownerId);
@@ -427,7 +421,7 @@ export default async function handler(req, res) {
 
       updates.updatedAt = Date.now();
       delete updates.ownerId;
-      await db.transact(tx.callLogs[logId].update(updates));
+      await runOps(db, ownerId, [opU('callLogs', logId, updates)]);
       return res.status(200).json({ success: true });
     }
 
@@ -435,7 +429,7 @@ export default async function handler(req, res) {
     if (method === 'DELETE') {
       const logId = params.id;
       if (!logId) return res.status(400).json({ error: 'id is required' });
-      await db.transact(tx.callLogs[logId].delete());
+      await runOps(db, ownerId, [opD('callLogs', logId)]);
       return res.status(200).json({ success: true });
     }
 
