@@ -21,9 +21,9 @@ const CASCADE = {
   leads:     [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'call_logs', field: 'leadId' }],
   customers: [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'call_logs', field: 'leadId' }, { table: 'amc', field: 'customerId' }],
   invoices:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'partner_commissions', field: 'invoiceId' }],
-  quotes:    [{ table: 'activity_logs', field: 'entityId' }],
+  quotes:    [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }],
   projects:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'projectId' }, { table: 'expenses', field: 'projectId' }, { table: 'appointments', field: 'entityId' }],
-  vendors:   [{ table: 'purchase_orders', field: 'vendorId' }],
+  vendors:   [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'purchase_orders', field: 'vendorId' }],
 };
 
 // ── InstantDB collection → Postgres table name ───────────────────
