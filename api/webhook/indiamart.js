@@ -1,4 +1,5 @@
 import { init } from '@instantdb/admin';
+import { opU, runOps } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -157,7 +158,7 @@ export default async function handler(req, res) {
             if (existingLead) {
               const logId = crypto.randomUUID();
               txs.push(
-                db.tx.activityLogs[logId].update({
+                opU('activityLogs', logId, {
                   entityId: existingLead.id,
                   entityType: 'lead',
                   text: `Lead submitted again from IndiaMART.\nOriginal creation: ${new Date(existingLead.createdAt || Date.now()).toLocaleString()}\n**Resubmitted on: ${new Date().toLocaleString()}**`,
@@ -166,7 +167,7 @@ export default async function handler(req, res) {
                   userName: 'System (IndiaMART Webhook)',
                   createdAt: Date.now()
                 }),
-                db.tx.leads[existingLead.id].update({ updatedAt: Date.now() })
+                opU('leads', existingLead.id, { updatedAt: Date.now() })
               );
             }
             skipped++;
@@ -179,20 +180,15 @@ export default async function handler(req, res) {
           if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
           const leadId = crypto.randomUUID();
-          txs.push(db.tx.leads[leadId].update(lead));
+          txs.push(opU('leads', leadId, lead));
           added++;
         } catch {
           errors++;
         }
       }
 
-      // Flush all transactions
-      if (txs.length > 0) {
-        // Batch in groups of 50
-        for (let i = 0; i < txs.length; i += 50) {
-          await db.transact(txs.slice(i, i + 50));
-        }
-      }
+      // Flush all writes (Postgres or InstantDB)
+      await runOps(db, userId, txs);
 
       return res.status(200).json({
         success: true,
@@ -299,25 +295,21 @@ export default async function handler(req, res) {
             if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
             const leadId = crypto.randomUUID();
-            txs.push(db.tx.leads[leadId].update(lead));
+            txs.push(opU('leads', leadId, lead));
             added++;
           } catch {
             errors++;
           }
         }
 
-        if (txs.length > 0) {
-          for (let i = 0; i < txs.length; i += 50) {
-            await db.transact(txs.slice(i, i + 50));
-          }
-        }
+        await runOps(db, userId, txs);
 
         // Update lastSyncAt only for auto sync (not manual date-range pulls)
         if (!isManualSync) {
           const updatedConfigs = indiamartConfigs.map((c, i) =>
             i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
           );
-          await db.transact(db.tx.userProfiles[profile.id].update({ indiamart: updatedConfigs }));
+          await runOps(db, userId, [opU('userProfiles', profile.id, { indiamart: updatedConfigs })]);
         }
 
         return res.status(200).json({
