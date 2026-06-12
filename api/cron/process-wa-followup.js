@@ -1,5 +1,5 @@
 import { init, id, tx } from '@instantdb/admin';
-import { opU, runOpsByOwner } from '../_write-ops.js';
+import { opU, runOpsByOwner, readData, readDataAll } from '../_write-ops.js';
 import { getLeadsForOwner } from '../_leads-cache.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
@@ -65,7 +65,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { userProfiles } = await db.query({ userProfiles: {} });
+    const { userProfiles } = await readDataAll(db, { userProfiles: {} });
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -95,7 +95,7 @@ export default async function handler(req, res) {
       let teamMembers = null;
       const needsAssignee = followupTemplates.some(t => t.recipientType === 'assignee');
       if (needsAssignee) {
-        const r = await db.query({ teamMembers: { $: { where: { userId: ownerId } } } });
+        const r = await readData(db, ownerId, { teamMembers: { $: { where: { userId: ownerId } } } });
         teamMembers = r.teamMembers || [];
       }
       const resolveAssigneePhone = (lead) => {
@@ -124,7 +124,7 @@ export default async function handler(req, res) {
           // Dedup key — unique per lead + template + followup timestamp + milestone
           const dedupeKey = `wa-followup-${lead.id}-${tpl.templateId}-${followupMs}-${threshold}`;
 
-          const { executedAutomations } = await db.query({
+          const { executedAutomations } = await readData(db, ownerId, {
             executedAutomations: { $: { where: { id: dedupeKey } } },
           });
           if (executedAutomations?.length > 0) {

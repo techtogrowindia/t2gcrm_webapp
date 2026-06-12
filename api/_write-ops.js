@@ -11,7 +11,7 @@
 // ownerId in InstantDB (e.g. callLogSyncState), pass that same ownerId.
 // ===================================================================
 import { tx } from '@instantdb/admin';
-import { pgRunOps, pgRead } from './data-pg.js';
+import { pgRunOps, pgRead, pgReadAll } from './data-pg.js';
 
 const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
 
@@ -20,6 +20,12 @@ const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
 // on the same backend). Cross-tenant lookups stay on InstantDB (pass-through).
 export async function readData(db, tenantId, querySpec) {
   if (USE_PG_DATA && tenantId) return pgRead(tenantId, querySpec);
+  return db.query(querySpec);
+}
+
+// Cross-tenant read for crons (all owners).
+export async function readDataAll(db, querySpec) {
+  if (USE_PG_DATA) return pgReadAll(querySpec);
   return db.query(querySpec);
 }
 

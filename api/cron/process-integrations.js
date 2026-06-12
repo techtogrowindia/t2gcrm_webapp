@@ -20,7 +20,7 @@
 // defaults to 1440 (every 24 hours), saved back on first tick.
 
 import { init } from '@instantdb/admin';
-import { opU, runOps } from '../_write-ops.js';
+import { opU, runOps, readData, readDataAll } from '../_write-ops.js';
 import tradeindiaHandler from '../webhook/tradeindia.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
@@ -58,7 +58,7 @@ async function invokeTradeIndiaSync(ownerId, configIndex) {
 }
 
 async function refetchProfile(profileId) {
-  const r = await db.query({ userProfiles: { $: { where: { id: profileId } } } });
+  const r = await readData(db, profileId, { userProfiles: { $: { where: { id: profileId } } } });
   return r.userProfiles?.[0] || null;
 }
 
@@ -130,7 +130,7 @@ export default async function handler(req, res) {
   const totals = { profilesScanned: 0, dueSyncs: 0, succeeded: 0, failed: 0, migrated: 0 };
 
   try {
-    const result = await db.query({ userProfiles: {} });
+    const result = await readDataAll(db, { userProfiles: {} });
     const profiles = result.userProfiles || [];
 
     for (const profile of profiles) {

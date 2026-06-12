@@ -1,5 +1,5 @@
 import { init, id, tx } from '@instantdb/admin';
-import { opU, runOpsByOwner } from '../_write-ops.js';
+import { opU, runOpsByOwner, readData, readDataAll } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -68,7 +68,7 @@ export default async function handler(req, res) {
 
   try {
     // Fetch all workspaces + their AMCs
-    const { userProfiles, amc: allAmcs } = await db.query({
+    const { userProfiles, amc: allAmcs } = await readDataAll(db, {
       userProfiles: {},
       amc: {},
     });
@@ -110,7 +110,7 @@ export default async function handler(req, res) {
           // Dedup key — unique per AMC + template + endDate + milestone
           const dedupeKey = `wa-amc-${amc.id}-${tpl.templateId}-${amc.endDate}-${threshold}`;
 
-          const { executedAutomations } = await db.query({
+          const { executedAutomations } = await readData(db, ownerId, {
             executedAutomations: { $: { where: { id: dedupeKey } } },
           });
           if (executedAutomations?.length > 0) {

@@ -178,6 +178,44 @@ export async function pgRead(tenantId, querySpec) {
   return out;
 }
 
+// Cross-tenant server read for CRONS (which process all owners). Uses only the
+// app role: accounts/global_settings have no RLS (read directly); tenant tables
+// are read per-tenant (one tenantQuery per account) and concatenated. Tenant
+// counts are small, so the per-tenant loop is cheap.
+export async function pgReadAll(querySpec) {
+  const accts = (await rawQuery('SELECT id, doc FROM accounts')).rows;
+  const out = {};
+  for (const [coll, cfg] of Object.entries(querySpec || {})) {
+    if (coll === 'userProfiles') {
+      out[coll] = accts.map(a => ({ ...a.doc, id: a.id, userId: a.id }));
+      continue;
+    }
+    if (coll === 'globalSettings') {
+      const r = await rawQuery('SELECT id, doc FROM global_settings LIMIT 1');
+      out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id }));
+      continue;
+    }
+    const table = TABLE_MAP[coll];
+    if (!table) { out[coll] = []; continue; }
+    const where = cfg?.$?.where || {};
+    const clauses = []; const params = [];
+    for (const [k, v] of Object.entries(where)) {
+      if (k === 'userId' || k === 'ownerId') continue;
+      if (v && typeof v === 'object') continue;
+      params.push(String(v));
+      clauses.push(`doc->>'${k}' = $${params.length}`);
+    }
+    const whereSql = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
+    const all = [];
+    for (const a of accts) {
+      const r = await tenantQuery(a.id, `SELECT id, doc FROM ${table}${whereSql}`, params);
+      for (const row of r.rows) all.push({ ...row.doc, id: row.id });
+    }
+    out[coll] = all;
+  }
+  return out;
+}
+
 export async function pgRunOps(tenantId, ops) {
   const nested = await Promise.all(ops.map(op => execOp(op, tenantId)));
   await tenantTransaction(tenantId, nested.flat());

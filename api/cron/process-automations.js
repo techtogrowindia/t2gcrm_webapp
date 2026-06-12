@@ -1,5 +1,5 @@
 import { init, id, tx } from '@instantdb/admin';
-import { opU, runOpsByOwner } from '../_write-ops.js';
+import { opU, runOpsByOwner, readDataAll } from '../_write-ops.js';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 
@@ -40,7 +40,7 @@ export default async function handler(req, res) {
   }
 
   // --- AUTOMATION TRIGGERS ---
-  const { userProfiles, automations, leads, amcProfiles, appointments, ecommerceOrders } = await db.query({
+  const { userProfiles, automations, leads, amcProfiles, appointments, ecommerceOrders } = await readDataAll(db, {
     userProfiles: { $: { where: { role: 'owner' } } },
     automations: { $: { where: { active: true } } },
     leads: { $: { where: { type: 'trig-stage' } } },
