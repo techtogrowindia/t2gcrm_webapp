@@ -1,7 +1,23 @@
 import { init, tx, id } from '@instantdb/admin';
+import { pgRunOps } from './data-pg.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
+const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
+
+// Plain-op builders so write blocks can run on either backend.
+const opU = (collection, _id, data) => ({ action: 'upsert', collection, id: _id, data });
+const opD = (collection, _id) => ({ action: 'delete', collection, id: _id });
+// Run an ops array on the active backend (Postgres or InstantDB).
+async function runOps(db, ownerId, ops) {
+  const clean = ops.filter(Boolean);
+  if (USE_PG_DATA) return pgRunOps(ownerId, clean);
+  const txs = clean.map(op => op.action === 'delete'
+    ? tx[op.collection][op.id].delete()
+    : tx[op.collection][op.id].update(op.data));
+  const B = 100;
+  for (let i = 0; i < txs.length; i += B) await db.transact(txs.slice(i, i + B));
+}
 
 // Mapping of module keys to InstantDB collection names
 const COLLECTION_MAP = {
@@ -77,7 +93,7 @@ async function getStatsTx(db, ownerId, actorId, type) {
     [type]: (current[type] || 0) + 1, 
     updatedAt: Date.now() 
   };
-  return tx.memberStats[statsId].update({
+  return opU('memberStats', statsId, {
     ...updates,
     userId: ownerId,
     memberId: actorId,
@@ -370,9 +386,9 @@ export default async function handler(req, res) {
         payload.taskNumber = nextNum;
       }
       
-      const txs = [
-        tx[collection][newId].update(payload),
-        tx.activityLogs[id()].update({
+      const ops = [
+        opU(collection, newId, payload),
+        opU('activityLogs', id(), {
           entityId: newId,
           entityType: ENTITY_TYPE_MAP[module] || module,
           text: (module === 'tasks' && !logText) ? `Task T-${payload.taskNumber} created: "${payload.title}"` : (logText || `Created new ${module} via API.`),
@@ -392,8 +408,8 @@ export default async function handler(req, res) {
         const { leads } = await db.query({ leads: { $: { where: { userId: ownerId } } } });
         const lMatch = leads?.find(l => (l.name || '').trim().toLowerCase() === (data.client || '').trim().toLowerCase() && l.stage !== wonStage);
         if (lMatch) {
-          txs.push(tx.leads[lMatch.id].update({ stage: wonStage }));
-          txs.push(tx.activityLogs[id()].update({
+          ops.push(opU('leads', lMatch.id, { stage: wonStage }));
+          ops.push(opU('activityLogs', id(), {
             entityId: lMatch.id, entityType: 'lead', text: `Project "${data.name}" started. Lead automatically marked as Won.`,
             userId: ownerId, actorId: actorId || ownerId, userName: userName || 'API System', createdAt: Date.now()
           }));
@@ -401,9 +417,9 @@ export default async function handler(req, res) {
       }
 
       const statsType = module === 'tasks' ? 'tasksWorked' : (module === 'leads' ? 'leadsWorked' : 'otherWorks');
-      txs.push(await getStatsTx(db, ownerId, payload.actorId, statsType));
+      ops.push(await getStatsTx(db, ownerId, payload.actorId, statsType));
 
-      await db.transact(txs);
+      await runOps(db, ownerId, ops);
 
       return res.status(200).json({ success: true, id: newId, message: 'Record created successfully' });
     }
@@ -418,9 +434,9 @@ export default async function handler(req, res) {
         updates.assignedAt = Date.now();
       }
 
-      const txs = [
-        tx[collection][targetId].update(updates),
-        tx.activityLogs[id()].update({
+      const ops = [
+        opU(collection, targetId, updates),
+        opU('activityLogs', id(), {
           entityId: targetId,
           entityType: module,
           text: logText || `Updated ${module} via API.`,
@@ -435,13 +451,13 @@ export default async function handler(req, res) {
 
       // Update Stats for Completions/Wins
       if (module === 'tasks' && updates.status === 'Completed') {
-        txs.push(await getStatsTx(db, ownerId, actorId || ownerId, 'tasksCompleted'));
+        ops.push(await getStatsTx(db, ownerId, actorId || ownerId, 'tasksCompleted'));
       }
       if (module === 'leads' && (updates.stage === 'Won' || (updates.stage || '').toLowerCase().includes('won'))) {
-        txs.push(await getStatsTx(db, ownerId, actorId || ownerId, 'leadsWon'));
+        ops.push(await getStatsTx(db, ownerId, actorId || ownerId, 'leadsWon'));
       }
 
-      await db.transact(txs);
+      await runOps(db, ownerId, ops);
 
       return res.status(200).json({ success: true, message: 'Record updated successfully' });
     }
@@ -452,6 +468,12 @@ export default async function handler(req, res) {
     if (method === 'DELETE') {
       const { id: targetId } = data;
       if (!targetId) return res.status(400).json({ error: 'Record ID is required for deletion' });
+
+      // Postgres: cascade is handled by data-pg's CASCADE map (one transaction).
+      if (USE_PG_DATA) {
+        await pgRunOps(ownerId, [opD(collection, targetId)]);
+        return res.status(200).json({ success: true, message: 'Record deleted successfully' });
+      }
 
       const txs = [
         tx[collection][targetId].delete()

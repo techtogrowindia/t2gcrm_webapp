@@ -18,11 +18,12 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // Cascade-delete rules: deleting a parent also deletes related rows by a
 // doc field. Keeps Postgres orphan-free (mirrors the Hard Delete policy).
 const CASCADE = {
-  leads:     [{ table: 'activity_logs', field: 'entityId' }],
-  customers: [{ table: 'activity_logs', field: 'entityId' }],
-  invoices:  [{ table: 'activity_logs', field: 'entityId' }],
+  leads:     [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'call_logs', field: 'leadId' }],
+  customers: [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'call_logs', field: 'leadId' }, { table: 'amc', field: 'customerId' }],
+  invoices:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }],
   quotes:    [{ table: 'activity_logs', field: 'entityId' }],
-  projects:  [{ table: 'activity_logs', field: 'entityId' }],
+  projects:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'projectId' }, { table: 'expenses', field: 'projectId' }, { table: 'appointments', field: 'entityId' }],
+  vendors:   [{ table: 'purchase_orders', field: 'vendorId' }],
 };
 
 // ── InstantDB collection → Postgres table name ───────────────────
@@ -116,7 +117,9 @@ async function execOp(op, tenantId) {
   }
 
   const table = TABLE_MAP[collection];
-  if (!table) throw new Error(`Unknown collection: ${collection}`);
+  // Collections not in the Postgres schema (e.g. memberStats) are skipped
+  // rather than failing the whole write — they're non-critical aggregates.
+  if (!table) return [];
   if (!id) throw new Error('id required for every op');
 
   if (action === 'delete') {
@@ -132,6 +135,14 @@ async function execOp(op, tenantId) {
   }
   throw new Error(`Unknown action: ${action}`);
 }
+
+// Reusable write runner — used by /api/data when USE_PG_DATA=true so the
+// legacy REST endpoint's writes also land in Postgres (one shared code path).
+export async function pgRunOps(tenantId, ops) {
+  const nested = await Promise.all(ops.map(op => execOp(op, tenantId)));
+  await tenantTransaction(tenantId, nested.flat());
+}
+export { execOp };
 
 // ── Handler ───────────────────────────────────────────────────────
 export default async function handler(req, res) {
