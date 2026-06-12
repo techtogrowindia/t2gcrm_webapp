@@ -1,4 +1,5 @@
 import { init, id, tx } from '@instantdb/admin';
+import { opU, runOpsByOwner } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -163,14 +164,14 @@ export default async function handler(req, res) {
             const success = result?.status === 'success';
 
             // Mark as sent (dedup)
-            txs.push(tx.executedAutomations[dedupeKey].update({
+            txs.push(opU('executedAutomations', dedupeKey, {
               key: dedupeKey,
               userId: ownerId,
               createdAt: Date.now(),
             }));
 
             // Log to outbox
-            txs.push(tx.outbox[id()].update({
+            txs.push(opU('outbox', id(), {
               userId: ownerId,
               recipient: phone,
               type: 'whatsapp',
@@ -194,7 +195,7 @@ export default async function handler(req, res) {
       }
     }
 
-    if (txs.length > 0) await db.transact(txs);
+    if (txs.length > 0) await runOpsByOwner(db, txs);
     console.log(`[WA-AMC] Done — sent: ${sent}, skipped (dedup): ${skipped}`);
     return res.status(200).json({ success: true, sent, skipped });
   } catch (err) {

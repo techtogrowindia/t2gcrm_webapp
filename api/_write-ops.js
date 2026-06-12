@@ -29,4 +29,29 @@ export async function runOps(db, ownerId, ops) {
   for (let i = 0; i < txs.length; i += B) await db.transact(txs.slice(i, i + B));
 }
 
+// For crons that accumulate ops across MANY owners in one array.
+// Each op should carry `_owner` (tenant); falls back to op.data.userId.
+// PG: groups by owner and runs one transaction per owner.
+// InstantDB: one db.transact for everything (owner-agnostic), as before.
+export async function runOpsByOwner(db, ops) {
+  const clean = (ops || []).filter(Boolean);
+  if (!clean.length) return;
+  if (!USE_PG_DATA) {
+    const txs = clean.map(op => op.action === 'delete'
+      ? tx[op.collection][op.id].delete()
+      : tx[op.collection][op.id].update(op.data));
+    const B = 100;
+    for (let i = 0; i < txs.length; i += B) await db.transact(txs.slice(i, i + B));
+    return;
+  }
+  const byOwner = new Map();
+  for (const op of clean) {
+    const owner = op._owner || op.data?.userId;
+    if (!owner) continue; // can't route without a tenant
+    if (!byOwner.has(owner)) byOwner.set(owner, []);
+    byOwner.get(owner).push(op);
+  }
+  for (const [owner, ownerOps] of byOwner) await pgRunOps(owner, ownerOps);
+}
+
 export { USE_PG_DATA };

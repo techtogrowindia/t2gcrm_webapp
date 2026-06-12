@@ -1,4 +1,5 @@
 import { init, id, tx } from '@instantdb/admin';
+import { opU, runOpsByOwner } from '../_write-ops.js';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 
@@ -102,7 +103,7 @@ export default async function handler(req, res) {
           const detail = `🔄 ${entity.name || 'Entity'} has moved to stage: ${flow.triggerValue}. Assigned to: ${entity.assignedTo || '.'}`;
           const cleanSubject = `Status Changed: ${entity.name || 'Entity'}`;
 
-          txs.push(tx.outbox[id()].update({
+          txs.push(opU('outbox', id(), {
             userId: ownerId,
             recipient: recipientEmail,
             type: 'email',
@@ -114,11 +115,11 @@ export default async function handler(req, res) {
 
           // Mark as processed
           const currentProcessed = entity.processedAutomations || [];
-          txs.push(tx[entity._table][entity.id].update({
-            processedAutomations: [...currentProcessed, flow.id]
+          txs.push(opU(entity._table, entity.id, {
+            processedAutomations: [...currentProcessed, flow.id], userId: ownerId
           }));
 
-          txs.push(tx.activityLogs[id()].update({
+          txs.push(opU('activityLogs', id(), {
             userId: ownerId,
             text: `🤖 [Auto-Cron] Processed automation: ${flow.name} for ${entity.name}`,
             createdAt: Date.now()
@@ -161,7 +162,7 @@ export default async function handler(req, res) {
 
                   const waResult = await sendWaprochat(waApiToken, waPhoneId, tpl.templateId, recipientPhone, variables);
                   const ok = waResult?.status === 'success';
-                  txs.push(tx.outbox[id()].update({
+                  txs.push(opU('outbox', id(), {
                     userId: ownerId, recipient: recipientPhone, type: 'whatsapp',
                     subject: `AMC Expiry — ${entity.contractNo || entity.name}`,
                     content: `Template: ${tpl.name}\nBody: ${tpl.body}`,
@@ -184,6 +185,6 @@ export default async function handler(req, res) {
     }
   }
 
-  if (txs.length > 0) await db.transact(txs);
+  if (txs.length > 0) await runOpsByOwner(db, txs);
   return res.status(200).json({ success: true, processed: txs.length });
 }

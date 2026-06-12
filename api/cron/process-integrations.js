@@ -20,6 +20,7 @@
 // defaults to 1440 (every 24 hours), saved back on first tick.
 
 import { init } from '@instantdb/admin';
+import { opU, runOps } from '../_write-ops.js';
 import tradeindiaHandler from '../webhook/tradeindia.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
@@ -76,7 +77,7 @@ async function tickProfile(profile) {
     return { ...cfg, autoSyncInterval: DEFAULT_AUTO_INTERVAL };
   });
   if (typeDirty) {
-    await db.transact(db.tx.userProfiles[profile.id].update({ tradeindia: migratedConfigs }));
+    await runOps(db, profile.userId, [opU('userProfiles', profile.id, { tradeindia: migratedConfigs })]);
     const refreshed = await refetchProfile(profile.id);
     if (refreshed) profile = refreshed;
   }
@@ -115,7 +116,7 @@ async function tickProfile(profile) {
         : null,
     };
     try {
-      await db.transact(db.tx.userProfiles[profile.id].update({ tradeindia: currentConfigs }));
+      await runOps(db, profile.userId, [opU('userProfiles', profile.id, { tradeindia: currentConfigs })]);
     } catch (e) {
       console.error('[cron/integrations] DB write failed', profile.id, i, e?.message);
     }
