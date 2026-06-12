@@ -1,5 +1,5 @@
-import db from '../instant';
 import { id } from '@instantdb/react';
+import { dbWrite, dbOp } from './dbWrite';
 
 /**
  * Centralized activity logger. Call from any module's CRUD/status-change handlers.
@@ -34,7 +34,7 @@ export async function logActivity(opts) {
     ...(opts.meta || {}),
   };
   try {
-    await db.transact(db.tx.activityLogs[id()].update(payload));
+    await dbWrite(dbOp.update('activityLogs', id(), payload));
   } catch (err) {
     console.error('[activityLogger] Failed to write activity log', err, payload);
   }

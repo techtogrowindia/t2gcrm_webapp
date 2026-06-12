@@ -1,5 +1,5 @@
-import db from '../instant';
 import { id } from '@instantdb/react';
+import { dbWrite, dbOp } from './dbWrite';
 
 /**
  * Replaces placeholders in a template string with actual data.
@@ -36,7 +36,7 @@ export const renderTemplate = (template, data = {}) => {
  */
 const logToOutbox = async (userId, type, recipient, content, metadata = {}) => {
   const outboxId = id();
-  await db.transact(db.tx.outbox[outboxId].update({
+  await dbWrite(dbOp.update('outbox', outboxId, {
     userId,
     type, // 'email' | 'whatsapp'
     recipient,
