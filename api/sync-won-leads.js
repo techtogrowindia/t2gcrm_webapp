@@ -24,7 +24,7 @@ export default async function handler(req, res) {
     // Fetch leads from shared cache + customers fresh (customers are small)
     const [allLeads, custResult] = await Promise.all([
       getLeadsForOwner(ownerId),
-      db.query({ customers: { $: { where: { userId: ownerId } } } }),
+      readData(db, ownerId, { customers: { $: { where: { userId: ownerId } } } }),
     ]);
 
     const customers = custResult.customers || [];
