@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { dbWrite, dbOp } from '../../utils/dbWrite';
+import { dbWrite, dbOp, dbQueryOnce } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -1845,10 +1845,10 @@ function HierarchyView({ availableDistributors, allApprovedPartners, ownerId, us
     try {
       const txs = [dbOp.delete('partnerApplications', partner.id)];
       // Delete associated commissions
-      const commData = await db.query({ partnerCommissions: { $: { where: { partnerId: partner.id, userId: ownerId } } } });
+      const commData = await dbQueryOnce({ partnerCommissions: { $: { where: { partnerId: partner.id, userId: ownerId } } } });
       (commData?.partnerCommissions || []).forEach(c => txs.push(dbOp.delete('partnerCommissions', c.id)));
       // Cascade: delete all historical activity logs for this partner (hard delete policy)
-      const logData = await db.query({ activityLogs: { $: { where: { entityId: partner.id } } } });
+      const logData = await dbQueryOnce({ activityLogs: { $: { where: { entityId: partner.id } } } });
       (logData?.activityLogs || []).forEach(l => txs.push(dbOp.delete('activityLogs', l.id)));
       await dbWrite(txs);
       // Delete credentials via API

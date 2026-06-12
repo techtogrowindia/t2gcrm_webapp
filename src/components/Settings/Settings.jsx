@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { dbWrite, dbOp } from '../../utils/dbWrite';
+import { dbWrite, dbOp, dbQueryOnce } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -324,7 +324,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
     // Uniqueness check — one-time point query at save time (not a live subscription)
     if (cleanSlug) {
-      const slugCheck = await db.query({ userProfiles: { $: { where: { slug: cleanSlug } } } });
+      const slugCheck = await dbQueryOnce({ userProfiles: { $: { where: { slug: cleanSlug } } } });
       const isTaken = (slugCheck?.userProfiles || []).some(p => p.userId !== ownerId);
       if (isTaken) return toast('This brand URL slug is already taken! Please choose another one.', 'error');
     }

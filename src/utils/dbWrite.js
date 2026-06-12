@@ -22,8 +22,26 @@
 // ===================================================================
 import db from '../instant';
 import { pgAuthGetToken } from '../hooks/useAuthPg';
+import { instantToPgSpec } from '../hooks/usePgQuery';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
+
+// One-off query (not a hook). Routes to Postgres when the flag is on, else
+// InstantDB db.query. Use this to replace `await db.query(...)` in event
+// handlers — db.query hangs under PG auth (no InstantDB session).
+export async function dbQueryOnce(querySpec) {
+  if (!USE_PG_DATA) return db.query(querySpec);
+  const token = pgAuthGetToken();
+  if (!token) throw new Error('Not authenticated');
+  const res = await fetch('/api/data-pg', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action: 'query', queries: instantToPgSpec(querySpec) }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Query failed');
+  return json.data;
+}
 
 // ── Op builders ───────────────────────────────────────────────────
 export const dbOp = {
