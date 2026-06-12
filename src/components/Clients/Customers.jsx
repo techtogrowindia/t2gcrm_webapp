@@ -5,6 +5,10 @@ import { fmtD, INDIAN_STATES, COUNTRIES } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
 import SearchableSelect from '../UI/SearchableSelect';
+import { useData } from '../../hooks/useData';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
+
+const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
 
 export default function Customers({ user, perms, ownerId, planEnforcement }) {
   const canCreate = perms?.can('Customers', 'create') === true;
@@ -25,7 +29,7 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
   // times out and data stays undefined forever (page stuck on spinner).
   // Duplicate checks use /api/lead-check-duplicate; Won-lead sync uses
   // /api/sync-won-leads; contact sync on edit uses a targeted narrow query.
-  const { data } = db.useQuery({
+  const { data, refetch } = useData({
     customers: { $: { where: { userId: ownerId }, limit: 10000 } },
     userProfiles: { $: { where: { userId: ownerId } } },
     projects: { $: { where: { userId: ownerId } } },
@@ -35,7 +39,7 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
     amc: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId, status: 'Approved' } } },
-  });
+  }, ['customers', 'userProfiles', 'projects', 'quotes', 'invoices', 'tasks', 'amc', 'teamMembers', 'partnerApplications']);
   const team = data?.teamMembers || [];
   const myMember = useMemo(() => team.find(t => t.email === user.email), [team, user.email]);
   const customers = useMemo(() => data?.customers || [], [data?.customers]);
@@ -46,18 +50,20 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
   const invoices = data?.invoices || [];
   const tasks = data?.tasks || [];
   const drawerCustomerId = viewCustomer?.id || null;
-  const { data: drawerData } = db.useQuery(drawerCustomerId ? {
-    activityLogs: { $: { where: { entityId: drawerCustomerId } } },
-  } : {});
+  const { data: drawerData } = useData(
+    drawerCustomerId ? { activityLogs: { $: { where: { entityId: drawerCustomerId } } } } : {},
+    drawerCustomerId ? { activityLogs: { where: { entityId: drawerCustomerId } } } : {}
+  );
   const amcList = data?.amc || [];
-  const partners = data?.partnerApplications || [];
+  const partners = (data?.partnerApplications || []).filter(p => p.status === 'Approved');
 
   // Targeted lead lookup — only runs while a customer edit drawer is open.
   // Avoids subscribing to all 11k leads just to find one name match.
   const editName = editData?.name || null;
-  const { data: leadSyncData } = db.useQuery(editName ? {
-    leads: { $: { where: { userId: ownerId, name: editName } } },
-  } : {});
+  const { data: leadSyncData } = useData(
+    editName ? { leads: { $: { where: { userId: ownerId, name: editName } } } } : {},
+    editName ? { leads: { where: { name: editName } } } : {}
+  );
   const matchedLead = leadSyncData?.leads?.[0] || null;
 
   const filtered = useMemo(() => {
@@ -93,13 +99,9 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
   };
 
   const logActivity = async (customerId, text) => {
-    await db.transact(db.tx.activityLogs[id()].update({
-      entityId: customerId,
-      entityType: 'customer',
-      text,
-      userId: ownerId,
-      actorId: user.id,
-      userName: user.email,
+    await dbWrite(dbOp.update('activityLogs', id(), {
+      entityId: customerId, entityType: 'customer', text,
+      userId: ownerId, actorId: user.id, userName: user.email,
       createdAt: Date.now()
     }));
   };
@@ -162,47 +164,44 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
           }
         });
 
-        txs.push(db.tx.customers[editData.id].update({ ...form, userId: ownerId, actorId: user.id, updatedAt: Date.now() }));
-        
+        txs.push(dbOp.update('customers', editData.id, { ...form, userId: ownerId, actorId: user.id, updatedAt: Date.now() }));
+
         // Sync to Lead if a matching lead was found via targeted query
         const lMatch = matchedLead;
         if (lMatch) {
-          txs.push(db.tx.leads[lMatch.id].update({ name: form.name, companyName: form.companyName, email: form.email, phone: form.phone }));
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('leads', lMatch.id, { name: form.name, companyName: form.companyName, email: form.email, phone: form.phone }));
+          txs.push(dbOp.update('activityLogs', id(), {
             entityId: lMatch.id, entityType: 'lead', text: `Contact details synced from Customer update (${form.name}).`,
             userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
           }));
         }
 
         if (changes.length > 0) {
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('activityLogs', id(), {
             entityId: editData.id, entityType: 'customer',
-            entityName: form.companyName || form.name,
-            action: 'edited',
+            entityName: form.companyName || form.name, action: 'edited',
             text: `Edited customer **${form.name}**: ${changes.join(' | ')}`,
             userId: ownerId, actorId: user.id, userName: user.email,
-            teamMemberId: myMember?.id || null,
-            createdAt: Date.now()
+            teamMemberId: myMember?.id || null, createdAt: Date.now()
           }));
         }
-        await db.transact(txs);
+        await dbWrite(txs);
         toast('Customer updated!', 'success');
       } else {
         const newId = id();
-        txs.push(db.tx.customers[newId].update({ ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('customers', newId, { ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+        txs.push(dbOp.update('activityLogs', id(), {
           entityId: newId, entityType: 'customer',
-          entityName: form.companyName || form.name,
-          action: 'created',
+          entityName: form.companyName || form.name, action: 'created',
           text: `Created customer **${form.name}**`,
           userId: ownerId, actorId: user.id, userName: user.email,
-          teamMemberId: myMember?.id || null,
-          createdAt: Date.now()
+          teamMemberId: myMember?.id || null, createdAt: Date.now()
         }));
-        await db.transact(txs);
+        await dbWrite(txs);
         toast(`Customer "${form.name}" created!`, 'success');
       }
       setModal(false);
+      refetch();
     } catch (e) { toast('Error saving customer', 'error'); }
   };
 
@@ -210,19 +209,20 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
     if (!canDelete) { toast('Permission denied: cannot delete customers', 'error'); return; }
     if (!confirm('Delete customer? All associated activity logs and records will be removed.')) return;
     try {
-      const res = await fetch('/api/data', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          module: 'customers',
-          ownerId,
-          actorId: user.id,
-          userName: user.email,
-          id: cId,
-          logText: 'Customer deleted from CRM'
-        })
-      });
-      if (!res.ok) throw new Error('Failed to delete customer');
+      if (USE_PG_DATA) {
+        await dbWrite(dbOp.delete('customers', cId)); // cascade-deletes activity logs
+        refetch();
+      } else {
+        const res = await fetch('/api/data', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            module: 'customers', ownerId, actorId: user.id,
+            userName: user.email, id: cId, logText: 'Customer deleted from CRM'
+          })
+        });
+        if (!res.ok) throw new Error('Failed to delete customer');
+      }
       toast('Customer deleted', 'error');
     } catch (e) {
       toast('Error deleting customer', 'error');
@@ -289,17 +289,14 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
     const addNote = async () => {
     if (!canEdit) { toast('Permission denied: cannot add notes', 'error'); return; }
     if (!noteText.trim()) return;
-      await db.transact(db.tx.activityLogs[id()].update({
-        entityId: c.id,
-        entityType: 'customer',
-        text: noteText.trim(),
-        userId: ownerId,
-        actorId: user.id,
-        userName: user.email,
+      await dbWrite(dbOp.update('activityLogs', id(), {
+        entityId: c.id, entityType: 'customer', text: noteText.trim(),
+        userId: ownerId, actorId: user.id, userName: user.email,
         createdAt: Date.now()
       }));
       setNoteText('');
       toast('Note added', 'success');
+      refetch();
     };
     
     return (
