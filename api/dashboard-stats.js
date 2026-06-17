@@ -1,5 +1,6 @@
 import { init } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
+import { readData } from './_write-ops.js';
 // USE_PG_DATA flag handled inside _leads-cache.js — no change needed here.
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
@@ -73,7 +74,7 @@ export default async function handler(req, res) {
     if (!isOwner && !teamCanSeeAllLeads && userEmail) {
       try {
         const db = init({ appId: APP_ID, adminToken: ADMIN_TOKEN });
-        const r = await db.query({
+        const r = await readData(db, ownerId, {
           teamMembers: { $: { where: { userId: ownerId, email: userEmail } } },
           userProfiles: { $: { where: { userId: ownerId } } },
         });

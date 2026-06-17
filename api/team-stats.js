@@ -1,12 +1,14 @@
 import { init } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getCallLogsForOwner } from './_call-logs-cache.js';
+import { readData } from './_write-ops.js';
+import { tenantQuery } from './db-pg.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
+const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
 
-// Per-owner activity-logs cache. Separate from the response cache below so
-// repeated date-range queries within 30s share the same admin SDK fetch.
+// Per-owner activity-logs cache (InstantDB path only — PG path queries live).
 const activityCache = new Map();
 const ACT_TTL = 30 * 1000;
 
@@ -16,6 +18,20 @@ const responseCache = new Map();
 const RESP_TTL = 15 * 1000;
 
 async function getActivityLogsForOwner(db, ownerId) {
+  if (USE_PG_DATA) {
+    // Postgres path: fetch ALL activity logs for this owner (no date filter
+    // here — team-stats needs the full set to accurately attribute per-member).
+    const result = await tenantQuery(
+      ownerId,
+      'SELECT id, doc, created_at FROM activity_logs ORDER BY created_at DESC'
+    );
+    return result.rows.map(r => ({
+      ...r.doc,
+      id: r.id,
+      createdAt: r.doc.createdAt ?? new Date(r.created_at).getTime(),
+    }));
+  }
+  // InstantDB path with 30s in-memory cache
   const hit = activityCache.get(ownerId);
   if (hit && Date.now() - hit.ts < ACT_TTL) return hit.logs;
   const result = await db.query({
@@ -54,7 +70,7 @@ export default async function handler(req, res) {
       getActivityLogsForOwner(db, ownerId),
       getCallLogsForOwner(ownerId),
       getLeadsForOwner(ownerId),
-      db.query({
+      readData(db, ownerId, {
         teamMembers: { $: { where: { userId: ownerId } } },
         userProfiles: { $: { where: { userId: ownerId } } },
       }),

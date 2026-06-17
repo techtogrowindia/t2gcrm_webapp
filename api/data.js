@@ -1,5 +1,7 @@
 import { init, tx, id } from '@instantdb/admin';
 import { pgRunOps } from './data-pg.js';
+import { readData } from './_write-ops.js';
+import { getLeadsForOwner } from './_leads-cache.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -156,14 +158,16 @@ export default async function handler(req, res) {
         //   3. Team member + teamCanSeeAllLeads === true     → all leads
         //   4. Team member + teamCanSeeAllLeads === false    → only assigned
         //                                                      (or unassigned)
-        const { leads, teamMembers: teamFromDb, userProfiles } = await db.query({
-          leads: { $: { where: { userId: ownerId } } },
-          teamMembers: { $: { where: { userId: ownerId } } },
-          userProfiles: { $: { where: { userId: ownerId } } },
-        });
-        let result = leads || [];
-        const teamMembers = teamFromDb || [];
-        const profile = userProfiles?.[0] || {};
+        const [leadsRaw, supplemental] = await Promise.all([
+          getLeadsForOwner(ownerId),
+          readData(db, ownerId, {
+            teamMembers: { $: { where: { userId: ownerId } } },
+            userProfiles: { $: { where: { userId: ownerId } } },
+          }),
+        ]);
+        let result = leadsRaw || [];
+        const teamMembers = supplemental.teamMembers || [];
+        const profile = supplemental.userProfiles?.[0] || {};
         const roleDefs = profile.roles || [];
 
         // Source normalization — mirror /api/leads-page so web & mobile match
@@ -351,7 +355,7 @@ export default async function handler(req, res) {
       }
 
       const query = { [collection]: { $: { where: { userId: ownerId } } } };
-      const result = await db.query(query);
+      const result = await readData(db, ownerId, query);
       let rows = result[collection] || [];
 
       // Mobile sync cap: the call logs module only ever exposes the last 30
