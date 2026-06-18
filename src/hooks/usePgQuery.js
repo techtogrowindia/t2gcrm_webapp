@@ -81,7 +81,11 @@ export function instantToPgSpec(query) {
     const where = cfg?.$?.where || {};
     const filtered = {};
     for (const [k, v] of Object.entries(where)) {
-      if (k === 'userId') continue;                 // tenant — RLS scopes it
+      // userId is the tenant on every collection EXCEPT memberProfiles, where it
+      // is the member's OWN id. Strip it elsewhere (RLS scopes the tenant); keep
+      // it for memberProfiles so we fetch the right person, not an arbitrary
+      // member of the tenant.
+      if (k === 'userId' && coll !== 'memberProfiles') continue;
       if (v && typeof v === 'object') continue;     // skip or/and/in operators
       filtered[k] = v;
     }

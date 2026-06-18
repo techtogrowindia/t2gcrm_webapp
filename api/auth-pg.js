@@ -132,7 +132,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'email and password required' });
     try {
       const { rows } = await rawQuery(
-        'SELECT id, email, password_hash, is_verified, is_team, is_partner, account_id, doc FROM credentials WHERE email = $1',
+        'SELECT id, email, password_hash, is_verified, is_team, is_partner, account_id, doc FROM credentials WHERE lower(email) = lower($1)',
         [email]
       );
       if (!rows.length) return res.status(401).json({ error: 'Invalid email or password' });
@@ -150,7 +150,7 @@ export default async function handler(req, res) {
       let tenantId = cred.account_id;
       if (!cred.is_team && !cred.is_partner) {
         const { rows: accRows } = await rawQuery(
-          'SELECT id FROM accounts WHERE email = $1', [email]
+          'SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]
         );
         tenantId = accRows[0]?.id || cred.account_id || cred.id;
       }
@@ -185,7 +185,7 @@ export default async function handler(req, res) {
 
     // Check email exists
     const { rows } = await rawQuery(
-      'SELECT id FROM credentials WHERE email = $1', [email]
+      'SELECT id FROM credentials WHERE lower(email) = lower($1)', [email]
     );
     if (!rows.length)
       return res.status(404).json({ error: 'No account found for this email' });
@@ -265,7 +265,7 @@ export default async function handler(req, res) {
 
     // Get credential
     const { rows: credRows } = await rawQuery(
-      'SELECT id, email, is_team, is_partner, account_id FROM credentials WHERE email = $1',
+      'SELECT id, email, is_team, is_partner, account_id FROM credentials WHERE lower(email) = lower($1)',
       [email]
     );
     if (!credRows.length) return res.status(404).json({ error: 'Account not found' });
@@ -280,7 +280,7 @@ export default async function handler(req, res) {
     let tenantId = cred.account_id;
     if (!cred.is_team && !cred.is_partner) {
       const { rows: accRows } = await rawQuery(
-        'SELECT id FROM accounts WHERE email = $1', [email]
+        'SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]
       );
       tenantId = accRows[0]?.id || cred.account_id || cred.id;
     }
