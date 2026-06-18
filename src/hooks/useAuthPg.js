@@ -3,7 +3,9 @@
 //
 // Drop-in replacement for db.useAuth() when VITE_USE_PG_AUTH=true.
 // Returns the same shape: { user, isLoading, error }
-// user.id = tenantId (the accountId / userId used throughout the app)
+// user.id = the member's OWN identity: owners → tenantId (accountId/userId used
+//   as ownerId for queries); team/partner → their own credentialId. Using the
+//   owner's tenantId for a team member makes usePermissions grant owner rights.
 // user.email = email
 //
 // JWT is stored in localStorage under 'pg_auth_token'.
@@ -43,9 +45,15 @@ export function useAuthPg() {
       const cached = localStorage.getItem(PROFILE_KEY);
       if (cached) {
         const profile = JSON.parse(cached);
-        setUser({ id: profile.tenantId, email: profile.email, ...profile });
-        setIsLoading(false);
-        return;
+        // Stale cache from before the identityId fix: a team/partner member with
+        // no identityId would fall back to tenantId as user.id and be mis-detected
+        // as the owner (privilege escalation). Force a server re-verify to repopulate.
+        const stale = (profile.isTeam || profile.isPartner) && !profile.identityId;
+        if (!stale) {
+          setUser({ id: profile.identityId ?? profile.tenantId, email: profile.email, ...profile });
+          setIsLoading(false);
+          return;
+        }
       }
     } catch {}
 
@@ -58,15 +66,18 @@ export function useAuthPg() {
       .then(r => r.json())
       .then(data => {
         if (data.ok) {
+          // Team/partner → own credential id (JWT sub); owner → tenant id.
+          const identityId = (data.isTeam || data.isPartner) ? data.sub : data.tenantId;
           const profile = {
             tenantId:  data.tenantId,
+            identityId,
             email:     data.email,
             isOwner:   data.isOwner,
             isTeam:    data.isTeam,
             isPartner: data.isPartner,
           };
           localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-          setUser({ id: data.tenantId, email: data.email, ...profile });
+          setUser({ id: identityId, email: data.email, ...profile });
         } else {
           clearAuth();
         }
@@ -85,6 +96,10 @@ export function pgAuthSetSession(data) {
   localStorage.setItem(TOKEN_KEY, data.token);
   const profile = {
     tenantId:  data.accountId,
+    // Identity id used as user.id app-wide. Owners: account/tenant id.
+    // Team/partner: their own credential id — never the owner's tenant id,
+    // or usePermissions would grant them owner privileges.
+    identityId: (data.isTeam || data.isPartner) ? data.credentialId : data.accountId,
     email:     data.email,
     isOwner:   data.isOwner,
     isTeam:    data.isTeam,

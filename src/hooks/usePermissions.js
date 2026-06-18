@@ -12,12 +12,17 @@ export function usePermissions(user, profile, teamMembers = []) {
     if (!user || !profile) return null;
 
     // 1. Check if user is the Owner (Priority — owner always takes precedence)
+    // A user present in teamMembers is a MEMBER, never the owner — even if
+    // user.id equals the owner's id. On the Postgres path a team member's
+    // session id can collide with the owner's tenant id, so isOwnerById alone
+    // is unsafe; email-as-owner still wins.
+    const matchedMember = teamMembers.find(m => m.email?.toLowerCase() === user.email?.toLowerCase());
     const isOwnerByEmail = user.email && profile.email && user.email.toLowerCase() === profile.email.toLowerCase();
     const isOwnerById = user.id === profile.userId;
-    const isOwner = isOwnerByEmail || isOwnerById;
+    const isOwner = isOwnerByEmail || (isOwnerById && !matchedMember);
 
     // 2. Check if user is a Team Member (only if NOT the owner)
-    const member = isOwner ? null : teamMembers.find(m => m.email.toLowerCase() === user.email?.toLowerCase());
+    const member = isOwner ? null : matchedMember;
     
     if (isOwner) {
       return { isOwner: true, can: () => true, modules: null, name: profile.fullName };

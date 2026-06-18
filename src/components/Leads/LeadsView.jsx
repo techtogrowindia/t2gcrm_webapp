@@ -90,7 +90,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   } : {});
   const teamCanSeeAllLeads = data?.userProfiles?.[0]?.teamCanSeeAllLeads !== false;
   const teamCanSeeUnassignedLeads = data?.userProfiles?.[0]?.teamCanSeeUnassignedLeads !== false;
-  const myTeamMember = (data?.teamMembers || []).find(t => t.email === user.email);
+  const myTeamMember = (data?.teamMembers || []).find(t => (t.email || '').toLowerCase() === (user.email || '').toLowerCase());
   const myName = myTeamMember?.name || user.name || '';
 
   // Server-driven page state — { items, counts, totalFiltered }
