@@ -9,8 +9,12 @@ export default function UserProfile({ user, profile, perms, memberProfile, owner
   const toast = useToast();
 
   const [form, setForm] = useState({
-    fullName: isTeamMember ? (memberProfile?.name || '') : (profile?.fullName || ''),
-    email: isTeamMember ? (memberProfile?.email || user.email || '') : (profile?.email || user.email || ''),
+    // Team member identity comes from reliable sources: perms.name (their
+    // teamMembers record) and user.email (their own login). memberProfile can
+    // mis-resolve on the Postgres path, so it's only a last-resort fallback —
+    // never for the login email (which drives the password-change target).
+    fullName: isTeamMember ? (perms?.name || memberProfile?.name || '') : (profile?.fullName || ''),
+    email: isTeamMember ? (user.email || memberProfile?.email || '') : (profile?.email || user.email || ''),
     phone: isTeamMember ? (memberProfile?.phone || '') : (profile?.phone || ''),
   });
 
