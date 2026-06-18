@@ -169,7 +169,10 @@ export async function pgRead(tenantId, querySpec) {
       if (k === 'userId' || k === 'ownerId') continue;       // RLS handles tenant
       if (v && typeof v === 'object') continue;              // skip operators
       params.push(String(v));
-      clauses.push(`doc->>'${k}' = $${params.length}`);
+      // email is matched case-insensitively — stored casing varies across imports
+      clauses.push(k === 'email'
+        ? `lower(doc->>'email') = lower($${params.length})`
+        : `doc->>'${k}' = $${params.length}`);
     }
     const sql = `SELECT id, doc FROM ${table}${clauses.length ? ' WHERE ' + clauses.join(' AND ') : ''}`;
     const r = await tenantQuery(tenantId, sql, params);
@@ -203,7 +206,9 @@ export async function pgReadAll(querySpec) {
       if (k === 'userId' || k === 'ownerId') continue;
       if (v && typeof v === 'object') continue;
       params.push(String(v));
-      clauses.push(`doc->>'${k}' = $${params.length}`);
+      clauses.push(k === 'email'
+        ? `lower(doc->>'email') = lower($${params.length})`
+        : `doc->>'${k}' = $${params.length}`);
     }
     const whereSql = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
     const all = [];
@@ -278,7 +283,9 @@ export default async function handler(req, res) {
         if (keys.length) {
           const clauses = keys.map((k, i) => {
             params.push(String(where[k]));
-            return `doc->>'${k}' = $${i + 1}`;
+            return k === 'email'
+              ? `lower(doc->>'email') = lower($${i + 1})`
+              : `doc->>'${k}' = $${i + 1}`;
           });
           sql += ` WHERE ${clauses.join(' AND ')}`;
         }
