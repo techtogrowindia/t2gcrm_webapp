@@ -732,6 +732,8 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       if (emailKey) emailIndexLocal.set(emailKey, true);
       if (phoneKey) phoneIndexLocal.set(phoneKey, true);
 
+      // Create-with-assignee (bulk import) → stamp assignedAt so dated "assigned" reports count it
+      if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
       candidates.push({ lead, rowIndex, phone: lead.phone || '', email: lead.email || '' });
       rowIndex++;
     }
@@ -974,7 +976,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
     // Build the shared update payload once
     const updates = {};
-    if (pendingBulkAssign) updates.assign = pendingBulkAssign;
+    if (pendingBulkAssign) { updates.assign = pendingBulkAssign; updates.assignedAt = Date.now(); }
     if (pendingBulkStage) { updates.stage = pendingBulkStage; updates.stageChangedAt = Date.now(); }
 
     // Track leads that need Won-stage customer conversion (rare, only for subset)
