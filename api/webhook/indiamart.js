@@ -137,6 +137,8 @@ export default async function handler(req, res) {
           lead.userId = userId;
           lead.actorId = null;
           lead.createdAt = Date.now();
+          // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
+          if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
           const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
           if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
@@ -272,6 +274,8 @@ export default async function handler(req, res) {
             lead.userId = userId;
             lead.actorId = null;
             lead.createdAt = Date.now();
+            // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
+            if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
             // Record the source's unique ID for future syncs
             const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
             if (uniqueId) lead.sourceLeadId = String(uniqueId);

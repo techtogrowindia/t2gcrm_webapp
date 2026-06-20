@@ -146,6 +146,7 @@ export default async function handler(req, res) {
           lead.userId = userId;
           lead.actorId = null;
           lead.createdAt = Date.now();
+          if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
           const uniqueId = incomingLead.leadid || incomingLead.lead_id;
           if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
@@ -276,6 +277,7 @@ export default async function handler(req, res) {
             lead.userId = userId;
             lead.actorId = null;
             lead.createdAt = Date.now();
+            if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
             const uniqueId = incomingLead.leadid || incomingLead.lead_id;
             if (uniqueId) lead.sourceLeadId = String(uniqueId);
 

@@ -174,6 +174,8 @@ export default async function handler(req, res) {
       );
       console.log(`Lead already exists (${existingLead.id}). Added activity log instead.`);
     } else {
+      // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
+      if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
       txs.push(opU('leads', leadId, lead));
       console.log(`Successfully added lead ${leadId} for user ${userId}`);
     }
