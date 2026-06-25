@@ -153,8 +153,27 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     if (!editData && planEnforcement && !planEnforcement.isWithinLimit('maxUsers', team.length)) { toast('Team member limit reached for your plan. Please upgrade.', 'error'); return; }
     if (!form.name.trim() || !form.email.trim()) { toast('Name and email required', 'error'); return; }
     const normalizedEmail = form.email.trim().toLowerCase();
-    const payload = { ...form, email: normalizedEmail, userId: ownerId };
-    if (editData) { await dbWrite(dbOp.update('teamMembers', editData.id, payload)); toast('Member updated', 'success'); }
+    const trimmedName = form.name.trim();   // never store leading/trailing spaces — they break name-based assignment matching
+    const payload = { ...form, name: trimmedName, email: normalizedEmail, userId: ownerId };
+    if (editData) {
+      const oldName = (editData.name || '').trim();
+      await dbWrite(dbOp.update('teamMembers', editData.id, payload));
+      // Renamed? Cascade the new name onto all their leads so name-based
+      // assignment/reports don't orphan. Server-side (leads table is too large
+      // to load here); routes to PG or InstantDB via the shared write path.
+      if (oldName && oldName !== trimmedName) {
+        try {
+          const r = await fetch('/api/rename-assignee', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ownerId, oldName, newName: trimmedName }),
+          });
+          const d = await r.json().catch(() => ({}));
+          toast(`Member updated — reassigned ${d.updated ?? 0} lead(s) to "${trimmedName}"`, 'success');
+        } catch { toast('Member updated, but lead reassignment failed — please retry', 'warning'); }
+      } else {
+        toast('Member updated', 'success');
+      }
+    }
     else { await dbWrite(dbOp.update('teamMembers', id(), payload)); toast('Member added', 'success'); }
     setModal(false);
   };

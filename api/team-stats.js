@@ -128,8 +128,10 @@ export default async function handler(req, res) {
 
     const result = members.map(m => {
       // Leads currently assigned to this member (all-time snapshot, ignores
-      // the date filter).
-      const assignedToMember = allLeads.filter(l => l.assign === m.name);
+      // the date filter). Trim both sides so a stray leading/trailing space on
+      // the member name (e.g. from a rename) doesn't silently zero the count.
+      const mName = (m.name || '').trim();
+      const assignedToMember = allLeads.filter(l => (l.assign || '').trim() === mName);
       const leadsAssignedTotal = assignedToMember.length;
       // Leads ASSIGNED within the selected date range — uses `assignedAt`
       // (set when a lead is assigned/reassigned) so the count honours the
