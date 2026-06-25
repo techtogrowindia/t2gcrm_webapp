@@ -4,7 +4,7 @@ import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_MEMBER } from '../../utils/constants';
-import { fmtDT } from '../../utils/helpers';
+import { fmtDT, normalizeName } from '../../utils/helpers';
 
 const CallLogs = lazy(() => import('../CallLogs/CallLogs'));
 const TeamReports = lazy(() => import('./TeamReports'));
@@ -153,7 +153,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     if (!editData && planEnforcement && !planEnforcement.isWithinLimit('maxUsers', team.length)) { toast('Team member limit reached for your plan. Please upgrade.', 'error'); return; }
     if (!form.name.trim() || !form.email.trim()) { toast('Name and email required', 'error'); return; }
     const normalizedEmail = form.email.trim().toLowerCase();
-    const trimmedName = form.name.trim();   // never store leading/trailing spaces — they break name-based assignment matching
+    const trimmedName = normalizeName(form.name);   // trim edges + collapse internal double-spaces — stray spaces break name-based assignment matching
     const payload = { ...form, name: trimmedName, email: normalizedEmail, userId: ownerId };
     if (editData) {
       const oldName = (editData.name || '').trim();

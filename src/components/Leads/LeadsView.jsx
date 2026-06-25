@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
-import { fmtD, fmtDT, stageBadgeClass, uid, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
+import { fmtD, fmtDT, stageBadgeClass, uid, normalizeName, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_LEAD } from '../../utils/constants';
 import { fireAutoNotifications } from '../../utils/messaging';
@@ -651,6 +651,12 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     const stageSet = new Set(allStages);
     const sourceSet = new Set(activeSources);
     const reqSet = new Set(activeRequirements);
+    // Assignee must match a current team member. Map normalized (trim + collapse
+    // spaces + lowercase) name -> the member's exact stored name, so we can
+    // canonicalize case/space variants and reject unknown assignees.
+    const memberByNorm = new Map(
+      (team || []).filter(m => m.name).map(m => [normalizeName(m.name).toLowerCase(), m.name])
+    );
 
     // PASS 1 — parse + validate + intra-file dedup (all synchronous, no network).
     // Build a list of clean candidates; the expensive cross-database dedup runs
@@ -705,6 +711,18 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       if (lead.requirement && !reqSet.has(lead.requirement)) {
         invalidFields.push(`Row ${rowIndex}: ${lead.name} (Requirement '${lead.requirement}' not found in business settings)`);
         hasInvalidField = true;
+      }
+
+      // Validate Assignee — must be a current team member. Canonicalize case/space
+      // variants to the member's exact name; reject a non-empty unknown assignee
+      // so we never import a lead assigned to someone who isn't on the team.
+      if (lead.assign && String(lead.assign).trim()) {
+        const canonical = memberByNorm.get(normalizeName(lead.assign).toLowerCase());
+        if (canonical) lead.assign = canonical;
+        else {
+          invalidFields.push(`Row ${rowIndex}: ${lead.name} (Assignee '${lead.assign}' is not a team member)`);
+          hasInvalidField = true;
+        }
       }
 
       if (hasInvalidField) {

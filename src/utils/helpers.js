@@ -1,4 +1,10 @@
 // Default lists for synchronization
+
+// Normalize a person/assignee name: trim edges AND collapse internal runs of
+// whitespace to a single space (so "Kanaka  Shree " -> "Kanaka Shree"). Keeps
+// name-based assignment matching robust against stray/double spaces.
+export const normalizeName = (s) => (s == null ? '' : String(s).trim().replace(/\s+/g, ' '));
+
 export const DEFAULT_SOURCES = ['FB Ads', 'Direct', 'Broker', 'Google Ads', 'Referral', 'WhatsApp', 'Website', 'IndiaMART', 'JustDial', 'Other'];
 export const DEFAULT_STAGES = ['New Enquiry', 'Enquiry Contacted', 'Quotation Created', 'Quotation Sent', 'Invoice Created', 'Invoice Sent', 'Budget Negotiation', 'Advance Paid', 'Won', 'Lost'];
 export const DEFAULT_REQUIREMENTS = ['Hot', 'Warm', 'Cold', 'VIP', 'Pending'];

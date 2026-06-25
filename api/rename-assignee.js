@@ -20,8 +20,9 @@ export default async function handler(req, res) {
     if (!ownerId || oldName == null || newName == null) {
       return res.status(400).json({ error: 'ownerId, oldName, newName required' });
     }
-    const oldTrim = String(oldName).trim();
-    const newTrim = String(newName).trim();
+    const norm = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');   // trim + collapse internal spaces
+    const oldTrim = norm(oldName);
+    const newTrim = norm(newName);
     if (!oldTrim || !newTrim || oldTrim === newTrim) {
       return res.status(200).json({ updated: 0, tasksUpdated: 0 });
     }
@@ -31,13 +32,12 @@ export default async function handler(req, res) {
     // Match leads case-insensitively + trimmed, so stray spaces/casing on the old
     // value are also remapped to the clean new name.
     const leads = await getLeadsForOwner(ownerId);
-    const leadsToFix = leads.filter(l => (l.assign || '').trim().toLowerCase() === oldTrim.toLowerCase());
+    const oldKey = oldTrim.toLowerCase();
+    const leadsToFix = leads.filter(l => norm(l.assign).toLowerCase() === oldKey);
 
     // Tasks reference the assignee by name too (field: assignedTo).
     const taskData = await readData(db, ownerId, { tasks: { $: { where: { userId: ownerId } } } });
-    const tasksToFix = (taskData.tasks || []).filter(
-      t => (t.assignedTo || '').trim().toLowerCase() === oldTrim.toLowerCase()
-    );
+    const tasksToFix = (taskData.tasks || []).filter(t => norm(t.assignedTo).toLowerCase() === oldKey);
 
     const BATCH = 200;
     let updated = 0;
