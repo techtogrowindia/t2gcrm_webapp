@@ -188,11 +188,22 @@ export default function Reports({ user, perms, ownerId, profile }) {
     return items.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0) * (it.taxRate || 0) / 100, 0);
   };
 
+  // Resolve how much has actually been paid for an invoice. Prefers the sum
+  // of explicit payment entries; falls back to inv.total for Paid/Partially Paid
+  // invoices that were marked paid without logging individual payments (older data).
+  const getInvPaidAmt = (inv) => {
+    const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
+    const fromPayments = payments.reduce((s, p) => s + (p.amount || 0), 0);
+    if (fromPayments > 0) return fromPayments;
+    if (inv.status === 'Paid') return inv.total || 0;
+    if (inv.status === 'Partially Paid') return inv.paidAmount || 0;
+    return 0;
+  };
+
   const { revenue, gst, inputGst } = useMemo(() => {
     let revenue = 0, gst = 0, inputGst = 0;
     filteredInv.forEach(inv => {
-      const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-      const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+      const paidAmt = getInvPaidAmt(inv);
       if (paidAmt > 0) {
         revenue += paidAmt;
         const totalTax = getInvTax(inv);
@@ -263,8 +274,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const productPerf = useMemo(() => {
     const prodMap = {};
     filteredInv.forEach(inv => {
-      const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-      const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+      const paidAmt = getInvPaidAmt(inv);
       if (paidAmt > 0) {
         const items = Array.isArray(inv.items) ? inv.items : (inv.items ? JSON.parse(inv.items) : []);
         items.forEach(item => {
@@ -289,8 +299,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const revBySource = useMemo(() => {
     const srcMap = {};
     filteredInv.forEach(inv => {
-      const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-      const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+      const paidAmt = getInvPaidAmt(inv);
       if (paidAmt > 0) {
         const lead = filteredLeadsAtSource.find(l => l.name === inv.client);
         const src = lead?.source || 'Direct/Existing';
@@ -380,8 +389,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
     const byProd = {};
     const byCust = {};
     filteredInv.forEach(inv => {
-      const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-      const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+      const paidAmt = getInvPaidAmt(inv);
       if (paidAmt <= 0) return;
       const items = Array.isArray(inv.items) ? inv.items : (inv.items ? JSON.parse(inv.items) : []);
       const clientKey = inv.client || 'Unknown';
@@ -504,8 +512,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const gstBreakdown = useMemo(() => {
     const months = {};
     filteredInv.forEach(inv => {
-      const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-      const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+      const paidAmt = getInvPaidAmt(inv);
       if (paidAmt > 0) {
         const d = new Date(inv.date);
         const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -539,16 +546,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const handleExport = () => {
     if (tab === 'pl') {
       const plData = filteredInv.map(inv => {
-        const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-        const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+        const paidAmt = getInvPaidAmt(inv);
         const commTotal = commissions.filter(c => c.invoiceId === inv.id && c.status === 'Paid').reduce((s, c) => s + (c.amount || 0), 0);
         return { ...inv, paidAmt, commTotal };
       }).filter(inv => inv.paidAmt > 0);
       exportCSV(['Invoice No', 'Client', 'Date', 'Status', 'Paid Amount', 'Commission Paid'], plData.map(inv => [inv.no, inv.client, fmtD(inv.date), inv.status, inv.paidAmt, inv.commTotal]), `PL_Report_${fromDate}_to_${toDate}`);
     } else if (tab === 'gst') {
       const gstDetails = filteredInv.map(inv => {
-        const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-        const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+        const paidAmt = getInvPaidAmt(inv);
         const totalTax = getInvTax(inv);
         const paidTax = (inv.total > 0) ? (paidAmt / inv.total) * totalTax : 0;
         return { ...inv, paidAmt, paidTax };
@@ -703,8 +708,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                 <tbody>
                   {(() => {
                     const plData = filteredInv.map(inv => {
-                      const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-                      const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+                      const paidAmt = getInvPaidAmt(inv);
                       const commTotal = commissions.filter(c => c.invoiceId === inv.id && c.status === 'Paid').reduce((s, c) => s + (c.amount || 0), 0);
                       return { ...inv, paidAmt, commTotal };
                     }).filter(inv => inv.paidAmt > 0);
@@ -931,8 +935,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                   <tbody>
                     {(() => {
                       const gstDetails = filteredInv.map(inv => {
-                        const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-                        const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
+                        const paidAmt = getInvPaidAmt(inv);
                         const totalTax = getInvTax(inv);
                         const paidTax = (inv.total > 0) ? (paidAmt / inv.total) * totalTax : 0;
                         return { ...inv, paidAmt, paidTax };
