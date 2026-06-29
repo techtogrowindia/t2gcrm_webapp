@@ -666,8 +666,9 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                 ? <tr><td colSpan={10} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>No invoices yet</td></tr>
                 : paginated.map((inv, i) => {
                     const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-                    const paidAmt = payments.reduce((s, p) => s + p.amount, 0);
-                    const balAmt = inv.total - paidAmt;
+                    const fromPayments = payments.reduce((s, p) => s + p.amount, 0);
+                    const paidAmt = fromPayments > 0 ? fromPayments : inv.status === 'Paid' ? (inv.total || 0) : inv.status === 'Partially Paid' ? (inv.paidAmount || 0) : 0;
+                    const balAmt = Math.max(0, (inv.total || 0) - paidAmt);
                     return (
                       <tr key={inv.id}>
                         <td style={{ color: 'var(--muted)', fontSize: 11 }}>{i + 1}</td>
@@ -1030,7 +1031,9 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                 <span>Total: <strong>{fmt(payModal.total, payModal.currency)}</strong></span>
                 {(() => {
                   const payments = Array.isArray(payModal.payments) ? payModal.payments : (payModal.payments ? JSON.parse(payModal.payments) : []);
-                  return <span>Paid: <strong style={{ color: '#16a34a' }}>{fmt(payments.reduce((s,p) => s + p.amount, 0), payModal.currency)}</strong></span>
+                  const fromPay = payments.reduce((s,p) => s + p.amount, 0);
+                  const shownPaid = fromPay > 0 ? fromPay : payModal.status === 'Paid' ? (payModal.total || 0) : (payModal.paidAmount || 0);
+                  return <span>Paid: <strong style={{ color: '#16a34a' }}>{fmt(shownPaid, payModal.currency)}</strong></span>
                 })()}
               </div>
               <div className="fg">
