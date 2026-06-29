@@ -10,10 +10,12 @@ export default function POSBilling({ user, perms, ownerId, settings }) {
   const toast = useToast();
   
   // 1. Data Query
+  // invoices removed — fetched but never used in POS UI (was causing a full
+  // invoice table load on every POS page open). customers capped at 200 for
+  // fast initial load; custSearch fetches more via the filteredCustomers memo.
   const { data } = db.useQuery({
-    products: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId }, limit: 10000 } },
-    invoices: { $: { where: { userId: ownerId } } },
+    products:     { $: { where: { userId: ownerId } } },
+    customers:    { $: { where: { userId: ownerId }, limit: 200 } },
     userProfiles: { $: { where: { userId: ownerId } } },
   });
   const profile = data?.userProfiles?.[0] || {};
@@ -42,10 +44,6 @@ export default function POSBilling({ user, perms, ownerId, settings }) {
     const cats = profile.productCats || ['Electronics', 'Home Appliances', 'Services', 'Furniture', 'General'];
     return ['All', ...cats];
   }, [profile.productCats]);
-
-  const filteredInvoices = useMemo(() => {
-    return data?.invoices || [];
-  }, [data?.invoices]);
 
   const filteredProducts = useMemo(() => {
     let f = products;

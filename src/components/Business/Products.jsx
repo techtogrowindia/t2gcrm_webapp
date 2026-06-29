@@ -53,12 +53,11 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
   const fileRef = useRef();
   const toast = useToast();
 
-  const { data } = db.useQuery({ 
+  // Only products + profile needed for the list. The migration backfill
+  // (amcs/invoices/quotes/purchaseOrders) loaded 4 large collections on every
+  // page open — moved to a lazy fetch inside the migration effect instead.
+  const { data } = db.useQuery({
     products: { $: { where: { userId: ownerId } } },
-    amcs: { $: { where: { userId: ownerId } } },
-    invoices: { $: { where: { userId: ownerId } } },
-    quotes: { $: { where: { userId: ownerId } } },
-    purchaseOrders: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } }
   });
   const products = data?.products || [];
@@ -85,71 +84,51 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
 
   useEffect(() => { setCurrentPage(1); }, [search, pageSize]);
   
-  // Migration: Ensure all products have a SKU/Code & Link existing records by ID
+  // Migration: backfill productId/sku on related records. Runs once per session
+  // after products load; fetches the heavy collections lazily so the Products
+  // list doesn't wait for 4 extra queries on every page open.
   useEffect(() => {
-    if (!data?.products) return;
-    const txs = [];
-    
+    if (!data?.products || !data.products.length) return;
+    if (window._migDone) return;
+    window._migDone = true;
 
-    // 2. Backfill AMCs
-    (data.amcs || []).filter(a => !a.productId).forEach(a => {
-      const pMatch = products.find(p => p.name === a.plan);
-      if (pMatch) txs.push(dbOp.update('amcs', a.id, { productId: pMatch.id, sku: pMatch.code }));
-    });
+    const db2 = db; // same client, queried imperatively
+    const productsByName = Object.fromEntries(products.map(p => [p.name, p]));
 
-    // 3. Backfill Invoices
-    (data.invoices || []).forEach(inv => {
-      let changed = false;
-      const rawItems = Array.isArray(inv.items) ? inv.items : JSON.parse(inv.items || '[]');
-      const items = rawItems.map(it => {
-        if (!it.productId) {
-          const pMatch = products.find(p => p.name === it.name);
-          if (pMatch) { changed = true; return { ...it, productId: pMatch.id, sku: pMatch.code }; }
-        }
-        return it;
+    (async () => {
+      const txs = [];
+      const { amcs, invoices, quotes, purchaseOrders } = (await db2.queryOnce({
+        amcs:           { $: { where: { userId: ownerId } } },
+        invoices:       { $: { where: { userId: ownerId } } },
+        quotes:         { $: { where: { userId: ownerId } } },
+        purchaseOrders: { $: { where: { userId: ownerId } } },
+      }));
+
+      (amcs || []).filter(a => !a.productId).forEach(a => {
+        const p = productsByName[a.plan];
+        if (p) txs.push(dbOp.update('amcs', a.id, { productId: p.id, sku: p.code }));
       });
-      if (changed) txs.push(dbOp.update('invoices', inv.id, { items: Array.isArray(inv.items) ? items : JSON.stringify(items) }));
-    });
-
-    // 4. Backfill Quotes
-    (data.quotes || []).forEach(q => {
-      let changed = false;
-      const rawItems = Array.isArray(q.items) ? q.items : JSON.parse(q.items || '[]');
-      const items = rawItems.map(it => {
-        if (!it.productId) {
-          const pMatch = products.find(p => p.name === it.name);
-          if (pMatch) { changed = true; return { ...it, productId: pMatch.id, sku: pMatch.code }; }
-        }
-        return it;
+      (invoices || []).forEach(inv => {
+        const rawItems = Array.isArray(inv.items) ? inv.items : JSON.parse(inv.items || '[]');
+        let changed = false;
+        const items = rawItems.map(it => { if (!it.productId && productsByName[it.name]) { changed = true; const p = productsByName[it.name]; return { ...it, productId: p.id, sku: p.code }; } return it; });
+        if (changed) txs.push(dbOp.update('invoices', inv.id, { items: Array.isArray(inv.items) ? items : JSON.stringify(items) }));
       });
-      if (changed) txs.push(dbOp.update('quotes', q.id, { items: Array.isArray(q.items) ? items : JSON.stringify(items) }));
-    });
-
-    // 5. Backfill Purchase Orders
-    (data.purchaseOrders || []).forEach(po => {
-      let changed = false;
-      const items = (po.items || []).map(it => {
-        if (!it.productId) {
-          const pMatch = products.find(p => p.name === it.name);
-          if (pMatch) { changed = true; return { ...it, productId: pMatch.id, sku: pMatch.code }; }
-        }
-        return it;
+      (quotes || []).forEach(q => {
+        const rawItems = Array.isArray(q.items) ? q.items : JSON.parse(q.items || '[]');
+        let changed = false;
+        const items = rawItems.map(it => { if (!it.productId && productsByName[it.name]) { changed = true; const p = productsByName[it.name]; return { ...it, productId: p.id, sku: p.code }; } return it; });
+        if (changed) txs.push(dbOp.update('quotes', q.id, { items: Array.isArray(q.items) ? items : JSON.stringify(items) }));
       });
-      if (changed) txs.push(dbOp.update('purchaseOrders', po.id, { items }));
-    });
+      (purchaseOrders || []).forEach(po => {
+        let changed = false;
+        const items = (po.items || []).map(it => { if (!it.productId && productsByName[it.name]) { changed = true; const p = productsByName[it.name]; return { ...it, productId: p.id, sku: p.code }; } return it; });
+        if (changed) txs.push(dbOp.update('purchaseOrders', po.id, { items }));
+      });
 
-    if (txs.length > 0) {
-      // Avoid infinite loop by only running if we actually have changes
-      const runId = txs.length; 
-      if (window._lastMigRun === runId) return;
-      window._lastMigRun = runId;
-      
-      console.log(`Running migration for ${txs.length} records...`);
-      for (let i = 0; i < txs.length; i += 25) {
-        dbWrite(txs.slice(i, i + 25));
-      }
-    }
-  }, [data]);
+      for (let i = 0; i < txs.length; i += 25) dbWrite(txs.slice(i, i + 25));
+    })().catch(() => { window._migDone = false; }); // retry next session on error
+  }, [!!data?.products?.length]);
 
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
 

@@ -231,6 +231,16 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const netGst = gst - inputGst;
   const profit = revenue - totalExp - totalCommissions;
 
+  // O(1) commission lookup by invoiceId (avoids filter() inside filteredInv.map())
+  const commByInvoice = useMemo(() => {
+    const m = {};
+    commissions.filter(c => c.status === 'Paid').forEach(c => {
+      if (!m[c.invoiceId]) m[c.invoiceId] = 0;
+      m[c.invoiceId] += c.amount || 0;
+    });
+    return m;
+  }, [commissions]);
+
   // Lead pipeline
   const STAGE_ORDER = (profile?.leadStages?.length > 0 
     ? (profile?.stages || DEFAULT_STAGES).filter(s => profile?.leadStages?.includes(s)) 
@@ -243,7 +253,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
     if (tab !== 'leads') return [];
     return filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
   }, [tab, filteredLeadsAtSource, fromDate, toDate]);
-  const stageCount = STAGE_ORDER.map(s => ({ stage: s, count: pipelineLeads.filter(l => l.stage === s).length }));
+  const stageCount = useMemo(() => {
+    const byStage = {};
+    pipelineLeads.forEach(l => { byStage[l.stage] = (byStage[l.stage] || 0) + 1; });
+    return STAGE_ORDER.map(s => ({ stage: s, count: byStage[s] || 0 }));
+  }, [pipelineLeads, STAGE_ORDER.join()]);
   const maxCount = Math.max(...stageCount.map(s => s.count), 1);
   const CHART_COLORS = ['#60a5fa', '#6ee7b7', '#fde68a', '#c4b5fd', '#86efac', '#fca5a5'];
 
@@ -295,19 +309,23 @@ export default function Reports({ user, perms, ownerId, profile }) {
     return Object.values(prodMap).sort((a, b) => b.revenue - a.revenue);
   }, [filteredInv]);
 
+  // O(1) lead lookup by name — avoids find() inside forEach() (was O(n²))
+  const leadByName = useMemo(() =>
+    Object.fromEntries(filteredLeadsAtSource.map(l => [l.name, l])),
+    [filteredLeadsAtSource]);
+
   // Revenue by Source
   const revBySource = useMemo(() => {
     const srcMap = {};
     filteredInv.forEach(inv => {
       const paidAmt = getInvPaidAmt(inv);
       if (paidAmt > 0) {
-        const lead = filteredLeadsAtSource.find(l => l.name === inv.client);
-        const src = lead?.source || 'Direct/Existing';
+        const src = leadByName[inv.client]?.source || 'Direct/Existing';
         srcMap[src] = (srcMap[src] || 0) + paidAmt;
       }
     });
     return Object.entries(srcMap).sort((a, b) => b[1] - a[1]);
-  }, [filteredInv, filteredLeadsAtSource]);
+  }, [filteredInv, leadByName]);
   const maxSrcRev = Math.max(...revBySource.map(([, v]) => v), 1);
 
   // Product search + sort + pagination
@@ -547,7 +565,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
     if (tab === 'pl') {
       const plData = filteredInv.map(inv => {
         const paidAmt = getInvPaidAmt(inv);
-        const commTotal = commissions.filter(c => c.invoiceId === inv.id && c.status === 'Paid').reduce((s, c) => s + (c.amount || 0), 0);
+        const commTotal = commByInvoice[inv.id] || 0;
         return { ...inv, paidAmt, commTotal };
       }).filter(inv => inv.paidAmt > 0);
       exportCSV(['Invoice No', 'Client', 'Date', 'Status', 'Paid Amount', 'Commission Paid'], plData.map(inv => [inv.no, inv.client, fmtD(inv.date), inv.status, inv.paidAmt, inv.commTotal]), `PL_Report_${fromDate}_to_${toDate}`);
@@ -709,7 +727,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                   {(() => {
                     const plData = filteredInv.map(inv => {
                       const paidAmt = getInvPaidAmt(inv);
-                      const commTotal = commissions.filter(c => c.invoiceId === inv.id && c.status === 'Paid').reduce((s, c) => s + (c.amount || 0), 0);
+                      const commTotal = commByInvoice[inv.id] || 0;
                       return { ...inv, paidAmt, commTotal };
                     }).filter(inv => inv.paidAmt > 0);
 
