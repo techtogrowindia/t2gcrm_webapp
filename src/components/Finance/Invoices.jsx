@@ -887,7 +887,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                 <button className="btn btn-secondary btn-sm" onClick={() => setForm(p => ({ ...p, items: [...p.items, { name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: profile?.defaultTaxRate || 0 }] }))}>+ Add Row</button>
               </div>
               <table className="li-table">
-                <thead><tr><th>Item</th><th style={{ width: 85 }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90 }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80 }}>Amount</th><th></th></tr></thead>
+                <thead><tr><th>Item</th><th style={{ width: 95 }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90 }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80 }}>Amount</th><th></th></tr></thead>
                 <tbody>
                   {form.items.map((it, i) => (
                     <tr key={i}>
@@ -929,7 +929,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                           />
                         </div>
                       </td>
-                      <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 80, textAlign: 'center' }} /></td>
+                      <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 95, textAlign: 'center' }} /></td>
                       <td>
                         <select className="li-input" value={it.unit || 'Nos'} onChange={e => updateItem(i, 'unit', e.target.value)}>
                           {(profile?.productUnits || ['Nos', 'Kgs', 'Ltrs', 'Mtrs', 'Pkt', 'Box', 'Set']).map(u => <option key={u}>{u}</option>)}

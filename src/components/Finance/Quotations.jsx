@@ -677,7 +677,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                   <button className="btn btn-secondary btn-sm" onClick={addItem}>+ Add Row</button>
                 </div>
                 <table className="li-table">
-                  <thead><tr><th>Item</th><th style={{ width: 85, textAlign: 'center' }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90, textAlign: 'right' }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80, textAlign: 'right' }}>Amount</th><th style={{ width: 28 }}></th></tr></thead>
+                  <thead><tr><th>Item</th><th style={{ width: 95, textAlign: 'center' }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90, textAlign: 'right' }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80, textAlign: 'right' }}>Amount</th><th style={{ width: 28 }}></th></tr></thead>
                   <tbody>
                     {form.items.map((it, i) => (
                       <tr key={i}>
@@ -719,7 +719,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                           />
                         </div>
                       </td>
-                        <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 80, textAlign: 'center' }} /></td>
+                        <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 95, textAlign: 'center' }} /></td>
                       <td>
                         <select className="li-input" value={it.unit || 'Nos'} onChange={e => updateItem(i, 'unit', e.target.value)}>
                           {(profile?.productUnits || ['Nos', 'Kgs', 'Ltrs', 'Mtrs', 'Pkt', 'Box', 'Set']).map(u => <option key={u}>{u}</option>)}

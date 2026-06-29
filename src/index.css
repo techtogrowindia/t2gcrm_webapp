@@ -230,6 +230,10 @@ tr:hover td { background: #f8faf9; }
 }
 .fg input:focus, .fg select:focus, .fg textarea:focus { border-color: var(--accent); }
 .fg textarea { resize: vertical; min-height: 72px; }
+/* Auto-grow every textarea to fit its content while editing, so long values
+   (addresses, terms, notes) are fully visible without scrolling. field-sizing
+   is progressive (Chromium 123+); min-height + resize:vertical is the fallback. */
+textarea { field-sizing: content; max-height: 55vh; }
 .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .span2 { grid-column: 1/-1; }
 
