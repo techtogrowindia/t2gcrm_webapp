@@ -122,7 +122,7 @@ export default async function handler(req, res) {
         if (fMs < nowMs) {
           overdue++;
           if (overdueReminders.length < 50) {
-            overdueReminders.push({ id: l.id, name: l.name });
+            overdueReminders.push({ id: l.id, name: l.name, followup: fMs });
           }
         }
         followupLeads.push({
@@ -173,7 +173,13 @@ export default async function handler(req, res) {
     followupLeads.sort((a, b) => b.followup - a.followup);
     const cappedFollowups = followupLeads.slice(0, 2000);
 
-    const sourceCountsArr = [...sourceCounts.entries()].sort((a, b) => b[1] - a[1]);
+    // Sort by count desc, then alphabetically as tiebreaker so order is
+    // identical regardless of whether leads came from InstantDB or Postgres.
+    const sourceCountsArr = [...sourceCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+    // Most-overdue first (earliest followup date); tiebreak by name.
+    overdueReminders.sort((a, b) => a.followup - b.followup || a.name.localeCompare(b.name));
 
     return res.status(200).json({
       totals: {
