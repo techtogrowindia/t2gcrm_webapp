@@ -534,8 +534,8 @@ export default function Quotations({ user, perms, ownerId, settings }) {
 
       {/* MODAL */}
       {modal && (
-        <div className="mo open">
-          <div className="mo-box wide">
+        <div className="mo open fullpage">
+          <div className="mo-box wide fullpage">
             <div className="mo-head">
               <h3>{editData ? 'Edit Quotation' : 'Create Quotation'}</h3>
               <button className="btn-icon" onClick={() => setModal(false)}>✕</button>
