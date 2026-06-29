@@ -10,13 +10,13 @@ import { EMPTY_CUSTOMER } from '../../utils/constants';
 import { logActivity } from '../../utils/activityLogger';
 import { fireAutoNotifications } from '../../utils/messaging';
 
-const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', disc: 0, adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
+const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
 
-function calcTotals(items, disc, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
+function calcTotals(items, disc, discType, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
   const its = Array.isArray(items) ? items : (items ? JSON.parse(items) : []);
   const sub = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0), 0);
   const taxTotal = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0) * (it.taxRate || 0) / 100, 0);
-  const discAmt = sub * (disc || 0) / 100;
+  const discAmt = discType === '₹' ? (parseFloat(disc) || 0) : sub * (parseFloat(disc) || 0) / 100;
   const tdsAmt = (sub - discAmt) * (tdsRate || 0) / 100;
   const deliveryAmt = parseFloat(delivery) || 0;
   const deliveryTax = deliveryAmt * (parseFloat(deliveryTaxRate) || 0) / 100;
@@ -112,7 +112,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
 
   useEffect(() => { setCurrentPage(1); }, [tab, search]);
 
-  const tots = calcTotals(form.items, form.disc, form.tdsRate, form.adj, form.deliveryCharge, form.deliveryTaxRate);
+  const tots = calcTotals(form.items, form.disc, form.discType, form.tdsRate, form.adj, form.deliveryCharge, form.deliveryTaxRate);
   const curSym = currencySymbol(form.currency || 'INR');
 
   const openCreate = () => {
@@ -136,7 +136,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     
     setForm({ 
       no: q.no || '', client: q.client, validUntil: q.validUntil || '', status: q.status, 
-      notes: q.notes || '', terms: q.terms || '', disc: q.disc || 0, adj: q.adj || 0, tdsRate: q.tdsRate || 0, 
+      notes: q.notes || '', terms: q.terms || '', disc: q.disc || 0, discType: q.discType || '%', adj: q.adj || 0, tdsRate: q.tdsRate || 0,
       items: normalizedItems.length ? normalizedItems : EMPTY.items, 
       isAmc: !!q.amcStart || !!q.isAmc, 
       amcCycle: q.amcCycle || 'Yearly', 
@@ -753,14 +753,17 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                     </select>
                   </div>
                   <div className="total-row"><span style={{ color: 'var(--muted)' }}>Sub Total</span><span style={{ fontWeight: 700 }}>{fmt(tots.sub, form.currency)}</span></div>
-                  <div className="total-row">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ color: 'var(--muted)', fontSize: 12 }}>Discount</span>
-                      <input type="number" value={form.disc} onChange={e => setForm(p => ({ ...p, disc: parseFloat(e.target.value) || 0 }))} style={{ width: 50, padding: '2px 5px', border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 12, fontFamily: 'inherit', outline: 'none' }} />
-                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>%</span>
-                    </div>
-                    <span style={{ color: '#dc2626', fontSize: 12 }}>- {fmt(tots.discAmt, form.currency)}</span>
+                  <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--muted)', fontSize: 13, marginRight: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      Discount
+                      <select value={form.discType} onChange={e => setForm(p => ({ ...p, discType: e.target.value, disc: 0 }))} style={{ border: '1px solid var(--border)', background: '#fff', borderRadius: 4, padding: '2px', fontSize: 11, cursor: 'pointer' }}>
+                        <option value="%">%</option>
+                        <option value={curSym}>{curSym}</option>
+                      </select>
+                    </span>
+                    <input type="number" value={form.disc} onChange={e => setForm(p => ({ ...p, disc: parseFloat(e.target.value) || 0 }))} style={{ width: 80, padding: 4, textAlign: 'right', border: '1px solid var(--border)', borderRadius: 4 }} placeholder="0" />
                   </div>
+                  {(tots.discAmt > 0 && form.discType === '%') && <div className="total-row"><span style={{ color: 'var(--muted)' }}>Discount Amount</span><span style={{ color: '#dc2626' }}>- {fmt(tots.discAmt, form.currency)}</span></div>}
                   {(() => {
                     const clientMatchForm = customers.find(c => c.name === form.client);
                     const isInterStateForm = profile?.bizState && clientMatchForm?.state && profile.bizState !== clientMatchForm.state;
