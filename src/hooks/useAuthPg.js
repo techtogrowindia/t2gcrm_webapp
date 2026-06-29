@@ -13,6 +13,7 @@
 // If expired/invalid: clears localStorage, returns user=null.
 // ===================================================================
 import { useState, useEffect, useCallback } from 'react';
+import { pgPreWarm, pgCacheClear } from './pgCache';
 
 const TOKEN_KEY  = 'pg_auth_token';
 const PROFILE_KEY = 'pg_auth_profile';
@@ -25,6 +26,7 @@ export function useAuthPg() {
   const clearAuth = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(PROFILE_KEY);
+    pgCacheClear();
     setUser(null);
   }, []);
 
@@ -91,7 +93,7 @@ export function useAuthPg() {
 
 // ── Helpers called from AuthScreen ────────────────────────────────
 
-/** Store token + profile after successful login. */
+/** Store token + profile after successful login. Triggers background pre-warm. */
 export function pgAuthSetSession(data) {
   localStorage.setItem(TOKEN_KEY, data.token);
   const profile = {
@@ -106,12 +108,16 @@ export function pgAuthSetSession(data) {
     isPartner: data.isPartner,
   };
   localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  // Pre-warm hot collections in background so first page navigations are instant.
+  // Fire-and-forget — failure silently falls back to normal per-page fetches.
+  pgPreWarm(data.token).catch(() => {});
 }
 
-/** Sign out — clears all pg auth keys. */
+/** Sign out — clears auth keys and query cache (no stale tenant data left in browser). */
 export function pgAuthSignOut() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(PROFILE_KEY);
+  pgCacheClear();
 }
 
 /** Get the stored JWT (for API calls that need Authorization header). */

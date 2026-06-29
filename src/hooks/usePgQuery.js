@@ -4,42 +4,71 @@
 // Drop-in-ish replacement for db.useQuery({ customers: {...}, invoices: {...} }).
 // Returns { data: { customers: [...], invoices: [...] }, isLoading, refetch }.
 //
-// Difference from db.useQuery: NOT real-time. Fetches once on mount and
-// whenever the collection list changes. Call refetch() after a write
-// (refetch-after-mutation) to reflect changes.
+// Difference from db.useQuery: NOT real-time. Uses stale-while-revalidate
+// (SWR) caching via pgCache.js:
+//   - Cache hit  → paint instantly (isLoading:false), then revalidate silently.
+//   - Cache miss → fetch from DB, show spinner, cache result.
+//   - After any write (dbWrite dispatches 'pg-data-changed') → cache cleared,
+//     active queries refetch. Edits always show fresh data — never stale.
+//   - Login pre-warms hot collections (pgPreWarm in useAuthPg) so first
+//     navigation to common pages is instant too.
+//   - Cache cleared on logout (pgCacheClear in pgAuthSignOut).
 //
 // Usage:
 //   const { data, isLoading, refetch } = usePgQuery(['customers', 'invoices']);
 //   const customers = data?.customers || [];
-//   ...
-//   await dbWrite(dbOp.update('customers', id, payload));
-//   refetch();   // re-pull so the new customer shows
 //
 // When VITE_USE_PG_DATA is unset/false, callers should keep using db.useQuery
 // directly — this hook is only wired up in migrated components.
 // ===================================================================
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { pgAuthGetToken } from './useAuthPg';
+import { pgCacheGet, pgCacheSet, pgCacheClear } from './pgCache';
 
 export function usePgQuery(spec) {
-  const [data, setData] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  // spec is either an array of names (['customers']) or an object with
-  // optional where filters ({ activityLogs: { where: { entityId: x } } }).
-  // Build a stable JSON key so the effect re-runs only when it changes.
+  // Build a stable query object from spec (array of names or object with filters)
   const queries = Array.isArray(spec)
     ? Object.fromEntries((spec || []).map(c => [c, {}]))
     : (spec || {});
   const key = JSON.stringify(queries);
   const mounted = useRef(true);
 
-  const fetchData = useCallback(async () => {
+  // Lazy initial state — if cached, start with data immediately (no spinner flash)
+  const [data, setData] = useState(() => {
+    if (!Object.keys(queries).length) return {};
+    return pgCacheGet(queries) ?? null;
+  });
+  const [isLoading, setIsLoading] = useState(() => {
+    if (!Object.keys(queries).length) return false;
+    return pgCacheGet(queries) === null;
+  });
+  const [error, setError] = useState(null);
+
+  /**
+   * Fetch from Postgres.
+   * revalidate=false (default): check cache first, serve stale, then revalidate.
+   * revalidate=true: skip cache — used for background refresh and post-write refetch.
+   */
+  const fetchData = useCallback(async (revalidate = false) => {
     const q = JSON.parse(key);
     if (!Object.keys(q).length) { setData({}); setIsLoading(false); return; }
+
+    // SWR: serve stale immediately, revalidate in background
+    if (!revalidate) {
+      const cached = pgCacheGet(q);
+      if (cached) {
+        if (mounted.current) { setData(cached); setIsLoading(false); }
+        // Background revalidation — keep data fresh without blocking render
+        if (mounted.current) fetchData(true);
+        return;
+      }
+    }
+
     const token = pgAuthGetToken();
-    if (!token) { setError(new Error('Not authenticated')); setIsLoading(false); return; }
+    if (!token) {
+      if (mounted.current) { setError(new Error('Not authenticated')); setIsLoading(false); }
+      return;
+    }
     try {
       const res = await fetch('/api/data-pg', {
         method: 'POST',
@@ -48,24 +77,27 @@ export function usePgQuery(spec) {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Query failed');
-      if (mounted.current) { setData(json.data); setError(null); }
+      if (mounted.current) {
+        pgCacheSet(q, json.data);
+        setData(json.data);
+        setError(null);
+        setIsLoading(false);
+      }
     } catch (e) {
-      if (mounted.current) setError(e);
-    } finally {
-      if (mounted.current) setIsLoading(false);
+      if (mounted.current) { setError(e); setIsLoading(false); }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   useEffect(() => {
     mounted.current = true;
-    setIsLoading(true);
-    fetchData();
-    // Refetch on any write (dbWrite dispatches 'pg-data-changed') so the UI
-    // reflects mutations without per-component refetch calls.
-    const onChange = () => fetchData();
-    window.addEventListener('pg-data-changed', onChange);
-    return () => { mounted.current = false; window.removeEventListener('pg-data-changed', onChange); };
+    fetchData(); // SWR: serves from cache or fetches; either way sets isLoading=false fast
+
+    // Write listener: clear cache then refetch fresh — ensures edits always
+    // show the saved value, never stale cached data.
+    const onWrite = () => { pgCacheClear(); fetchData(true); };
+    window.addEventListener('pg-data-changed', onWrite);
+    return () => { mounted.current = false; window.removeEventListener('pg-data-changed', onWrite); };
   }, [fetchData]);
 
   return { data, isLoading, error, refetch: fetchData };
