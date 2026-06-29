@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://crm.t2gcrm.in/sitemap.xml
