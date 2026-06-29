@@ -61,7 +61,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     return data?.invoices || [];
   }, [data?.invoices]);
 
-  const products = data?.products || [];
+  const products = (data?.products || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const customers = data?.customers || [];
   const team = data?.teamMembers || [];
 
