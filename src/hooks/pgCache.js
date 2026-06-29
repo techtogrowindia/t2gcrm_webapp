@@ -116,6 +116,7 @@ export async function pgPreWarm(token) {
   const HOT = [
     'customers', 'products', 'invoices', 'quotes', 'amc',
     'teamMembers', 'vendors', 'expenses', 'projects', 'tasks',
+    'userProfiles', 'partnerCommissions', 'partnerApplications',
   ];
 
   // Skip if every collection is already cached
