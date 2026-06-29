@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useData } from '../../hooks/useData';
@@ -51,19 +51,43 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const { data, isLoading, refetch } = useData({
     invoices: { $: { where: { userId: ownerId } } },
     products: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId }, limit: 10000 } },
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId } } },
     partnerCommissions: { $: { where: { userId: ownerId } } },
-  }, ['invoices', 'products', 'customers', 'userProfiles', 'teamMembers', 'partnerApplications', 'partnerCommissions']);
+  }, ['invoices', 'products', 'userProfiles', 'teamMembers', 'partnerApplications', 'partnerCommissions']);
   const invoices = useMemo(() => {
     return data?.invoices || [];
   }, [data?.invoices]);
 
   const products = (data?.products || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  const customers = data?.customers || [];
   const team = data?.teamMembers || [];
+
+  // Customers loaded lazily when the form/print view opens — avoids a 10k-row
+  // real-time subscription on every Invoices page open.
+  const [modalCustomers, setModalCustomers] = useState([]);
+  const custFetchRef = useRef(false);
+  const fetchModalCustomers = async () => {
+    if (custFetchRef.current) return;
+    custFetchRef.current = true;
+    try {
+      if (USE_PG_DATA) {
+        const token = localStorage.getItem('pg_auth_token');
+        const res = await fetch('/api/data-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'query', queries: { customers: {} } }),
+        });
+        const json = await res.json();
+        setModalCustomers(json.data?.customers || []);
+      } else {
+        const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
+        setModalCustomers(result.customers || []);
+      }
+    } catch(e) { custFetchRef.current = false; }
+  };
+  const customers = modalCustomers;
+  useEffect(() => { if (modal || printing) fetchModalCustomers(); }, [!!modal, !!printing]);
 
   const [modalLeads, setModalLeads] = useState([]);
   const fetchModalLeads = async () => {
@@ -609,8 +633,10 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (!newCustForm.name.trim()) return toast('Name required', 'error');
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
-    await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
-    setForm(p => ({ ...p, client: newCustForm.name.trim(), distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
+    const newCustData = { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() };
+    await dbWrite(dbOp.update('customers', newId, newCustData));
+    setModalCustomers(prev => [...prev, { ...newCustData, id: newId }]);
+    setForm(p => ({ ...p, client: newCustData.name, distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);
     toast('Customer created!', 'success');

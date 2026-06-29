@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
@@ -45,7 +45,6 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   const { data, isLoading } = db.useQuery({
     quotes: { $: { where: { userId: ownerId } } },
     products: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId }, limit: 10000 } },
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId, status: 'Approved' } } },
@@ -55,8 +54,20 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   }, [data?.quotes]);
 
   const products = (data?.products || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  const customers = data?.customers || [];
   const team = data?.teamMembers || [];
+
+  const [modalCustomers, setModalCustomers] = useState([]);
+  const custFetchRef = useRef(false);
+  const fetchModalCustomers = async () => {
+    if (custFetchRef.current) return;
+    custFetchRef.current = true;
+    try {
+      const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
+      setModalCustomers(result.customers || []);
+    } catch(e) { custFetchRef.current = false; }
+  };
+  const customers = modalCustomers;
+  useEffect(() => { if (modal || printing) fetchModalCustomers(); }, [!!modal, !!printing]);
 
   const [modalLeads, setModalLeads] = useState([]);
   const fetchModalLeads = async () => {
@@ -907,8 +918,10 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                 if (!newCustForm.name.trim()) return toast('Name required', 'error');
                 if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
                 const newId = id();
-                await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), companyName: newCustForm.companyName || '', userId: ownerId, actorId: user.id, createdAt: Date.now() }));
-                setForm(p => ({ ...p, client: newCustForm.name.trim(), distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
+                const newCustData = { ...newCustForm, name: newCustForm.name.trim(), companyName: newCustForm.companyName || '', userId: ownerId, actorId: user.id, createdAt: Date.now() };
+                await dbWrite(dbOp.update('customers', newId, newCustData));
+                setModalCustomers(prev => [...prev, { ...newCustData, id: newId }]);
+                setForm(p => ({ ...p, client: newCustData.name, distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
                 setCustModal(false);
                 setNewCustForm(EMPTY_CUSTOMER);
                 toast('Customer created!', 'success');

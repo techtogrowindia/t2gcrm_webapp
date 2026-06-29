@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
@@ -41,6 +41,7 @@ export default function AMC({ user, perms, ownerId }) {
     const newId = id();
     const custPayload = { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() };
     await dbWrite(dbOp.update('customers', newId, custPayload));
+    setModalCustomers(prev => [...prev, { ...custPayload, id: newId }]);
     setForm(p => ({ ...p, client: custPayload.name, email: custPayload.email, phone: custPayload.phone }));
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);
@@ -49,8 +50,6 @@ export default function AMC({ user, perms, ownerId }) {
 
   const { data } = db.useQuery({
     amc: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId }, limit: 10000 } },
-    invoices: { $: { where: { userId: ownerId } } },
     products: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
@@ -63,8 +62,20 @@ export default function AMC({ user, perms, ownerId }) {
     return data?.amc || [];
   }, [data?.amc]);
 
-  const customers = data?.customers || [];
   const products = data?.products || [];
+
+  const [modalCustomers, setModalCustomers] = useState([]);
+  const custFetchRef = useRef(false);
+  const fetchModalCustomers = async () => {
+    if (custFetchRef.current) return;
+    custFetchRef.current = true;
+    try {
+      const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
+      setModalCustomers(result.customers || []);
+    } catch(e) { custFetchRef.current = false; }
+  };
+  const customers = modalCustomers;
+  useEffect(() => { if (modal || renewModal) fetchModalCustomers(); }, [!!modal, !!renewModal]);
 
   const [modalLeads, setModalLeads] = useState([]);
   const fetchModalLeads = async () => {
@@ -328,7 +339,8 @@ export default function AMC({ user, perms, ownerId }) {
 
     // Auto-generate Invoice if enabled
     if (renewForm.genInvoice) {
-      const invoiceCount = (data?.invoices || []).length;
+      const { invoices: invAll } = await db.queryOnce({ invoices: { $: { where: { userId: ownerId } } } });
+      const invoiceCount = (invAll || []).length;
       const invoiceNo = `INV/${new Date().getFullYear()}/${String(invoiceCount + 1).padStart(3, '0')}`;
       
       const invoicePayload = {
@@ -423,8 +435,9 @@ export default function AMC({ user, perms, ownerId }) {
   const handleGenerateInvoice = async (a) => {
     if (!perms?.can('Invoices', 'create')) { toast('Permission denied: cannot create invoices', 'error'); return; }
     if (!confirm(`Generate Draft Invoice for ${a.client} (₹${a.amount})?`)) return;
-    
-    const invoiceCount = (data?.invoices || []).length;
+
+    const { invoices: invAll } = await db.queryOnce({ invoices: { $: { where: { userId: ownerId } } } });
+    const invoiceCount = (invAll || []).length;
     const no = `INV/${new Date().getFullYear()}/${String(invoiceCount + 1).padStart(3, '0')}`;
 
     const invoicePayload = {

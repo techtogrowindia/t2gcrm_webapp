@@ -15,7 +15,6 @@ export default function POSBilling({ user, perms, ownerId, settings }) {
   // fast initial load; custSearch fetches more via the filteredCustomers memo.
   const { data } = db.useQuery({
     products:     { $: { where: { userId: ownerId } } },
-    customers:    { $: { where: { userId: ownerId }, limit: 200 } },
     userProfiles: { $: { where: { userId: ownerId } } },
   });
   const profile = data?.userProfiles?.[0] || {};
@@ -34,9 +33,21 @@ export default function POSBilling({ user, perms, ownerId, settings }) {
   const [showCartMobile, setShowCartMobile] = useState(false);
   const [newCustForm, setNewCustForm] = useState(EMPTY_CUSTOMER);
 
+  // Customers loaded lazily on first search focus — no subscription needed for POS
+  const [custList, setCustList] = useState([]);
+  const custFetchRef = useRef(false);
+  const fetchCustomers = async () => {
+    if (custFetchRef.current) return;
+    custFetchRef.current = true;
+    try {
+      const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
+      setCustList(result.customers || []);
+    } catch(e) { custFetchRef.current = false; }
+  };
+
   // 3. Derived Data
   const products = data?.products || [];
-  const customers = data?.customers || [];
+  const customers = custList;
   const customFields = profile.customFields || [];
 
   // 4. Memos
@@ -279,7 +290,7 @@ export default function POSBilling({ user, perms, ownerId, settings }) {
                       <input 
                         value={custSearch} 
                         onChange={e => { setCustSearch(e.target.value); setShowCustList(true); }} 
-                        onFocus={() => setShowCustList(true)}
+                        onFocus={() => { setShowCustList(true); fetchCustomers(); }}
                         placeholder="Search name or phone..." 
                         style={{ flex: 1 }}
                       />
