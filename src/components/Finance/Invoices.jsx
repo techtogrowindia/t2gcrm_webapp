@@ -87,7 +87,9 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     } catch(e) { custFetchRef.current = false; }
   };
   const customers = modalCustomers;
-  useEffect(() => { if (modal || printing) fetchModalCustomers(); }, [!!modal, !!printing]);
+  // Fetch when any view that needs customer lookup opens: create/edit form,
+  // print view, or the payment modal (payment_received WA notif needs the phone).
+  useEffect(() => { if (modal || printing || payModal) fetchModalCustomers(); }, [!!modal, !!printing, !!payModal]);
 
   const [modalLeads, setModalLeads] = useState([]);
   const fetchModalLeads = async () => {
