@@ -1,10 +1,4 @@
-import { init } from '@instantdb/admin';
-import { getLeadsForOwner } from './_leads-cache.js';
-import { readData } from './_write-ops.js';
-// USE_PG_DATA flag handled inside _leads-cache.js — no change needed here.
-
-const APP_ID = process.env.VITE_INSTANT_APP_ID;
-const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
+import { getLeadsForOwner, hasElevatedLeadsRole } from './_leads-cache.js';
 
 // POST /api/dashboard-stats
 // Server-driven dashboard aggregates — replaces the 10,000-lead subscription
@@ -70,32 +64,9 @@ export default async function handler(req, res) {
     // Team visibility — mirror /api/leads-page logic so dashboard counts match
     // the Leads page. Elevated roles (delete or viewAll on Leads) bypass the
     // teamCanSeeAllLeads toggle.
-    let hasElevatedLeads = false;
-    if (!isOwner && !teamCanSeeAllLeads && userEmail) {
-      try {
-        const db = init({ appId: APP_ID, adminToken: ADMIN_TOKEN });
-        const r = await readData(db, ownerId, {
-          teamMembers: { $: { where: { userId: ownerId, email: userEmail } } },
-          userProfiles: { $: { where: { userId: ownerId } } },
-        });
-        const tm = r.teamMembers?.[0];
-        const profile = r.userProfiles?.[0] || {};
-        const roleDef = (profile.roles || []).find(rl => rl.name === tm?.role);
-        let rolePerms = null;
-        if (roleDef) {
-          if (Array.isArray(roleDef.perms)) {
-            rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
-          } else {
-            rolePerms = roleDef.perms || {};
-          }
-        }
-        const leadsPerms = (rolePerms && rolePerms.Leads) || [];
-        hasElevatedLeads = Array.isArray(leadsPerms)
-          && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll'));
-      } catch (e) {
-        console.warn('[dashboard-stats] role lookup failed', e?.message);
-      }
-    }
+    const hasElevatedLeads = (!isOwner && !teamCanSeeAllLeads && userEmail)
+      ? await hasElevatedLeadsRole(ownerId, userEmail)
+      : false;
     if (!isOwner && !teamCanSeeAllLeads && !hasElevatedLeads) {
       if (teamCanSeeUnassignedLeads !== false) {
         leads = leads.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);

@@ -1,5 +1,6 @@
 import { init } from '@instantdb/admin';
 import { tenantQuery } from './db-pg.js';
+import { readData } from './_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -20,23 +21,31 @@ function getDb() {
   return _db;
 }
 
-// ── Postgres path: per-request, RLS enforced ─────────────────────
-// No in-memory cache needed — Postgres with indexes is fast enough,
-// and RLS guarantees tenant isolation even without a cache TTL.
+// ── Postgres path: shared in-memory cache ────────────────────────
+// Fetching all tenant leads (11k+ rows, ~5MB) on every request is slow.
+// Stores the FULL result set (no LIMIT) so reports still see every lead.
+// Same 15s TTL as the InstantDB path — TTL expiry only, matching prod.
+const pgCache = new Map(); // ownerId -> { leads, ts }
+const PG_TTL = 15 * 1000;
+
 async function getLeadsFromPg(ownerId) {
+  const hit = pgCache.get(ownerId);
+  if (hit && Date.now() - hit.ts < PG_TTL) return hit.leads;
+
   const result = await tenantQuery(
     ownerId,
     'SELECT id, doc, created_at, updated_at FROM leads ORDER BY created_at DESC'
   );
-  return result.rows.map(r => ({
+  const leads = result.rows.map(r => ({
     ...r.doc,
-    id: r.id, // id ALWAYS comes from the column — doc may not contain it
-    // Ensure timestamp fields are numbers (ms) for all downstream logic
+    id: r.id,
     createdAt:  r.doc.createdAt  ?? new Date(r.created_at).getTime(),
     updatedAt:  r.doc.updatedAt  ?? new Date(r.updated_at).getTime(),
     followup:   r.doc.followup,
     assignedAt: r.doc.assignedAt,
   }));
+  pgCache.set(ownerId, { leads, ts: Date.now() });
+  return leads;
 }
 
 export async function getLeadsForOwner(ownerId) {
@@ -55,6 +64,42 @@ export async function getLeadsForOwner(ownerId) {
 }
 
 export function invalidateLeadsCache(ownerId) {
-  if (ownerId) cache.delete(ownerId);
-  else cache.clear();
+  if (ownerId) { cache.delete(ownerId); pgCache.delete(ownerId); }
+  else { cache.clear(); pgCache.clear(); }
+}
+
+// ── Team role lookup: cached 60s to avoid a remote InstantDB call on every request ─
+// Both leads-page.js and dashboard-stats.js need this — share it here.
+const roleCache = new Map(); // `${ownerId}:${userEmail}` -> { hasElevated, ts }
+const ROLE_TTL = 60 * 1000;
+
+export async function hasElevatedLeadsRole(ownerId, userEmail) {
+  const key = `${ownerId}:${userEmail}`;
+  const hit = roleCache.get(key);
+  if (hit && Date.now() - hit.ts < ROLE_TTL) return hit.hasElevated;
+
+  try {
+    const db = getDb();
+    const r = await readData(db, ownerId, {
+      teamMembers: { $: { where: { userId: ownerId, email: userEmail } } },
+      userProfiles: { $: { where: { userId: ownerId } } },
+    });
+    const tm = r.teamMembers?.[0];
+    const profile = r.userProfiles?.[0] || {};
+    const roleDef = (profile.roles || []).find(rl => rl.name === tm?.role);
+    let rolePerms = null;
+    if (roleDef) {
+      rolePerms = Array.isArray(roleDef.perms)
+        ? Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]))
+        : (roleDef.perms || {});
+    }
+    const leadsPerms = (rolePerms && rolePerms.Leads) || [];
+    const hasElevated = Array.isArray(leadsPerms)
+      && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll'));
+    roleCache.set(key, { hasElevated, ts: Date.now() });
+    return hasElevated;
+  } catch (e) {
+    console.warn('[leads-cache] role lookup failed', e?.message);
+    return false;
+  }
 }
