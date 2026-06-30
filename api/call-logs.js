@@ -3,6 +3,7 @@ import { init, tx, id } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getCallLogsForOwner, invalidateCallLogsCache } from './_call-logs-cache.js';
 import { opU, opD, runOps, readData } from './_write-ops.js';
+import { rollupRepeatAttempts } from './_shared-call-logs.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -169,6 +170,15 @@ export default async function handler(req, res) {
         const t = Math.max(l.createdAt || 0, l.updatedAt || 0);
         return t > since;
       });
+
+      // Repeat-attempt rollup so the mobile list matches the web Call Logs page
+      // (consecutive unpicked re-dials to one number collapse into a single row
+      // with attemptCount/groupedIds). Default ON; pass ?rollup=false to opt out.
+      // Rollup needs newest-first ordering — sort before grouping.
+      logs = logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      if (params.rollup !== 'false') {
+        logs = rollupRepeatAttempts(logs);
+      }
 
       // Enrich with lead info
       const leadMap = Object.fromEntries((leads || []).map(l => [l.phone?.replace(/\D/g, ''), l]));

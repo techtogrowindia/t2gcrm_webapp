@@ -1,10 +1,9 @@
 import { getCallLogsForOwner } from './_call-logs-cache.js';
 import { getLeadsForOwner } from './_leads-cache.js';
+import { rollupRepeatAttempts, normalizePhone } from './_shared-call-logs.js';
 
-// Repeat-attempt rollup constants — mirror src/components/CallLogs/CallLogs.jsx
-const REPEAT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
-const isUnpickedCall = (l) => !l.duration || Number(l.duration) === 0;
-const normalize = (p) => p ? String(p).replace(/\D/g, '').slice(-10) : '';
+// Local alias kept for the existing phone-group code below.
+const normalize = normalizePhone;
 
 // POST /api/call-logs-page
 // Server-driven list + counts + team summary for the Call Logs page.
@@ -140,38 +139,8 @@ export default async function handler(req, res) {
       }
       grouped.sort((a, b) => (b.lastAttemptAt || 0) - (a.lastAttemptAt || 0));
     } else if (groupRepeats) {
-      grouped = [];
-      let i = 0;
-      while (i < filtered.length) {
-        const log = filtered[i];
-        if (!isUnpickedCall(log)) { grouped.push(log); i++; continue; }
-        const phone = normalize(log.phone);
-        const group = [log];
-        let j = i + 1;
-        while (j < filtered.length) {
-          const next = filtered[j];
-          if (!isUnpickedCall(next)) break;
-          if (normalize(next.phone) !== phone) break;
-          if ((next.staffEmail || '') !== (log.staffEmail || '')) break;
-          if ((next.direction || '') !== (log.direction || '')) break;
-          const last = group[group.length - 1];
-          if (Math.abs((last.createdAt || 0) - (next.createdAt || 0)) > REPEAT_GROUP_WINDOW_MS) break;
-          group.push(next);
-          j++;
-        }
-        if (group.length === 1) {
-          grouped.push(log);
-        } else {
-          grouped.push({
-            ...log,
-            attemptCount: group.length,
-            firstAttemptAt: Math.min(...group.map(g => g.createdAt || 0)),
-            lastAttemptAt: Math.max(...group.map(g => g.createdAt || 0)),
-            groupedIds: group.map(g => g.id),
-          });
-        }
-        i = j;
-      }
+      // filtered is already sorted newest-first (line above) — required by rollup.
+      grouped = rollupRepeatAttempts(filtered);
     } else {
       grouped = filtered;
     }

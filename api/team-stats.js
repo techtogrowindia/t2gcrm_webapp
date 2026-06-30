@@ -1,6 +1,7 @@
 import { init } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getCallLogsForOwner } from './_call-logs-cache.js';
+import { rollupRepeatAttempts } from './_shared-call-logs.js';
 import { readData } from './_write-ops.js';
 import { tenantQuery } from './db-pg.js';
 
@@ -168,7 +169,13 @@ export default async function handler(req, res) {
       );
       const stageChanges = userLogs.filter(l => isTypeLog(l, 'lead') && l.action === 'stage-change').length;
       const otherWorks = userLogs.filter(l => !knownTypes.has(l.entityType)).length;
-      const callsMade = callsInRange.filter(cl => isCallByMember(cl, m)).length;
+      // "Calls Made" = unique conversations, matching the web Call Logs page:
+      // attribute this member's calls, then collapse repeat unpicked re-dials
+      // via the shared rollup (needs newest-first ordering).
+      const memberCalls = callsInRange
+        .filter(cl => isCallByMember(cl, m))
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      const callsMade = rollupRepeatAttempts(memberCalls).length;
 
       return {
         id: m.id,
