@@ -571,8 +571,14 @@ export default function ArchiveManager({ user }) {
             <div style={{ marginTop: 16, padding: 12, background: 'var(--bg)', borderRadius: 6, fontSize: 13 }}>
               <div><strong>{preview.count}</strong> record(s) will be deleted</div>
               <div>Total in collection for this customer: {preview.totalForOwner}</div>
+              <div style={{ marginTop: 6 }}>
+                Your filter: <strong>{fromDate || 'earliest'}</strong> → <strong>{toDate}</strong>
+              </div>
               {preview.oldestDate && (
-                <div>Date range to delete: {new Date(preview.oldestDate).toLocaleDateString()} → {new Date(preview.newestDate).toLocaleDateString()}</div>
+                <div style={{ background: '#fef9c3', padding: '4px 8px', borderRadius: 4, marginTop: 4, display: 'inline-block' }}>
+                  Actual records span: {new Date(preview.oldestDate).toLocaleDateString()} → {new Date(preview.newestDate).toLocaleDateString()}
+                  <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 6 }}>(oldest → newest in matched set)</span>
+                </div>
               )}
               {preview.breakdown && (
                 <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
