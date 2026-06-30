@@ -284,31 +284,23 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               {/* Footer Grid: Bank Details | Totals Summary */}
               <tr className="avoid-break"><td style={{ padding: '0' }}>
                 <div style={{ display: 'flex', minHeight: '150px', borderTop: '1px solid #000' }}>
-                  {/* Left Side: Bank Details + QR */}
+                  {/* Left Side: Bank Details */}
                   <div className="bank-right-border" style={{ width: '50%', padding: '20px', borderRight: '1px solid #ddd' }}>
-                    <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
-                      {profile.accHolder ? (
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: '12px', fontWeight: '800', color: '#111', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bank Details</div>
-                          <div style={{ display: 'grid', gridTemplateColumns: '110px 10px 1fr', gap: '8px', fontSize: '11px', color: '#000' }}>
-                            <span style={{ color: '#000' }}>Bank Name</span><span>:</span><strong style={{ color: '#000' }}>{profile.bankName}</strong>
-                            <span style={{ color: '#000' }}>Account Name</span><span>:</span><strong style={{ color: '#000' }}>{profile.accHolder}</strong>
-                            <span style={{ color: '#000' }}>Account No.</span><span>:</span><strong style={{ color: '#000' }}>{profile.accountNo}</strong>
-                            <span style={{ color: '#000' }}>IFSC Code</span><span>:</span><strong style={{ color: '#000' }}>{profile.ifsc}</strong>
-                            {profile.accType && <><span style={{ color: '#000' }}>Account Type</span><span>:</span><strong style={{ color: '#000' }}>{profile.accType}</strong></>}
-                            {profile.bankExtra && <><span style={{ color: '#000' }}>Branch</span><span>:</span><strong style={{ color: '#000' }}>{profile.bankExtra}</strong></>}
-                          </div>
+                    {profile.accHolder ? (
+                      <div>
+                        <div style={{ fontSize: '12px', fontWeight: '800', color: '#111', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Bank Details</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '110px 10px 1fr', gap: '8px', fontSize: '11px', color: '#000' }}>
+                          <span style={{ color: '#000' }}>Bank Name</span><span>:</span><strong style={{ color: '#000' }}>{profile.bankName}</strong>
+                          <span style={{ color: '#000' }}>Account Name</span><span>:</span><strong style={{ color: '#000' }}>{profile.accHolder}</strong>
+                          <span style={{ color: '#000' }}>Account No.</span><span>:</span><strong style={{ color: '#000' }}>{profile.accountNo}</strong>
+                          <span style={{ color: '#000' }}>IFSC Code</span><span>:</span><strong style={{ color: '#000' }}>{profile.ifsc}</strong>
+                          {profile.accType && <><span style={{ color: '#000' }}>Account Type</span><span>:</span><strong style={{ color: '#000' }}>{profile.accType}</strong></>}
+                          {profile.bankExtra && <><span style={{ color: '#000' }}>Branch</span><span>:</span><strong style={{ color: '#000' }}>{profile.bankExtra}</strong></>}
                         </div>
-                      ) : (
-                        <div style={{ color: '#aaa', fontStyle: 'italic', fontSize: '11px', flex: 1 }}>No bank details configured.</div>
-                      )}
-                      {profile.qrCode && (
-                        <div style={{ textAlign: 'center', flexShrink: 0 }}>
-                          <div style={{ fontSize: '9px', fontWeight: '700', color: '#111', marginBottom: '6px', textTransform: 'uppercase' }}>Scan to Pay</div>
-                          <img src={profile.qrCode} alt="Payment QR" style={{ width: '80px', height: '80px' }} />
-                        </div>
-                      )}
-                    </div>
+                      </div>
+                    ) : (
+                      <div style={{ color: '#aaa', fontStyle: 'italic', fontSize: '11px' }}>No bank details configured.</div>
+                    )}
                   </div>
 
                   {/* Right Side: Totals Summary */}
