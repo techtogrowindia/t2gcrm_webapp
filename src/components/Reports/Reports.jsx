@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import db from '../../instant';
 import { fmt, fmtD, INDIAN_STATES, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, stageBadgeClass, getInvoiceStatus } from '../../utils/helpers';
 
@@ -42,17 +42,31 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const { data } = db.useQuery({
     invoices: { $: { where: { userId: ownerId } } },
     expenses: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
     tasks: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
-    activityLogs: { $: { where: { userId: ownerId }, limit: 500 } },
     partnerCommissions: { $: { where: { userId: ownerId } } },
   });
 
+  // Leads fetched via server endpoint — avoids 11k-row InstantDB subscription
+  // that hangs the page. One-shot HTTP fetch; server cache makes it ~5ms warm.
+  const [leads, setLeads] = useState([]);
+  useEffect(() => {
+    if (!ownerId) return;
+    fetch('/api/leads-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, mode: 'list', pageSize: 100000, actorEmail: user.email }),
+    })
+      .then(r => r.json())
+      .then(d => setLeads((d.items || []).map(l =>
+        (l.source === 'Retailer' || l.source === 'Retailers') ? { ...l, source: 'Channel Partners' } : l
+      )))
+      .catch(() => {});
+  }, [ownerId]);
+
   const invoices = data?.invoices || [];
   const expenses = data?.expenses || [];
-  const leads = (data?.leads || []).map(l => (l.source === 'Retailer' || l.source === 'Retailers') ? { ...l, source: 'Channel Partners' } : l);
   const tasks = data?.tasks || [];
   const team = data?.teamMembers || [];
   const commissions = data?.partnerCommissions || [];
@@ -60,40 +74,52 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const isTeam = perms && !perms.isOwner;
   const canSeeAll = perms?.isAdmin || perms?.isManager || !isTeam;
 
-  const filteredInvoicesAtSource = invoices.filter(i => canSeeAll || i.actorId === user.id);
-  const filteredExpensesAtSource = expenses.filter(e => canSeeAll || e.actorId === user.id);
-  const filteredLeadsAtSource = leads.filter(l => {
-    // 1. Check permissions/assignee
-    let allowed = false;
-    if (canSeeAll) {
-      allowed = true;
-    } else {
-      const assignKey = (l.assign || '').toLowerCase().trim();
-      const userName = (perms?.name || '').toLowerCase().trim();
-      const userEmail = (user.email || '').toLowerCase().trim();
-      allowed = (assignKey && userName && assignKey === userName) || (assignKey && userEmail && assignKey === userEmail) || l.actorId === user.id;
-    }
-    if (!allowed) return false;
-
-    // 2. Filter by profile settings (leadStages & disabledStages)
+  const filteredInvoicesAtSource = useMemo(
+    () => invoices.filter(i => canSeeAll || i.actorId === user.id),
+    [invoices, canSeeAll, user.id]
+  );
+  const filteredExpensesAtSource = useMemo(
+    () => expenses.filter(e => canSeeAll || e.actorId === user.id),
+    [expenses, canSeeAll, user.id]
+  );
+  const filteredLeadsAtSource = useMemo(() => {
     const savedLeadStages = profile?.leadStages || [];
     const disabledStages = profile?.disabledStages || [];
-    
-    if (savedLeadStages.length > 0 && !savedLeadStages.includes(l.stage)) return false;
-    if (disabledStages.includes(l.stage)) return false;
+    const userName = (perms?.name || '').toLowerCase().trim();
+    const userEmail = (user.email || '').toLowerCase().trim();
+    return leads.filter(l => {
+      if (!canSeeAll) {
+        const assignKey = (l.assign || '').toLowerCase().trim();
+        const allowed = (assignKey && userName && assignKey === userName)
+          || (assignKey && userEmail && assignKey === userEmail)
+          || l.actorId === user.id;
+        if (!allowed) return false;
+      }
+      if (savedLeadStages.length > 0 && !savedLeadStages.includes(l.stage)) return false;
+      if (disabledStages.includes(l.stage)) return false;
+      return true;
+    });
+  }, [leads, canSeeAll, perms?.name, user.id, user.email, profile?.leadStages, profile?.disabledStages]);
 
-    return true;
-  });
-  const filteredTasksAtSource = tasks.filter(t => canSeeAll || t.actorId === user.id || t.assignTo === user.email || t.assignTo === perms.name);
+  const filteredTasksAtSource = useMemo(
+    () => tasks.filter(t => canSeeAll || t.actorId === user.id || t.assignTo === user.email || t.assignTo === perms?.name),
+    [tasks, canSeeAll, user.id, user.email, perms?.name]
+  );
 
-  const inRange = (dateStr) => {
+  const inRange = useCallback((dateStr) => {
     if (!dateStr) return false;
     const d = new Date(dateStr);
     return d >= new Date(fromDate) && d <= new Date(toDate + 'T23:59:59');
-  };
+  }, [fromDate, toDate]);
 
-  const filteredInv = filteredInvoicesAtSource.filter(inv => inRange(inv.date) && inv.status !== 'Draft');
-  const filteredExp = filteredExpensesAtSource.filter(e => inRange(e.date));
+  const filteredInv = useMemo(
+    () => filteredInvoicesAtSource.filter(inv => inRange(inv.date) && inv.status !== 'Draft'),
+    [filteredInvoicesAtSource, inRange]
+  );
+  const filteredExp = useMemo(
+    () => filteredExpensesAtSource.filter(e => inRange(e.date)),
+    [filteredExpensesAtSource, inRange]
+  );
 
   const getInvTax = (inv) => {
     if (typeof inv.taxAmt === 'number') return inv.taxAmt;
@@ -142,17 +168,20 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
   const wonStage = profile?.wonStage || STAGE_ORDER[STAGE_ORDER.length - 1];
   const lostStage = profile?.lostStage || 'Lost'; 
-  const stageCount = STAGE_ORDER.map(s => ({ stage: s, count: filteredLeadsAtSource.filter(l => l.stage === s).length }));
-  const maxCount = Math.max(...stageCount.map(s => s.count), 1);
+  const stageCount = useMemo(
+    () => STAGE_ORDER.map(s => ({ stage: s, count: filteredLeadsAtSource.filter(l => l.stage === s).length })),
+    [STAGE_ORDER, filteredLeadsAtSource]
+  );
+  const maxCount = useMemo(() => Math.max(...stageCount.map(s => s.count), 1), [stageCount]);
   const CHART_COLORS = ['#60a5fa', '#6ee7b7', '#fde68a', '#c4b5fd', '#86efac', '#fca5a5'];
 
   // Team performance
-  const teamPerf = team.map(m => ({
+  const teamPerf = useMemo(() => team.map(m => ({
     name: m.name,
     leads: filteredLeadsAtSource.filter(l => l.assign === m.name).length,
     done: filteredTasksAtSource.filter(t => t.assignTo === m.name && t.status === 'Done').length,
     tasks: filteredTasksAtSource.filter(t => t.assignTo === m.name).length,
-  }));
+  })), [team, filteredLeadsAtSource, filteredTasksAtSource]);
 
   // Lead Funnel
   const funnel = useMemo(() => {
@@ -177,13 +206,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
   // Revenue by Source
   const revBySource = useMemo(() => {
+    // O(1) lookup: build name→lead map once instead of .find() inside forEach
+    const leadByName = Object.fromEntries(filteredLeadsAtSource.map(l => [l.name, l]));
     const srcMap = {};
     filteredInv.forEach(inv => {
       const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
       const paidAmt = payments.reduce((s, p) => s + (p.amount || 0), 0);
       if (paidAmt > 0) {
-        const lead = filteredLeadsAtSource.find(l => l.name === inv.client);
-        const src = lead?.source || 'Direct/Existing';
+        const src = leadByName[inv.client]?.source || 'Direct/Existing';
         srcMap[src] = (srcMap[src] || 0) + paidAmt;
       }
     });

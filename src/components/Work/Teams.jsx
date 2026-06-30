@@ -32,7 +32,6 @@ const MODULES = [
   { key: 'Attendance', actions: ['list', 'create', 'edit', 'delete'] },
   { key: 'MessagingLogs', actions: ['list'] },
   { key: 'Distributors', actions: ['list', 'create', 'edit', 'delete'] },
-  { key: 'Settings', actions: ['view'] },
 ];
 
 const ALL_ACTIONS = ['list', 'view', 'create', 'edit', 'delete'];
@@ -62,7 +61,6 @@ const MODULE_TO_PLAN_KEY = {
   Attendance: 'attendance',
   MessagingLogs: 'messagingLogs',
   Distributors: 'distributors',
-  Settings: null,         // Always shown
 };
 
 const DEFAULT_ROLES = [
