@@ -99,12 +99,15 @@ async function execOp(op, tenantId) {
   const { action, collection, id, data } = op;
 
   // userProfiles -> accounts: partial SHALLOW-MERGE into doc (matches
-  // InstantDB's top-level merge). Always scoped to the JWT tenant.
+  // InstantDB's top-level merge). Use op.id as the target account row so
+  // the admin panel can update other tenants; fallback to tenantId for
+  // self-updates (Settings page) where id equals ownerId anyway.
   if (collection === 'userProfiles') {
     if (action === 'delete') return [];
+    const targetId = id || tenantId;
     return [{
       sql: `UPDATE accounts SET doc = doc || $1::jsonb, updated_at = now() WHERE id = $2`,
-      params: [JSON.stringify(data || {}), tenantId],
+      params: [JSON.stringify(data || {}), targetId],
     }];
   }
   // globalSettings -> global_settings: partial merge (single platform row)

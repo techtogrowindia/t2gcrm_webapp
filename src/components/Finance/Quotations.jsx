@@ -241,7 +241,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     // Handle AMC contract creation
     if (form.isAmc && form.amcStart && form.amcEnd) {
       const amcId = id();
-      txs.push(dbOp.update('amcs', amcId, {
+      txs.push(dbOp.update('amc', amcId, {
         id: amcId,
         userId: ownerId,
         actorId: user.id,

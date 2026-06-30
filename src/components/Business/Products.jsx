@@ -106,7 +106,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
 
       (amcs || []).filter(a => !a.productId).forEach(a => {
         const p = productsByName[a.plan];
-        if (p) txs.push(dbOp.update('amcs', a.id, { productId: p.id, sku: p.code }));
+        if (p) txs.push(dbOp.update('amc', a.id, { productId: p.id, sku: p.code }));
       });
       (invoices || []).forEach(inv => {
         const rawItems = Array.isArray(inv.items) ? inv.items : JSON.parse(inv.items || '[]');
