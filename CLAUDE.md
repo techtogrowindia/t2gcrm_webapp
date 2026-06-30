@@ -487,6 +487,16 @@ window.__INSTANT_DEBUG__ = true # InstantDB query debug
 Object.keys(localStorage).forEach(k => console.log(k, localStorage.getItem(k)))
 ```
 
+## Landing Page (t2g-landing)
+
+**Separate project** at `C:\Users\Gokul\Projects\t2g-landing` — completely independent from the CRM repo. No build step, no framework, no package.json.
+
+- **Files:** `index.html` (all markup) + `styles.css` (all styles)
+- **Preview:** configured in `.claude/launch.json` as `"landing"` — runs `npx http-server` on port 4187. Start with `preview_start("landing")`.
+- **CSS variables:** `--accent:#22c55e`, `--accent2:#16a34a`, `--accent-dark:#15803d`, `--border:#e2e8e4`
+- **Button classes:** `.btn-primary` (solid green fill) · `.btn-ghost` (transparent, outline only) · `.btn-white` · `.btn-outline-white`
+- **No git remote configured** in this folder — edits are local only unless pushed separately.
+
 ## Known Limitations
 - No test suite (manual QA)
 - No TypeScript
