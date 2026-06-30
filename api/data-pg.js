@@ -148,11 +148,13 @@ async function execOp(op, tenantId) {
 // filters (e.g. { in: [...] }) and userId/ownerId keys are dropped — the caller
 // filters the returned rows in JS, same as before. Cross-tenant lookups (e.g.
 // auth by email) are NOT supported here — those stay on InstantDB.
-export async function pgRead(tenantId, querySpec) {
+export async function pgRead(tenantId, querySpec, { isSuperadmin = false } = {}) {
   const out = {};
   for (const [coll, cfg] of Object.entries(querySpec || {})) {
     if (coll === 'userProfiles') {
-      const r = await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
+      const r = isSuperadmin
+        ? await rawQuery('SELECT id, doc FROM accounts')
+        : await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
       out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id, userId: row.id }));
       continue;
     }
@@ -236,16 +238,18 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   // Verify JWT — tenantId is never trusted from the body
-  let tenantId;
+  let tenantId, callerEmail;
   try {
     const auth = req.headers.authorization || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
     const payload = verifyJwt(token);
     tenantId = payload.tenantId;
+    callerEmail = (payload.email || '').toLowerCase();
     if (!tenantId) throw new Error('No tenantId in token');
   } catch (e) {
     return res.status(401).json({ error: `Unauthorized: ${e.message}` });
   }
+  const isSuperadmin = callerEmail === 'santhanam.gokul@gmail.com';
 
   try {
     const { action, collection, id, data, ops, collections } = req.body || {};
@@ -263,7 +267,10 @@ export default async function handler(req, res) {
       for (const [coll, cfg] of Object.entries(spec)) {
         // Special non-tenant collections
         if (coll === 'userProfiles') {
-          const r = await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
+          // Superadmin needs all accounts (admin panel user list); everyone else gets their own
+          const r = isSuperadmin
+            ? await rawQuery('SELECT id, doc FROM accounts')
+            : await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
           out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id, userId: row.id }));
           continue;
         }
