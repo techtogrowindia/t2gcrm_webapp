@@ -304,9 +304,22 @@ export default async function handler(req, res) {
           if (deviceId && syncStateRecord) {
             await runOps(db, ownerId, [opU('callLogSyncState', syncStateRecord.id, { lastSyncAt: now })]);
           }
+          // Compute today's rolled-up count for the mobile counter (matches web dashboard).
+          // Client sends todayStart (ms, midnight in device's local tz) + staffEmail.
+          let todayTotal = null;
+          const reqStaffEmail = (params.staffEmail || '').toLowerCase();
+          const todayStart = Number(params.todayStart) || 0;
+          if (todayStart && reqStaffEmail) {
+            const freshLogs = await getCallLogsForOwner(ownerId);
+            const todayStaffLogs = freshLogs
+              .filter(l => (l.staffEmail || '').toLowerCase() === reqStaffEmail && (l.createdAt || 0) >= todayStart)
+              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            todayTotal = rollupRepeatAttempts(todayStaffLogs).length;
+          }
           return res.status(200).json({
             success: true, created: 0, skipped, rejectedOld,
             nextSyncFrom: deviceLastSyncedAt,
+            todayTotal,
             message: buildSyncMessage(0, skipped, rejectedOld),
           });
         }
@@ -362,12 +375,26 @@ export default async function handler(req, res) {
         // Invalidate call logs cache so next read reflects the new rows
         invalidateCallLogsCache(ownerId);
 
+        // Compute today's rolled-up count for the mobile counter (matches web dashboard).
+        // Client sends todayStart (ms, midnight in device's local tz) + staffEmail.
+        let todayTotal = null;
+        const reqStaffEmail = (accepted[0]?.staffEmail || params.staffEmail || '').toLowerCase();
+        const todayStart = Number(params.todayStart) || 0;
+        if (todayStart && reqStaffEmail) {
+          const freshLogs = await getCallLogsForOwner(ownerId);
+          const todayStaffLogs = freshLogs
+            .filter(l => (l.staffEmail || '').toLowerCase() === reqStaffEmail && (l.createdAt || 0) >= todayStart)
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          todayTotal = rollupRepeatAttempts(todayStaffLogs).length;
+        }
+
         return res.status(201).json({
           success: true,
           created: accepted.length,
           skipped,
           rejectedOld,
           nextSyncFrom: newLastSyncedAt,  // Android stores this, sends only calls after this on next sync
+          todayTotal,
           message: buildSyncMessage(accepted.length, skipped, rejectedOld),
         });
       }
