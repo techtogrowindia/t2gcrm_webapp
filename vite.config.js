@@ -49,7 +49,39 @@ const vercelApiPlugin = () => ({
     const cronInterval = setInterval(runCron, 60000);
     setTimeout(runCron, 2000); // Initial run after 2s
 
-    server.httpServer?.on('close', () => clearInterval(cronInterval));
+    // Auto-sync scheduler for integrations — runs every 5 minutes in dev
+    let integrationsRunning = false;
+    const runIntegrationsCron = async () => {
+      if (integrationsRunning) return;
+      integrationsRunning = true;
+      try {
+        const p = path.join(__dirname, 'api/cron/process-integrations.js');
+        if (fs.existsSync(p)) {
+          const module = await import('file://' + p.replace(/\\/g, '/') + '?t=' + Date.now());
+          const mockReq = { env: process.env, method: 'POST', query: {}, body: {} };
+          const mockRes = {
+            setHeader: () => {},
+            status: () => ({ json: () => {}, end: () => {} }),
+            json: () => {},
+            end: () => {},
+          };
+          await module.default(mockReq, mockRes);
+        }
+      } catch (e) {
+        if (!String(e).includes('init')) {
+          console.error('[INTEGRATIONS-CRON] Error:', e?.message || e);
+        }
+      } finally {
+        integrationsRunning = false;
+      }
+    };
+    const integrationsInterval = setInterval(runIntegrationsCron, 5 * 60 * 1000);
+    setTimeout(runIntegrationsCron, 10 * 1000);
+
+    server.httpServer?.on('close', () => {
+      clearInterval(cronInterval);
+      clearInterval(integrationsInterval);
+    });
 
     server.middlewares.use(async (req, res, next) => {
       if (req.url.startsWith('/api')) {

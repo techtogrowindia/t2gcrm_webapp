@@ -1,23 +1,30 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
-import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus } from '../../utils/helpers';
+import { useData } from '../../hooks/useData';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
+
+const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
+import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
 import DocumentTemplate from './DocumentTemplate';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
 import { fireAutoNotifications } from '../../utils/messaging';
+import { logActivity } from '../../utils/activityLogger';
 
-function calcTotals(items, disc, discType, adj) {
+function calcTotals(items, disc, discType, adj, delivery = 0, deliveryTaxRate = 0) {
   const its = Array.isArray(items) ? items : (items ? JSON.parse(items) : []);
   const sub = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0), 0);
   const taxTotal = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0) * (it.taxRate || 0) / 100, 0);
   const discAmt = discType === '₹' ? (parseFloat(disc) || 0) : (sub * (parseFloat(disc) || 0) / 100);
-  const total = Math.round(sub - discAmt + taxTotal + (parseFloat(adj) || 0));
-  return { sub, taxTotal, discAmt, total };
+  const deliveryAmt = parseFloat(delivery) || 0;
+  const deliveryTax = deliveryAmt * (parseFloat(deliveryTaxRate) || 0) / 100;
+  const total = Math.round(sub - discAmt + taxTotal + deliveryAmt + deliveryTax + (parseFloat(adj) || 0));
+  return { sub, taxTotal, discAmt, deliveryAmt, deliveryTax, total };
 }
 
-const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], assign: '', distributorId: '', retailerId: '' };
+const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
 
 export default function Invoices({ user, perms, ownerId, settings, planEnforcement }) {
   const canCreate = perms?.can('Invoices', 'create') === true;
@@ -36,29 +43,75 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const [colModal, setColModal] = useState(false);
   const [tempCols, setTempCols] = useState([]);
   const [custModal, setCustModal] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [newCustForm, setNewCustForm] = useState(EMPTY_CUSTOMER);
   const toast = useToast();
 
-  const { data, isLoading } = db.useQuery({
+  const { data, isLoading, refetch } = useData({
     invoices: { $: { where: { userId: ownerId } } },
     products: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId } } },
     partnerCommissions: { $: { where: { userId: ownerId } } },
-  });
+  }, ['invoices', 'products', 'userProfiles', 'teamMembers', 'partnerApplications', 'partnerCommissions']);
   const invoices = useMemo(() => {
     return data?.invoices || [];
   }, [data?.invoices]);
 
-  const products = data?.products || [];
-  const customers = data?.customers || [];
-  const leads = data?.leads || [];
+  const products = (data?.products || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const team = data?.teamMembers || [];
+
+  // Customers loaded lazily when the form/print view opens — avoids a 10k-row
+  // real-time subscription on every Invoices page open.
+  const [modalCustomers, setModalCustomers] = useState([]);
+  const custFetchRef = useRef(false);
+  const fetchModalCustomers = async () => {
+    if (custFetchRef.current) return;
+    custFetchRef.current = true;
+    try {
+      if (USE_PG_DATA) {
+        const token = localStorage.getItem('pg_auth_token');
+        const res = await fetch('/api/data-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'query', queries: { customers: {} } }),
+        });
+        const json = await res.json();
+        setModalCustomers(json.data?.customers || []);
+      } else {
+        const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
+        setModalCustomers(result.customers || []);
+      }
+    } catch(e) { custFetchRef.current = false; }
+  };
+  const customers = modalCustomers;
+  // Fetch when any view that needs customer lookup opens: create/edit form,
+  // print view, or the payment modal (payment_received WA notif needs the phone).
+  useEffect(() => { if (modal || printing || payModal) fetchModalCustomers(); }, [!!modal, !!printing, !!payModal]);
+
+  const [modalLeads, setModalLeads] = useState([]);
+  const fetchModalLeads = async () => {
+    if (modalLeads.length > 0) return; // already cached for this session
+    try {
+      const r = await fetch('/api/leads-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, mode: 'list', pageSize: 500, tab: 'all', page: 1, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+      });
+      const json = await r.json();
+      setModalLeads(json.items || []);
+    } catch (e) { /* silent — dropdown will be empty but save still works */ }
+  };
   const profile = data?.userProfiles?.[0] || {};
   const partnerApplications = data?.partnerApplications || [];
+  // O(1) lookup index — avoids repeated .find() inside .map()
+  const partnersById = useMemo(() => {
+    const map = {};
+    partnerApplications.forEach(p => { map[p.id] = p; });
+    return map;
+  }, [partnerApplications]);
   const partnerCommissions = data?.partnerCommissions || [];
   const wonStage = profile.wonStage || 'Won';
   const taxRates = profile.taxRates || TAX_OPTIONS;
@@ -69,7 +122,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   
   const clientOptions = useMemo(() => {
     const savedLeadStages = profile?.leadStages;
-    const filteredLeads = leads.filter(l => {
+    const filteredLeads = modalLeads.filter(l => {
       const isVisible = !savedLeadStages || savedLeadStages.length === 0 || savedLeadStages.includes(l.stage);
       return isVisible && l.stage !== wonStage;
     });
@@ -77,7 +130,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
       ...customers.map(c => ({ ...c, isLead: false, displayName: c.companyName ? `${c.companyName} (${c.name})` : c.name })),
       ...filteredLeads.map(l => ({ ...l, isLead: true, displayName: l.companyName ? `${l.companyName} (${l.name}) (Lead)` : `${l.name} (Lead)` }))
     ];
-  }, [customers, leads, profile?.leadStages, wonStage]);
+  }, [customers, modalLeads, profile?.leadStages, wonStage]);
   
   const allPossibleCols = ['Date', 'Due Date', 'Status', 'Paid Amount', 'Balance Due'];
   const savedCols = profile?.invoiceCols;
@@ -94,12 +147,25 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         const items = Array.isArray(inv.items) ? inv.items : (inv.items ? JSON.parse(inv.items) : []);
         return [inv.no, inv.client, st, inv.notes, inv.terms].some(v => (v || '').toLowerCase().includes(s)) ||
                items.some(it => (it.name || '').toLowerCase().includes(s));
-      });
+      })
+      .sort((a, b) => (b.createdAt || new Date(b.date || 0).getTime()) - (a.createdAt || new Date(a.date || 0).getTime())); // newest first
   }, [invoices, tab, search]);
-  const tots = calcTotals(form.items, form.disc, form.discType, form.adj);
 
-  const openCreate = () => { 
-    setEditData(null); 
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
+  const paginated = React.useMemo(() => {
+    if (pageSize === 'all') return filtered;
+    const start = (currentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, currentPage, pageSize]);
+
+  React.useEffect(() => { setCurrentPage(1); }, [tab, search]);
+
+  const tots = calcTotals(form.items, form.disc, form.discType, form.adj, form.deliveryCharge, form.deliveryTaxRate);
+  const curSym = currencySymbol(form.currency || 'INR');
+
+  const openCreate = () => {
+    fetchModalLeads();
+    setEditData(null);
     const nextNo = `INV/${new Date().getFullYear()}/${String(invoices.length + 1).padStart(3, '0')}`;
     const defTax = profile?.defaultTaxRate || 0;
     
@@ -108,10 +174,11 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     d.setDate(d.getDate() + 14);
     const defDue = d.toISOString().split('T')[0];
     
-    setForm({ ...EMPTY, no: nextNo, dueDate: defDue, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] }); 
+    setForm({ ...EMPTY, no: nextNo, dueDate: defDue, terms: profile?.iTerms || '', notes: profile?.iNotes || '', currency: profile?.defaultCurrency || 'INR', items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] });
     setModal(true); 
   };
   const openEdit = (inv) => {
+    fetchModalLeads();
     setEditData(inv);
     const normalizedItems = Array.isArray(inv.items) ? inv.items : (typeof inv.items === 'string' ? JSON.parse(inv.items) : []);
     const normalizedPayments = Array.isArray(inv.payments) ? inv.payments : (typeof inv.payments === 'string' ? JSON.parse(inv.payments) : []);
@@ -128,7 +195,14 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
       amcAmount: inv.amcAmount || '', 
       amcTaxRate: inv.amcTaxRate || 0,
       shipTo: inv.shipTo || '', addShipping: !!inv.shipTo, payments: normalizedPayments,
-      fromAmc: !!inv.fromAmc
+      fromAmc: !!inv.fromAmc,
+      currency: inv.currency || profile?.defaultCurrency || 'INR',
+      deliveryCharge: inv.deliveryCharge || 0,
+      deliveryTaxRate: inv.deliveryTaxRate || 0,
+      addDelivery: !!(inv.deliveryCharge && inv.deliveryCharge > 0),
+      assign: inv.assign || '',
+      distributorId: inv.distributorId || '',
+      retailerId: inv.retailerId || ''
     });
     setModal(true);
   };
@@ -167,7 +241,11 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (profile.reqShipping === 'Mandatory' && !form.shipTo?.trim()) { toast('Shipping Address is required', 'error'); return; }
     
     // Extract auto-amc trigger fields vs actual invoice fields
-    const { isAmc, amcPlan, amcAmount, amcTaxRate, amcStart, amcEnd, amcCycle, addShipping, ...invPayload } = form;
+    const { isAmc, amcPlan, amcAmount, amcTaxRate, amcStart, amcEnd, amcCycle, addShipping, addDelivery, ...invPayload } = form;
+    if (!addDelivery) {
+      invPayload.deliveryCharge = 0;
+      invPayload.deliveryTaxRate = 0;
+    }
     
     // We'll optionally attach amcStart/EndDate to the final invoice IF AND ONLY IF isAmc is indeed checked.
     if (isAmc) {
@@ -199,7 +277,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     }
     
     const invId = editData ? editData.id : id();
-    const invAction = db.tx.invoices[invId].update({ ...payload });
+    const invAction = dbOp.update('invoices', invId, { ...payload });
 
     const txs = [invAction];
 
@@ -207,7 +285,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (isAmc && amcStart && amcEnd && (!editData || !editData.amcStart)) {
       const custMatch = customers.find(c => (c.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
       const amcId = id();
-      txs.push(db.tx.amc[amcId].update({
+      txs.push(dbOp.update('amc', amcId, {
         userId: ownerId,
         actorId: user.id,
         client: form.client,
@@ -226,38 +304,38 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
 
     let isNewCustomer = false;
     const cMatchOuter = customers.find(c => (c.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase());
-    const lMatch = leads.find(l => (l.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase() && l.stage !== wonStage);
+    const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase() && l.stage !== wonStage);
     
     if (lMatch) {
       if (payload.status === 'Sent') {
-        txs.push(db.tx.leads[lMatch.id].update({ stage: 'Invoice Sent', stageChangedAt: Date.now() }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('leads', lMatch.id, { stage: 'Invoice Sent', stageChangedAt: Date.now() }));
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Invoice Sent (via Invoice)',
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       } else if (payload.status === 'Draft') {
-        txs.push(db.tx.leads[lMatch.id].update({ 
+        txs.push(dbOp.update('leads', lMatch.id, { 
            stage: 'Invoice Created',
            email: lMatch.email || payload.email || '',
            phone: lMatch.phone || payload.phone || '',
            stageChangedAt: Date.now()
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Invoice Created (via Invoice)',
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       } else if (payload.status === 'Paid' || payload.status === 'Partially Paid') {
-        txs.push(db.tx.customers[id()].update({
+        txs.push(dbOp.update('customers', id(), {
           name: lMatch.name, companyName: lMatch.companyName || '', email: lMatch.email || '', phone: lMatch.phone || '', userId: ownerId, actorId: user.id, createdAt: Date.now(),
           partnerId: lMatch.partnerId || '', distributorId: lMatch.distributorId || payload.distributorId || '', retailerId: lMatch.retailerId || payload.retailerId || ''
         }));
-        txs.push(db.tx.leads[lMatch.id].update({ 
+        txs.push(dbOp.update('leads', lMatch.id, { 
            stage: wonStage,
            email: lMatch.email || payload.email || '',
            phone: lMatch.phone || payload.phone || '',
            stageChangedAt: Date.now()
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: `Lead converted to Customer. Stage changed to ${wonStage} (via Invoice save).`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
@@ -277,12 +355,12 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (editData) {
       const existing = partnerCommissions.filter(c => c.invoiceId === invId);
       existing.forEach(c => {
-         txs.push(db.tx.partnerCommissions[c.id].delete());
+         txs.push(dbOp.delete('partnerCommissions', c.id));
       });
     }
 
     [...new Set([distId, retId, legacyPartnerId].filter(Boolean))].forEach(pId => {
-      const pApp = partnerApplications.find(a => a.id === pId);
+      const pApp = partnersById[pId];
       if (pApp && pApp.commission > 0) {
         let effectivePct = pApp.commission;
         
@@ -298,7 +376,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         }
         
         const commAmt = Math.round(tots.total * (effectivePct / 100));
-        txs.push(db.tx.partnerCommissions[id()].update({
+        txs.push(dbOp.update('partnerCommissions', id(), {
           invoiceId: invId,
           partnerId: pId,
           amount: commAmt,
@@ -323,8 +401,8 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         const pMatch = products.find(p => p.name === item.name);
         if (pMatch && pMatch.trackStock) {
           const newStock = (pMatch.stock || 0) - (item.qty || 0);
-          txs.push(db.tx.products[pMatch.id].update({ stock: newStock }));
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('products', pMatch.id, { stock: newStock }));
+          txs.push(dbOp.update('activityLogs', id(), {
             entityId: pMatch.id,
             entityType: 'product',
             text: `Stock reduced by ${item.qty} via Invoice ${payload.no}. New stock: ${newStock}`,
@@ -339,11 +417,28 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
 
     setSaving(true);
     try {
-      await db.transact(txs);
-    
+      await dbWrite(txs);
+      refetch();
+
+      // Track team activity (per-module performance)
+      const myMember = team.find(t => t.email === user.email);
+      await logActivity({
+        entityType: 'invoice',
+        entityId: invId,
+        entityName: payload.no || form.client,
+        action: editData ? 'edited' : 'created',
+        text: editData
+          ? `Edited invoice **${payload.no}** for ${form.client} (${fmt(tots.total, form.currency)})`
+          : `Created invoice **${payload.no}** for ${form.client} (${fmt(tots.total, form.currency)})`,
+        userId: ownerId,
+        user,
+        teamMemberId: myMember?.id || null,
+        meta: { amount: tots.total, status: payload.status },
+      });
+
     // Email Recipient Warning
     if (payload.status === 'Sent') {
-      const lMatch = leads.find(l => (l.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase());
+      const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase());
       const cMatch = customers.find(c => (c.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase());
       const targetEmail = lMatch?.email || cMatch?.email;
       if (!targetEmail) {
@@ -358,16 +453,20 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     // Fire WhatsApp auto-notification for new invoices
     if (!editData) {
       const cMatch = customers.find(c => (c.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
-      const lMatchNotif = leads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
+      const lMatchNotif = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
       const recipientPhone = cMatch?.phone || lMatchNotif?.phone;
       if (recipientPhone) {
         fireAutoNotifications('invoice_created', {
           client: form.client,
           phone: recipientPhone,
+          clientphoneno: recipientPhone,
+          leadphoneno: recipientPhone,
           invoiceno: payload.no,
           amount: tots.total,
           date: payload.date,
           bizName: profile?.businessName || profile?.bizName || '',
+          ownerPhone: profile?.phone || '',
+          entityId: payload.no,
         }, profile, ownerId).catch(() => {});
       }
     }
@@ -385,27 +484,22 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (!canDelete) { toast('Permission denied: cannot delete invoices', 'error'); return; }
     if (!confirm('Delete this invoice? All associated records and activity logs will be removed.')) return;
     try {
-      const res = await fetch('/api/data', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          module: 'invoices',
-          ownerId,
-          actorId: user.id,
-          userName: user.email,
-          id: iid,
-          logText: `Invoice ${invoices.find(v => v.id === iid)?.no} deleted`
-        })
-      });
-      if (!res.ok) throw new Error('Failed to delete invoice');
-      
-      // Cascade delete commission record
-      try {
-        await db.transact(db.tx.partnerCommissions[`${iid}-comm`].delete());
-      } catch (e) {
-         // Silently ignore if no commission record exists
+      if (USE_PG_DATA) {
+        await dbWrite(dbOp.delete('invoices', iid)); // cascade-deletes activity logs
+        try { await dbWrite(dbOp.delete('partnerCommissions', `${iid}-comm`)); } catch (e) {}
+        refetch();
+      } else {
+        const res = await fetch('/api/data', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            module: 'invoices', ownerId, actorId: user.id, userName: user.email,
+            id: iid, logText: `Invoice ${invoices.find(v => v.id === iid)?.no} deleted`
+          })
+        });
+        if (!res.ok) throw new Error('Failed to delete invoice');
+        try { await dbWrite(dbOp.delete('partnerCommissions', `${iid}-comm`)); } catch (e) {}
       }
-
       toast('Invoice deleted', 'error');
     } catch (e) {
       toast('Error deleting invoice', 'error');
@@ -431,7 +525,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
       }
     }
   }, [form.client, customers, editData, profile?.reqShipping]);  if (printing) {
-    const clientMatch = customers.find(c => c.name === printing.client) || leads.find(l => l.name === printing.client);
+    const clientMatch = customers.find(c => c.name === printing.client) || modalLeads.find(l => l.name === printing.client);
     const dataWithContext = {
       ...printing,
       items: (Array.isArray(printing.items) ? printing.items : JSON.parse(printing.items || '[]')).map(it => ({
@@ -475,23 +569,23 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     const totalPaid = nw.reduce((s, p) => s + p.amount, 0);
     const stat = totalPaid >= payModal.total ? 'Paid' : 'Partially Paid';
     
-    const txs = [db.tx.invoices[payModal.id].update({ payments: nw, status: stat })];
+    const txs = [dbOp.update('invoices', payModal.id, { payments: nw, status: stat })];
     let isNewCustomer = false;
     
     if (stat === 'Paid' || stat === 'Partially Paid') {
-      const lMatch = leads.find(l => (l.name || '').trim().toLowerCase() === (payModal.client || '').trim().toLowerCase() && l.stage !== wonStage);
+      const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (payModal.client || '').trim().toLowerCase() && l.stage !== wonStage);
       if (lMatch) {
-         txs.push(db.tx.customers[id()].update({
+         txs.push(dbOp.update('customers', id(), {
             name: lMatch.name, companyName: lMatch.companyName || '', email: lMatch.email || '', phone: lMatch.phone || '', userId: ownerId, actorId: user.id, createdAt: Date.now(),
             partnerId: lMatch.partnerId || payModal.distributorId || '', distributorId: lMatch.distributorId || payModal.distributorId || '', retailerId: lMatch.retailerId || payModal.retailerId || ''
          }));
-         txs.push(db.tx.leads[lMatch.id].update({ 
+         txs.push(dbOp.update('leads', lMatch.id, { 
             stage: wonStage,
             email: lMatch.email || payModal.email || '', // payModal might not have email/phone, depends on where it comes from
             phone: lMatch.phone || payModal.phone || '',
             stageChangedAt: Date.now()
          }));
-         txs.push(db.tx.activityLogs[id()].update({
+         txs.push(dbOp.update('activityLogs', id(), {
             entityId: lMatch.id, entityType: 'lead', text: `Payment received. Lead converted to Customer. Stage changed to ${wonStage} (via Invoice payment).`,
             userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
          }));
@@ -503,28 +597,33 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (stat === 'Paid') {
       const payComms = partnerCommissions.filter(c => c.invoiceId === payModal.id);
       payComms.forEach(c => {
-        txs.push(db.tx.partnerCommissions[c.id].update({
+        txs.push(dbOp.update('partnerCommissions', c.id, {
           status: 'Pending Payout',
           updatedAt: Date.now()
         }));
       });
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
+    refetch();
     toast('Payment added' + (isNewCustomer ? ' & Lead Converted!' : ''), 'success');
     
     // Fire WhatsApp auto-notification for payment received
     const cMatchPay = customers.find(c => (c.name || '').trim().toLowerCase() === (payModal.client || '').trim().toLowerCase());
-    const lMatchPay = leads.find(l => (l.name || '').trim().toLowerCase() === (payModal.client || '').trim().toLowerCase());
+    const lMatchPay = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (payModal.client || '').trim().toLowerCase());
     const payRecipientPhone = cMatchPay?.phone || lMatchPay?.phone;
     if (payRecipientPhone) {
       fireAutoNotifications('payment_received', {
         client: payModal.client,
         phone: payRecipientPhone,
+        clientphoneno: payRecipientPhone,
+        leadphoneno: payRecipientPhone,
         invoiceno: payModal.no,
         amount: parseFloat(payAmt),
         date: new Date().toISOString().split('T')[0],
         bizName: profile?.businessName || profile?.bizName || '',
+        ownerPhone: profile?.phone || '',
+        entityId: `${payModal.no}-${payAmt}`,
       }, profile, ownerId).catch(() => {});
     }
     
@@ -536,8 +635,10 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     if (!newCustForm.name.trim()) return toast('Name required', 'error');
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
-    await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
-    setForm(p => ({ ...p, client: newCustForm.name.trim(), distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
+    const newCustData = { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() };
+    await dbWrite(dbOp.update('customers', newId, newCustData));
+    setModalCustomers(prev => [...prev, { ...newCustData, id: newId }]);
+    setForm(p => ({ ...p, client: newCustData.name, distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);
     toast('Customer created!', 'success');
@@ -545,7 +646,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
 
   const saveViewConfig = async (cols) => {
     if (!perms?.isOwner) { toast('Only the business owner can change view configurations', 'error'); return; }
-    if (profile?.id) await db.transact(db.tx.userProfiles[profile.id].update({ invoiceCols: cols }));
+    if (profile?.id) await dbWrite(dbOp.update('userProfiles', profile.id, { invoiceCols: cols }));
     setColModal(false);
     toast('View saved', 'success');
   };
@@ -591,10 +692,11 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
             <tbody>
               {filtered.length === 0
                 ? <tr><td colSpan={10} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>No invoices yet</td></tr>
-                : filtered.map((inv, i) => {
+                : paginated.map((inv, i) => {
                     const payments = Array.isArray(inv.payments) ? inv.payments : (inv.payments ? JSON.parse(inv.payments) : []);
-                    const paidAmt = payments.reduce((s, p) => s + p.amount, 0);
-                    const balAmt = inv.total - paidAmt;
+                    const fromPayments = payments.reduce((s, p) => s + p.amount, 0);
+                    const paidAmt = fromPayments > 0 ? fromPayments : inv.status === 'Paid' ? (inv.total || 0) : inv.status === 'Partially Paid' ? (inv.paidAmount || 0) : 0;
+                    const balAmt = Math.max(0, (inv.total || 0) - paidAmt);
                     return (
                       <tr key={inv.id}>
                         <td style={{ color: 'var(--muted)', fontSize: 11 }}>{i + 1}</td>
@@ -611,9 +713,9 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                         {activeCols.includes('Status') && <td><span className={`badge ${stageBadgeClass(getInvoiceStatus(inv))}`}>{getInvoiceStatus(inv)}</span></td>}
                         {activeCols.includes('Date') && <td style={{ fontSize: 12 }}>{fmtD(inv.date)}</td>}
                         {activeCols.includes('Due Date') && <td style={{ fontSize: 12 }}>{fmtD(inv.dueDate)}</td>}
-                        <td style={{ fontWeight: 700 }}>{fmt(inv.total)}</td>
-                        {activeCols.includes('Paid Amount') && <td style={{ color: '#16a34a', fontWeight: 600 }}>{fmt(paidAmt)}</td>}
-                        {activeCols.includes('Balance Due') && <td style={{ color: '#dc2626', fontWeight: 600 }}>{fmt(balAmt < 0 ? 0 : balAmt)}</td>}
+                        <td style={{ fontWeight: 700 }}>{fmt(inv.total, inv.currency)}</td>
+                        {activeCols.includes('Paid Amount') && <td style={{ color: '#16a34a', fontWeight: 600 }}>{fmt(paidAmt, inv.currency)}</td>}
+                        {activeCols.includes('Balance Due') && <td style={{ color: '#dc2626', fontWeight: 600 }}>{fmt(balAmt < 0 ? 0 : balAmt, inv.currency)}</td>}
                          <td>
                            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4 }}>
                              <button className="btn btn-secondary btn-sm" onClick={() => setPrinting(inv)}>View</button>
@@ -636,11 +738,26 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
             </tbody>
           </table>
         </div>
+        {totalPages > 1 && (
+          <div style={{ padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', background: 'var(--bg-soft)', flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+              Showing <strong>{(currentPage - 1) * pageSize + 1}</strong>–<strong>{Math.min(currentPage * pageSize, filtered.length)}</strong> of <strong>{filtered.length}</strong>
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <select value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setCurrentPage(1); }} style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                {[25, 50, 100, 500].map(s => <option key={s} value={s}>{`${s} / page`}</option>)}
+              </select>
+              <button className="btn btn-secondary btn-sm" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)}>&#8249; Prev</button>
+              <span style={{ fontSize: 12 }}>Page {currentPage} / {totalPages}</span>
+              <button className="btn btn-secondary btn-sm" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)}>Next &#8250;</button>
+            </div>
+          </div>
+        )}
       </div>
 
       {modal && (
-        <div className="mo open">
-          <div className="mo-box wide">
+        <div className="mo open fullpage">
+          <div className="mo-box wide fullpage">
             <div className="mo-head"><h3>{editData ? 'Edit Invoice' : 'Create Invoice'}</h3><button className="btn-icon" onClick={() => setModal(false)}>✕</button></div>
             <div className="mo-body">
               <div className="fgrid" style={{ gridTemplateColumns: '1fr 2fr 1fr 1fr 1fr' }}>
@@ -659,7 +776,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                         value={form.client} 
                         onChange={val => {
                           // Auto-map distributor/retailer from matching lead
-                          const matchedLead = leads.find(l => (l.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
+                          const matchedLead = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
                           const matchedCust = customers.find(c => (c.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
                           setForm(p => ({ 
                             ...p, 
@@ -705,13 +822,13 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                       <SearchableSelect
                         options={[
                           { id: '', name: '-- None --' },
-                          ...partnerApplications.filter(p => p.role === 'Retailer' && (!form.distributorId || p.parentDistributorId === form.distributorId)).map(p => ({ id: p.id, name: `${p.companyName || p.name}${p.parentDistributorId ? ` (${partnerApplications.find(d => d.id === p.parentDistributorId)?.companyName || partnerApplications.find(d => d.id === p.parentDistributorId)?.name || ''})` : ''}` }))
+                          ...partnerApplications.filter(p => p.role === 'Retailer' && (!form.distributorId || p.parentDistributorId === form.distributorId)).map(p => ({ id: p.id, name: `${p.companyName || p.name}${p.parentDistributorId ? ` (${partnersById[p.parentDistributorId]?.companyName || partnersById[p.parentDistributorId]?.name || ''})` : ''}` }))
                         ]}
                         displayKey="name"
                         returnKey="id"
                         value={form.retailerId}
                         onChange={val => {
-                          const retailer = partnerApplications.find(p => p.id === val);
+                          const retailer = partnersById[val];
                           setForm(p => ({ ...p, retailerId: val, distributorId: retailer?.parentDistributorId || p.distributorId }));
                         }}
                         placeholder="Select retailer..."
@@ -772,7 +889,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                       />
                     </div>
                     <div className="fg" style={{ marginBottom: 0 }}>
-                      <label>AMC Amount (₹)</label>
+                      <label>AMC Amount ({curSym})</label>
                       <input type="number" value={form.amcAmount} onChange={e => setForm(p => ({ ...p, amcAmount: e.target.value }))} placeholder="Amount for AMC" />
                     </div>
                     <div className="fg" style={{ marginBottom: 0 }}>
@@ -799,7 +916,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                 <button className="btn btn-secondary btn-sm" onClick={() => setForm(p => ({ ...p, items: [...p.items, { name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: profile?.defaultTaxRate || 0 }] }))}>+ Add Row</button>
               </div>
               <table className="li-table">
-                <thead><tr><th>Item</th><th style={{ width: 60 }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90 }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80 }}>Amount</th><th></th></tr></thead>
+                <thead><tr><th>Item</th><th style={{ width: 95 }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90 }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80 }}>Amount</th><th></th></tr></thead>
                 <tbody>
                   {form.items.map((it, i) => (
                     <tr key={i}>
@@ -812,10 +929,10 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                             value={it.productId || it.name}
                             onChange={val => {
                               const pMatch = products.find(p => p.id === val || p.name === val);
-                              const updates = { 
-                                productId: pMatch?.id || '', 
+                              const updates = {
+                                productId: pMatch?.id || '',
                                 sku: pMatch?.code || '',
-                                name: pMatch?.name || val 
+                                name: pMatch?.name || val
                               };
                               if (pMatch) {
                                 updates.rate = pMatch.rate || 0;
@@ -823,13 +940,25 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                                 updates.unit = pMatch.unit || 'Nos';
                               }
                               const its = form.items.map((x, idx) => idx === i ? { ...x, ...updates } : x);
-                              setForm(prev => ({ ...prev, items: its }));
+                              setForm(prev => {
+                                let nextCurrency = prev.currency;
+                                if (pMatch && pMatch.currency && pMatch.currency !== prev.currency) {
+                                  const hasOtherFilled = prev.items.some((x, idx) => idx !== i && (x.name || x.rate));
+                                  if (!hasOtherFilled) {
+                                    nextCurrency = pMatch.currency;
+                                    toast(`Currency set to ${pMatch.currency} from product`, 'success');
+                                  } else {
+                                    toast(`Warning: product priced in ${pMatch.currency} but invoice is in ${prev.currency}`, 'warning');
+                                  }
+                                }
+                                return { ...prev, items: its, currency: nextCurrency };
+                              });
                             }}
                             placeholder="Select Product"
                           />
                         </div>
                       </td>
-                      <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 55, textAlign: 'center' }} /></td>
+                      <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 95, textAlign: 'center' }} /></td>
                       <td>
                         <select className="li-input" value={it.unit || 'Nos'} onChange={e => updateItem(i, 'unit', e.target.value)}>
                           {(profile?.productUnits || ['Nos', 'Kgs', 'Ltrs', 'Mtrs', 'Pkt', 'Box', 'Set']).map(u => <option key={u}>{u}</option>)}
@@ -846,41 +975,67 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 14 }}>
                 <div>
                   <div className="fg"><label>Notes</label><textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} style={{ minHeight: 55 }} /></div>
-                  <div className="fg"><label>Terms</label><textarea value={form.terms} onChange={e => setForm(p => ({ ...p, terms: e.target.value }))} style={{ minHeight: 50 }} /></div>
+                  <div className="fg"><label>Terms</label><textarea value={form.terms} onChange={e => setForm(p => ({ ...p, terms: e.target.value }))} style={{ minHeight: 120 }} /></div>
                 </div>
                 <div className="totals-box">
-                  <div className="total-row"><span style={{ color: 'var(--muted)' }}>Sub Total</span><span style={{ fontWeight: 700 }}>{fmt(tots.sub)}</span></div>
+                  <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--muted)', fontSize: 13 }}>Currency</span>
+                    <select value={form.currency || 'INR'} onChange={e => setForm(p => ({ ...p, currency: e.target.value }))} style={{ border: '1px solid var(--border)', background: '#fff', borderRadius: 4, padding: '3px 6px', fontSize: 12, cursor: 'pointer' }}>
+                      {SUPPORTED_CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.symbol} {c.code}</option>)}
+                    </select>
+                  </div>
+                  <div className="total-row"><span style={{ color: 'var(--muted)' }}>Sub Total</span><span style={{ fontWeight: 700 }}>{fmt(tots.sub, form.currency)}</span></div>
                   <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span style={{ color: 'var(--muted)', fontSize: 13, marginRight: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      Discount 
+                      Discount
                       <select value={form.discType} onChange={e => setForm(p => ({ ...p, discType: e.target.value, disc: 0 }))} style={{ border: '1px solid var(--border)', background: '#fff', borderRadius: 4, padding: '2px', fontSize: 11, cursor: 'pointer' }}>
                         <option value="%">%</option>
-                        <option value="₹">₹</option>
+                        <option value={curSym}>{curSym}</option>
                       </select>
                     </span>
                     <input type="number" value={form.disc} onChange={e => setForm(p => ({ ...p, disc: parseFloat(e.target.value) || 0 }))} style={{ width: 80, padding: 4, textAlign: 'right', border: '1px solid var(--border)', borderRadius: 4 }} placeholder="0" />
                   </div>
-                  {(tots.discAmt > 0 && form.discType === '%') && <div className="total-row"><span style={{ color: 'var(--muted)' }}>Discount Amount</span><span style={{ color: '#dc2626' }}>- {fmt(tots.discAmt)}</span></div>}
+                  {(tots.discAmt > 0 && form.discType === '%') && <div className="total-row"><span style={{ color: 'var(--muted)' }}>Discount Amount</span><span style={{ color: '#dc2626' }}>- {fmt(tots.discAmt, form.currency)}</span></div>}
                   {(() => {
                     const clientMatchForm = customers.find(c => c.name === form.client);
                     const isInterStateForm = profile?.bizState && clientMatchForm?.state && profile.bizState !== clientMatchForm.state;
                     if (tots.taxTotal > 0) {
                       return isInterStateForm ? (
-                        <div className="total-row"><span style={{ color: 'var(--muted)' }}>IGST</span><span style={{ color: '#16a34a' }}>{fmt(tots.taxTotal)}</span></div>
+                        <div className="total-row"><span style={{ color: 'var(--muted)' }}>IGST</span><span style={{ color: '#16a34a' }}>{fmt(tots.taxTotal, form.currency)}</span></div>
                       ) : (
                         <>
-                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>CGST</span><span style={{ color: '#16a34a' }}>{fmt(tots.taxTotal / 2)}</span></div>
-                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>SGST</span><span style={{ color: '#16a34a' }}>{fmt(tots.taxTotal / 2)}</span></div>
+                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>CGST</span><span style={{ color: '#16a34a' }}>{fmt(tots.taxTotal / 2, form.currency)}</span></div>
+                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>SGST</span><span style={{ color: '#16a34a' }}>{fmt(tots.taxTotal / 2, form.currency)}</span></div>
                         </>
                       );
                     }
-                    return <div className="total-row"><span style={{ color: 'var(--muted)' }}>GST</span><span style={{ color: '#16a34a' }}>{fmt(0)}</span></div>;
+                    return <div className="total-row"><span style={{ color: 'var(--muted)' }}>GST</span><span style={{ color: '#16a34a' }}>{fmt(0, form.currency)}</span></div>;
                   })()}
+                  <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <label style={{ color: 'var(--muted)', fontSize: 13, marginRight: 10, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={!!form.addDelivery} onChange={e => setForm(p => ({ ...p, addDelivery: e.target.checked, deliveryCharge: e.target.checked ? p.deliveryCharge : 0, deliveryTaxRate: e.target.checked ? p.deliveryTaxRate : 0 }))} style={{ width: 14, height: 14 }} />
+                      Delivery Charges
+                    </label>
+                    {form.addDelivery && (
+                      <input type="number" value={form.deliveryCharge} onChange={e => setForm(p => ({ ...p, deliveryCharge: parseFloat(e.target.value) || 0 }))} style={{ width: 80, padding: 4, textAlign: 'right', border: '1px solid var(--border)', borderRadius: 4 }} placeholder="0" />
+                    )}
+                  </div>
+                  {form.addDelivery && (
+                    <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--muted)', fontSize: 13, marginRight: 10 }}>Delivery Tax</span>
+                      <select value={form.deliveryTaxRate} onChange={e => setForm(p => ({ ...p, deliveryTaxRate: parseFloat(e.target.value) || 0 }))} style={{ width: 120, padding: 4, border: '1px solid var(--border)', borderRadius: 4, fontSize: 12 }}>
+                        {taxRates.map(t => <option key={t.label} value={t.rate}>{t.label}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {form.addDelivery && tots.deliveryTax > 0 && (
+                    <div className="total-row"><span style={{ color: 'var(--muted)' }}>Delivery Tax Amt</span><span style={{ color: '#16a34a' }}>{fmt(tots.deliveryTax, form.currency)}</span></div>
+                  )}
                   <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span style={{ color: 'var(--muted)', fontSize: 13, marginRight: 10 }}>Adjustment</span>
                     <input type="number" value={form.adj} onChange={e => setForm(p => ({ ...p, adj: parseFloat(e.target.value) || 0 }))} style={{ width: 80, padding: 4, textAlign: 'right', border: '1px solid var(--border)', borderRadius: 4 }} placeholder="0" />
                   </div>
-                  <div className="total-row grand"><strong style={{ fontSize: 14 }}>Total (₹)</strong><strong style={{ fontSize: 18, color: 'var(--accent2)' }}>{fmt(tots.total)}</strong></div>
+                  <div className="total-row grand"><strong style={{ fontSize: 14 }}>Total ({curSym})</strong><strong style={{ fontSize: 18, color: 'var(--accent2)' }}>{fmt(tots.total, form.currency)}</strong></div>
                 </div>
               </div>
             </div>
@@ -901,14 +1056,16 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
             <div className="mo-head"><h3>Record Payment</h3><button className="btn-icon" onClick={() => setPayModal(null)}>✕</button></div>
             <div className="mo-body" style={{ padding: 20 }}>
              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 15, fontSize: 13, background: '#f8fafc', padding: 10, borderRadius: 8 }}>
-                <span>Total: <strong>{fmt(payModal.total)}</strong></span>
+                <span>Total: <strong>{fmt(payModal.total, payModal.currency)}</strong></span>
                 {(() => {
                   const payments = Array.isArray(payModal.payments) ? payModal.payments : (payModal.payments ? JSON.parse(payModal.payments) : []);
-                  return <span>Paid: <strong style={{ color: '#16a34a' }}>{fmt(payments.reduce((s,p) => s + p.amount, 0))}</strong></span>
+                  const fromPay = payments.reduce((s,p) => s + p.amount, 0);
+                  const shownPaid = fromPay > 0 ? fromPay : payModal.status === 'Paid' ? (payModal.total || 0) : (payModal.paidAmount || 0);
+                  return <span>Paid: <strong style={{ color: '#16a34a' }}>{fmt(shownPaid, payModal.currency)}</strong></span>
                 })()}
               </div>
               <div className="fg">
-                <label>Amount (₹)</label>
+                <label>Amount ({currencySymbol(payModal.currency)})</label>
                 <input type="number" value={payAmt} onChange={e => setPayAmt(e.target.value)} placeholder="0.00" />
               </div>
             </div>
@@ -962,11 +1119,11 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                         options={[
                           { id: '', name: '-- None --' },
                           ...partnerApplications.filter(p => p.role === 'Retailer' && (!newCustForm.distributorId || p.parentDistributorId === newCustForm.distributorId))
-                            .map(p => ({ id: p.id, name: `${p.companyName || p.name}${p.parentDistributorId ? ` (${partnerApplications.find(d => d.id === p.parentDistributorId)?.companyName || partnerApplications.find(d => d.id === p.parentDistributorId)?.name || ''})` : ''}` }))
+                            .map(p => ({ id: p.id, name: `${p.companyName || p.name}${p.parentDistributorId ? ` (${partnersById[p.parentDistributorId]?.companyName || partnersById[p.parentDistributorId]?.name || ''})` : ''}` }))
                         ]}
                         displayKey="name" returnKey="id" value={newCustForm.retailerId}
                         onChange={val => {
-                          const retailer = partnerApplications.find(p => p.id === val);
+                          const retailer = partnersById[val];
                           setNewCustForm(p => ({ ...p, retailerId: val, distributorId: retailer?.parentDistributorId || p.distributorId }));
                         }}
                         placeholder="Search retailer..."

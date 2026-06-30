@@ -2,12 +2,16 @@ import React from 'react';
 import db from './instant';
 import { ToastProvider } from './context/ToastContext';
 import { AppProvider } from './context/AppContext';
+import { useAuthPg, pgAuthSignOut } from './hooks/useAuthPg';
+
+const USE_PG_AUTH = import.meta.env.VITE_USE_PG_AUTH === 'true';
 import AuthScreen from './components/Auth/AuthScreen';
 import MainApp from './components/Layout/MainApp';
 import StorePage from './components/Ecommerce/StorePage';
 import TrackingPage from './components/Ecommerce/TrackingPage';
 import BookingPage from './components/Appointments/BookingPage';
 import UserManual from './components/System/UserManual';
+import WAVariableGuide from './components/Settings/WAVariableGuide';
 import PartnerRegistration from './components/Partners/PartnerRegistration';
 import PartnerApp from './components/Partners/PartnerApp';
 
@@ -50,7 +54,12 @@ class ErrorBoundary extends React.Component {
 }
 
 function AppInner() {
-  const { isLoading, user, error } = db.useAuth();
+  // When VITE_USE_PG_AUTH=true (dev only): use JWT-based auth from Postgres.
+  // Otherwise: use InstantDB auth (prod default).
+  // Both hooks must always be called (Rules of Hooks) — only one is used.
+  const instantAuth = db.useAuth();
+  const pgAuth      = useAuthPg();
+  const { isLoading, user, error } = USE_PG_AUTH ? pgAuth : instantAuth;
   const { data } = db.useQuery({ globalSettings: {} });
   const rawSettings = data?.globalSettings?.[0] || {};
   const settings = {
@@ -102,9 +111,15 @@ function AppInner() {
   const isPublicOrders = path.endsWith('/orders');
   const isPublicBooking = path.endsWith('/book') || path.endsWith('/appointment');
   const isPublicManual = path.endsWith('/manual');
+  const isWAGuide = path.endsWith('/wa-guide');
   const isPartnerReg = path.includes('/partner/register');
 
   if (isPublicManual) return <UserManual isPublic={true} settings={settings} />;
+  if (isWAGuide) return (
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', padding: 20 }}>
+      <WAVariableGuide standaloneMode />
+    </div>
+  );
   if (isPublicStore) return <StorePage />;
   if (isPublicOrders) return <TrackingPage />;
   if (isPublicBooking) return <BookingPage />;
@@ -157,7 +172,11 @@ function AppInner() {
                 : 'Your partner application could not be approved at this time. Please contact support for details.'}
             </p>
             <button 
-              onClick={() => { localStorage.removeItem('tc_channel_partner'); db.auth.signOut(); window.location.href='/'; }}
+              onClick={() => {
+                localStorage.removeItem('tc_channel_partner');
+                if (USE_PG_AUTH) { pgAuthSignOut(); window.location.href = '/'; }
+                else { db.auth.signOut(); window.location.href = '/'; }
+              }}
               style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '10px 24px', borderRadius: 8, fontWeight: 600, cursor: 'pointer' }}
             >
               Sign Out

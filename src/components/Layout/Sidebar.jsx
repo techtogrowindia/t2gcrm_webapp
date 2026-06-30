@@ -41,21 +41,25 @@ export default function Sidebar({ isSuperadmin, isExpired, perms, settings, plan
 
 
   // Filter NAV_ITEMS based on permissions AND plan module access
-  // Deny-by-default: if perms or planEnforcement isn't loaded yet, show nothing
-  const filteredItems = (!perms || !planEnforcement) ? [] : NAV_ITEMS.filter(item => {
+  // Show sidebar immediately while loading. Once perms/planEnforcement loads,
+  // filter by actual permissions. No permission = visible by default (optimistic).
+  const filteredItems = NAV_ITEMS.filter(item => {
     if (item.group) return true;
     if (item.id === 'userprofile') return true; // Everyone can see their profile
 
+    // If perms/planEnforcement not yet loaded, show item (optimistic)
+    if (!perms || !planEnforcement) return true;
+
     // Plan-level module check for owners too
     if (perms?.isOwner) {
-      if (planEnforcement && !isSuperadmin && !planEnforcement.isViewAllowed(item.id)) return false;
+      if (!isSuperadmin && !planEnforcement.isViewAllowed(item.id)) return false;
       return true;
     }
 
     // Plan-level module check (team members only — owners bypass)
-    if (planEnforcement && !isSuperadmin && !planEnforcement.isViewAllowed(item.id)) return false;
-    if (item.id === 'dashboard') return perms?.can('Dashboard', 'view');
-    return perms?.can(item.permKey, 'list');
+    if (!isSuperadmin && !planEnforcement.isViewAllowed(item.id)) return false;
+    if (item.id === 'dashboard') return perms?.can('Dashboard', 'view') !== false;
+    return perms?.can(item.permKey, 'list') !== false;
   });
 
   return (

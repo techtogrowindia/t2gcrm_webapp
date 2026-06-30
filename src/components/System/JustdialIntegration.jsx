@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -32,7 +33,7 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
     name: { type: 'column', value: 'name' },
     email: { type: 'column', value: 'email' },
     phone: { type: 'column', value: 'mobile' },
-    requirement: { type: 'fixed', value: requirements[0] || '' },
+    requirement: { type: 'fixed', value: '' },  // user picks — never hardcode a category
     stage: { type: 'fixed', value: stages[0] || '' },
     source: { type: 'fixed', value: 'JustDial' },
     assign: { type: 'fixed', value: '' },
@@ -40,9 +41,25 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
     followup: { type: 'fixed', value: '' }
   };
 
+  const fmtDateInput = (ts) => {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const defaultFrom = fmtDateInput(
+    existingConfig?.lastSyncAt
+      ? Math.max(existingConfig.lastSyncAt, Date.now() - THIRTY_DAYS_MS)
+      : Date.now() - THIRTY_DAYS_MS
+  );
+  const defaultTo = fmtDateInput(Date.now());
+
   const [configName, setConfigName] = useState(existingConfig?.configName || '');
   const [apiKey, setApiKey] = useState(existingConfig?.apiKey || '');
   const [disabled, setDisabled] = useState(existingConfig?.disabled || false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResults, setSyncResults] = useState(null);
+  const [syncFrom, setSyncFrom] = useState(defaultFrom);
+  const [syncTo, setSyncTo] = useState(defaultTo);
   const [mapping, setMapping] = useState(() => {
     let m = existingConfig?.mapping ? { ...existingConfig.mapping } : { ...DEFAULT_MAPPING };
     return { ...DEFAULT_MAPPING, ...m };
@@ -62,7 +79,7 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
     } else {
       updated = [...current, config];
     }
-    await db.transact(db.tx.userProfiles[profile.id].update({ justdial: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { justdial: updated }));
     toast('JustDial integration saved!', 'success');
     onBack();
   };
@@ -71,9 +88,37 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
     if (!confirm('Are you sure you want to remove this JustDial integration?')) return;
     const current = profile.justdial || [];
     const updated = current.filter((_, i) => i !== editIndex);
-    await db.transact(db.tx.userProfiles[profile.id].update({ justdial: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { justdial: updated }));
     toast('Integration removed', 'error');
     onBack();
+  };
+
+  const handleSync = async () => {
+    if (!syncFrom || !syncTo) return toast('Please select a date range', 'error');
+    if (syncFrom > syncTo) return toast('From date cannot be after To date', 'error');
+    setSyncing(true);
+    setSyncResults(null);
+    try {
+      const idx = editIndex !== null && editIndex !== undefined ? editIndex : 0;
+      const res = await fetch(`${crmDomain}/api/webhook/justdial?userId=${ownerId}&action=sync&configIndex=${idx}&from_date=${syncFrom}&to_date=${syncTo}`);
+      const data = await res.json();
+      if (data.success) {
+        setSyncResults(data);
+        if ((data.added || 0) === 0 && (data.skipped || 0) === 0 && data.diagnostic) {
+          toast('API returned no leads — see diagnostic below the button', 'warning');
+          console.warn('[justdial sync] diagnostic:', data.diagnostic);
+        } else {
+          toast(`Synced! ${data.added} new lead(s) added, ${data.skipped} skipped.`, 'success');
+        }
+      } else {
+        setSyncResults(data);
+        toast(data.message || 'Sync failed', 'error');
+      }
+    } catch (e) {
+      toast('Failed to sync: ' + (e.message || 'Unknown error'), 'error');
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const handleSendTestLead = async () => {
@@ -128,7 +173,7 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
       });
 
       if (!lead.name) lead.name = 'Test Lead (JustDial)';
-      await db.transact(db.tx.leads[id()].update(lead));
+      await dbWrite(dbOp.update('leads', id(), lead));
       toast('Test lead added to your dashboard!', 'success');
     } catch (e) {
       console.error(e);
@@ -276,6 +321,91 @@ export default function JustdialIntegration({ user, ownerId, onBack, existingCon
           <div style={{ fontSize: 10, color: 'var(--muted)', marginBottom: 15 }}>
             Register this URL with JustDial to receive leads automatically in real-time.
           </div>
+
+          {existingConfig && (
+            <div style={{ marginBottom: 15 }}>
+              <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>From Date</label>
+                  <input
+                    type="date"
+                    value={syncFrom}
+                    onChange={e => setSyncFrom(e.target.value)}
+                    style={{ width: '100%', padding: '8px 10px', border: '1.5px solid var(--border)', borderRadius: 8, fontSize: 13 }}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>To Date</label>
+                  <input
+                    type="date"
+                    value={syncTo}
+                    onChange={e => setSyncTo(e.target.value)}
+                    style={{ width: '100%', padding: '8px 10px', border: '1.5px solid var(--border)', borderRadius: 8, fontSize: 13 }}
+                  />
+                </div>
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleSync}
+                disabled={syncing}
+                style={{ width: '100%' }}
+              >
+                {syncing ? '⟳ Syncing...' : '⟳ Sync Now (Pull Leads for Selected Range)'}
+              </button>
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 5 }}>
+                Manual date range sync will not move the auto-sync checkpoint. Dedup still prevents re-importing existing leads.
+              </div>
+            </div>
+          )}
+
+          {syncResults && (
+            <div style={{
+              background: syncResults.diagnostic ? '#fef3c7' : '#ecfdf5',
+              border: `1px solid ${syncResults.diagnostic ? '#f59e0b' : '#10b981'}`,
+              borderRadius: 8,
+              padding: '10px 14px',
+              marginBottom: 15,
+              fontSize: 12,
+              color: syncResults.diagnostic ? '#78350f' : '#065f46',
+            }}>
+              <strong>Sync Results</strong>
+              <div style={{ marginTop: 4 }}>
+                ✅ {syncResults.added || 0} added · ⏭ {syncResults.skipped || 0} skipped · {(syncResults.errors || 0) > 0 ? `❌ ${syncResults.errors} errors · ` : ''}📊 {syncResults.total || 0} total
+              </div>
+
+              {(syncResults.diagnostic?.requestUrl || syncResults.diagnostic?.responseSample || syncResults.diagnostic?.apiResponseSample) && (
+                <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {syncResults.diagnostic?.requestUrl && (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>URL</div>
+                      <div style={{ background: '#1e293b', color: '#93c5fd', padding: 8, borderRadius: 6, fontSize: 11, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
+                        {syncResults.diagnostic.requestUrl}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>Response</div>
+                    <pre style={{
+                      margin: 0, background: '#1e293b', color: '#e2e8f0', padding: 8,
+                      borderRadius: 6, fontSize: 11, fontFamily: 'ui-monospace, monospace',
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 220, overflow: 'auto',
+                    }}>
+{syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || '(empty)'}
+                    </pre>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText(
+                      `URL: ${syncResults.diagnostic.requestUrl || ''}\n\nResponse: ${syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || ''}`
+                    )}
+                    style={{ alignSelf: 'flex-start', padding: '4px 10px', background: '#475569', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
+                  >
+                    📋 Copy
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="gs-success-msg">

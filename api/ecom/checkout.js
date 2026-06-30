@@ -1,4 +1,5 @@
 import { init, tx, id } from '@instantdb/admin';
+import { opU, runOps, readData } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -24,7 +25,7 @@ export default async function handler(req, res) {
 
     // 1. Create the order
     const txs = [
-      tx.orders[orderId].update({
+      opU('orders', orderId, {
         userId: ownerId,
         ecomName,
         customerName: customer.name,
@@ -42,7 +43,7 @@ export default async function handler(req, res) {
     // 2. Auto-create Invoice with ecom tag
     const invoiceId = id();
     const invoiceNo = `ECOM/${new Date().getFullYear()}/${Math.floor(Math.random() * 9000) + 1000}`;
-    txs.push(tx.invoices[invoiceId].update({
+    txs.push(opU('invoices', invoiceId, {
       userId: ownerId,
       no: invoiceNo,
       client: customer.name,
@@ -59,7 +60,7 @@ export default async function handler(req, res) {
     }));
 
     // 3. Lead/Customer Uniqueness & Matching
-    const { leads = [], customers = [] } = await db.query({
+    const { leads = [], customers = [] } = await readData(db, ownerId, {
       leads: { $: { where: { userId: ownerId } } },
       customers: { $: { where: { userId: ownerId } } }
     });
@@ -99,7 +100,7 @@ export default async function handler(req, res) {
 
     if (!matchLead && !customers.some(c => matches.some(m => m.id === c.id))) {
       // Create new lead if no lead or customer matched
-      txs.push(tx.leads[id()].update({
+      txs.push(opU('leads', id(), {
         userId: ownerId,
         name: customer.name,
         email: customer.email || '',
@@ -115,7 +116,7 @@ export default async function handler(req, res) {
       const timestampedNote = `[${new Date().toLocaleDateString('en-IN')}] Ordered from e-com store: ${ecomName} (Total: ₹${total})`;
       const newNotes = oldNotes ? `${oldNotes}\n${timestampedNote}` : timestampedNote;
       
-      txs.push(tx.leads[matchLead.id].update({
+      txs.push(opU('leads', matchLead.id, {
         name: customer.name,
         notes: newNotes,
         updatedAt: now,
@@ -123,9 +124,9 @@ export default async function handler(req, res) {
     }
 
     // 4. Link order ID back to invoice
-    txs.push(tx.orders[orderId].update({ invoiceId }));
+    txs.push(opU('orders', orderId, { invoiceId }));
 
-    await db.transact(txs);
+    await runOps(db, ownerId, txs);
 
     return res.status(200).json({ success: true, orderId, invoiceId, invoiceNo });
   } catch (err) {

@@ -1,6 +1,25 @@
 import { init, id, tx } from '@instantdb/admin';
+import { opU, runOpsByOwner, readDataAll } from '../_write-ops.js';
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
+
+// Shared helper — send one Waprochat template message.
+// Used by both this file (Option B) and process-wa-amc.js (Option A).
+async function sendWaprochat(waApiToken, waPhoneId, templateId, phone, variables) {
+  const formData = new URLSearchParams();
+  formData.append('apiToken', waApiToken);
+  formData.append('phone_number_id', waPhoneId);
+  formData.append('template_id', templateId);
+  formData.append('phone_number', phone);
+  variables.forEach(v => {
+    if (!v.name) return;
+    formData.append(`templateVariable-${v.name}-${v.index}`, v.value || '');
+  });
+  const res = await fetch('https://portal.waprochat.in/api/v1/whatsapp/send/template', {
+    method: 'POST', body: formData,
+  });
+  return res.json();
+}
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -21,7 +40,7 @@ export default async function handler(req, res) {
   }
 
   // --- AUTOMATION TRIGGERS ---
-  const { userProfiles, automations, leads, amcProfiles, appointments, ecommerceOrders } = await db.query({
+  const { userProfiles, automations, leads, amcProfiles, appointments, ecommerceOrders } = await readDataAll(db, {
     userProfiles: { $: { where: { role: 'owner' } } },
     automations: { $: { where: { active: true } } },
     leads: { $: { where: { type: 'trig-stage' } } },
@@ -84,7 +103,7 @@ export default async function handler(req, res) {
           const detail = `🔄 ${entity.name || 'Entity'} has moved to stage: ${flow.triggerValue}. Assigned to: ${entity.assignedTo || '.'}`;
           const cleanSubject = `Status Changed: ${entity.name || 'Entity'}`;
 
-          txs.push(tx.outbox[id()].update({
+          txs.push(opU('outbox', id(), {
             userId: ownerId,
             recipient: recipientEmail,
             type: 'email',
@@ -96,15 +115,68 @@ export default async function handler(req, res) {
 
           // Mark as processed
           const currentProcessed = entity.processedAutomations || [];
-          txs.push(tx[entity._table][entity.id].update({
-            processedAutomations: [...currentProcessed, flow.id]
+          txs.push(opU(entity._table, entity.id, {
+            processedAutomations: [...currentProcessed, flow.id], userId: ownerId
           }));
 
-          txs.push(tx.activityLogs[id()].update({
+          txs.push(opU('activityLogs', id(), {
             userId: ownerId,
             text: `🤖 [Auto-Cron] Processed automation: ${flow.name} for ${entity.name}`,
             createdAt: Date.now()
           }));
+
+          // ── Option B: also fire WhatsApp if the profile has matching templates ──
+          // Only for amc-expiry email automations — fire alongside the email.
+          if (flow.triggerType === 'amc-expiry') {
+            const waApiToken = profile.waApiToken?.trim();
+            const waPhoneId  = profile.waPhoneId?.trim();
+            const entityPhone = entity.phone?.replace(/\D/g, '');
+            if (waApiToken && waPhoneId && entityPhone) {
+              const amcWaTpls = (profile.whatsappTemplates || []).filter(
+                t => t.autoTrigger === 'amc_expiry' && t.autoEnabled === true
+              );
+              for (const tpl of amcWaTpls) {
+                try {
+                  const amcData = {
+                    client: entity.client || entity.name || '',
+                    contractNo: entity.contractNo || '',
+                    endDate: entity.endDate || '',
+                    daysLeft: String(entity.daysToExpiry || 0),
+                    amount: entity.amount != null ? String(entity.amount) : '',
+                    plan: entity.plan || '',
+                    clientphoneno: entityPhone,
+                    bizName: biz || '',
+                    date: new Date().toLocaleDateString('en-GB').replace(/\//g, '/'),
+                  };
+                  const normalVars = tpl.body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
+                  const variables  = normalVars
+                    .filter(m => m !== '#phone#')
+                    .map((m, i) => {
+                      const n = m.replace(/#/g, '');
+                      return { index: i + 1, name: n, value: amcData[n] ?? '' };
+                    });
+                  const recipientPhone = (tpl.recipientType === 'owner')
+                    ? (profile.waNotifPhone || profile.phone || '').replace(/\D/g, '')
+                    : entityPhone;
+                  if (!recipientPhone) continue;
+
+                  const waResult = await sendWaprochat(waApiToken, waPhoneId, tpl.templateId, recipientPhone, variables);
+                  const ok = waResult?.status === 'success';
+                  txs.push(opU('outbox', id(), {
+                    userId: ownerId, recipient: recipientPhone, type: 'whatsapp',
+                    subject: `AMC Expiry — ${entity.contractNo || entity.name}`,
+                    content: `Template: ${tpl.name}\nBody: ${tpl.body}`,
+                    status: ok ? 'Sent' : 'Failed',
+                    error: ok ? null : (waResult?.message || 'Waprochat error'),
+                    sentAt: Date.now(),
+                  }));
+                  console.log(`[CRON-WA] ${ok ? '✅' : '❌'} "${tpl.name}" for ${entity.name}`);
+                } catch (waErr) {
+                  console.error(`[CRON-WA] Error sending WA for ${entity.name}:`, waErr.message);
+                }
+              }
+            }
+          }
 
         } catch (err) {
           console.error(`[CRON] Workflow failure (${flow.name}):`, err);
@@ -113,6 +185,6 @@ export default async function handler(req, res) {
     }
   }
 
-  if (txs.length > 0) await db.transact(txs);
+  if (txs.length > 0) await runOpsByOwner(db, txs);
   return res.status(200).json({ success: true, processed: txs.length });
 }

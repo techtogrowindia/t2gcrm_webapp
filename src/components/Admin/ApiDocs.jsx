@@ -9,7 +9,7 @@ const API_LIST = [
     method: 'POST', 
     desc: 'Unified authentication gateway for user identity and security.',
     actions: [
-      { name: 'Login', method: 'POST', body: { action: 'login', email: 'user@example.com', password: 'yourpassword' }, resp: { success: true, token: '...', isTeamMember: false, isPartner: false, role: 'Owner', perms: null, ownerUserId: 'WORKSPACE_ID', teamMemberId: null, partnerId: null }, errors: [{ status: 400, error: 'Email and password are required' }, { status: 401, error: 'Invalid email or password' }, { status: 403, error: 'Email verification pending' }] },
+      { name: 'Login', method: 'POST', body: { action: 'login', email: 'user@example.com', password: 'yourpassword' }, notes: 'Store ownerUserId and teamMemberId from the response — you will pass them on every subsequent API call:\n  • ownerId  = ownerUserId  (always required)\n  • actorId  = teamMemberId for team members, OR ownerUserId for owners (teamMemberId will be null for owners)', resp: { success: true, token: '...', isTeamMember: false, isPartner: false, role: 'Owner', perms: null, ownerUserId: 'WORKSPACE_ID', teamMemberId: null, partnerId: null }, errors: [{ status: 400, error: 'Email and password are required' }, { status: 401, error: 'Invalid email or password' }, { status: 403, error: 'Email verification pending' }] },
       { name: 'Register', method: 'POST', body: { action: 'register', email: 'user@example.com', password: 'yourpassword', fullName: 'John Doe', bizName: 'Acme Corp', phone: '9876543210', selectedPlan: 'Trial' }, resp: { success: true, otp: '123456', message: 'Registration successful. Verify OTP.' }, errors: [{ status: 400, error: 'Email and password are required' }, { status: 400, error: 'User already exists' }] },
       { name: 'Verify OTP', method: 'POST', body: { action: 'verify-otp', email: 'user@example.com', otp: '123456' }, resp: { success: true, token: '...', message: 'Verified and logged in' }, errors: [{ status: 400, error: 'Email and OTP are required' }, { status: 400, error: 'Already verified' }, { status: 401, error: 'Invalid OTP' }, { status: 404, error: 'User not found' }] },
       { name: 'Roles Lookup', method: 'POST', body: { action: 'roles', email: 'user@example.com' }, resp: { success: true, isOwner: true, isTeamMember: false, isPartner: false, role: 'Owner', perms: null, ownerUserId: 'WORKSPACE_ID' }, errors: [{ status: 400, error: 'Email is required' }, { status: 404, error: 'User not found in any business' }, { status: 404, error: 'Business profile not found' }] },
@@ -18,6 +18,47 @@ const API_LIST = [
       { name: 'Reset Password (Verify & Set)', method: 'POST', body: { action: 'reset-password-verify', email: 'user@example.com', code: '654321', newPassword: 'newSecurePass' }, resp: { success: true, message: 'Password updated' }, errors: [{ status: 400, error: 'Required fields missing' }, { status: 400, error: 'Invalid or expired code' }] },
       { name: 'Set Team Member Password', method: 'POST', body: { action: 'set-team-password', email: 'member@team.com', password: 'teamPass123', ownerUserId: 'WORKSPACE_ID', teamMemberId: 'MEMBER_ID' }, resp: { success: true, message: 'Password set' }, errors: [{ status: 400, error: 'Required fields missing' }] },
       { name: 'Set Partner Password', method: 'POST', body: { action: 'set-partner-password', email: 'partner@biz.com', password: 'partnerPass123', ownerUserId: 'WORKSPACE_ID', partnerId: 'PARTNER_ID' }, resp: { success: true, message: 'Partner password set' }, errors: [{ status: 400, error: 'Required fields missing' }] }
+    ]
+  },
+  {
+    group: '🔐 Secure Data API (Token Auth) — RECOMMENDED',
+    path: '/api/secure-data',
+    method: 'ALL',
+    desc: 'Token-authenticated replacement for /api/data. Send Authorization: Bearer <token> in the HEADER (never in the URL). Identity (workspace + caller + role) is derived server-side from the token — you do NOT pass ownerId / actorId / isOwner. Same query shape, filters and responses as /api/data, so it is a drop-in secure upgrade.',
+    actions: [
+      {
+        name: 'List Leads (Secure GET)', method: 'GET', query: 'module=leads',
+        notes: 'AUTH (required): send the InstantDB token from the /api/auth Login response as an HTTP header — Authorization: Bearer <token>. The token is NEVER placed in the URL or query string.\n\nIDENTITY IS DERIVED FROM THE TOKEN — do NOT send ownerId, actorId, isOwner, userEmail, myName or teamMemberId. If you send them they are stripped and ignored (anti-spoofing). The server resolves your email → workspace + role automatically:\n  • Owner token → all leads in the workspace.\n  • Team-member token → only the leads that member may see (Team-Permissions visibility — assigned-only / +unassigned / all).\n\nWORKSPACE SELECTION: if your email belongs to exactly ONE workspace it is auto-selected. If it belongs to multiple, pass ?ownerId=<workspaceId> as a HINT — it is honoured only if you actually belong to that workspace (else 403). Omitting it when multiple exist returns 400 with the list.\n\nOPTIONAL FILTERS (same as /api/data, appended to the query string):\n  • srcFilter=<source>        e.g. srcFilter=Youtube\n  • stgFilter=<stage>         e.g. stgFilter=Warm\n  • staffFilter=<value>       unassigned | my | <staff name>  (cannot widen beyond your allowed set)\n  • assignedFrom=<ms>&assignedTo=<ms>   assigned-date range (epoch millis)\nExample: GET /api/secure-data?module=leads&srcFilter=Youtube&stgFilter=Warm',
+        resp: { success: true, data: [{ id: '123', name: 'John Smith', stage: 'New', source: 'Website', createdAt: 1711234567890, assignedAt: 1711240000000, followupDate: 1711500000000, assign: 'staff@company.com' }], count: 25, followupCounts: { today: 3, overdue: 2, upcoming: 7 } },
+        errors: [
+          { status: 401, error: 'Missing Authorization bearer token' },
+          { status: 401, error: 'Invalid or expired token' },
+          { status: 403, error: 'This account has no workspace access' },
+          { status: 403, error: 'You do not have access to the requested workspace' },
+          { status: 400, error: 'Multiple workspaces available — specify ownerId' }
+        ]
+      },
+      {
+        name: 'Create Lead (Secure POST)', method: 'POST',
+        body: { module: 'leads', name: 'John Smith', email: 'john@example.com', phone: '9876543210', source: 'Website', stage: 'New', logText: 'Lead captured via app' },
+        notes: 'Send Authorization: Bearer <token> in the header. Do NOT include ownerId / actorId in the body — they are injected server-side from the verified token. All other module endpoints (customers, invoices, tasks, etc.) work the same way: pass module=<key> + the record fields, with the token in the header.',
+        resp: { success: true, id: '12345...', message: 'Record created successfully' },
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Invalid or missing module' }]
+      },
+      {
+        name: 'Update Lead (Secure PATCH)', method: 'PATCH',
+        body: { module: 'leads', id: 'LEAD_ID', stage: 'Contacted', logText: 'Called client' },
+        notes: 'Authorization: Bearer <token> header required. ownerId/actorId are derived from the token — only send the record id + the fields to change.',
+        resp: { success: true, message: 'Record updated successfully' },
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Record ID is required for updates' }]
+      },
+      {
+        name: 'Delete Lead (Secure DELETE)', method: 'DELETE',
+        body: { module: 'leads', id: 'LEAD_ID' },
+        notes: 'Authorization: Bearer <token> header required. The workspace is resolved from the token — a caller can only delete records inside a workspace they belong to.',
+        resp: { success: true, message: 'Record deleted successfully' },
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Record ID is required for deletion' }]
+      }
     ]
   },
   {
@@ -48,7 +89,7 @@ const API_LIST = [
     desc: 'Manage potential clients and inquiries.',
     actions: [
       { name: 'Create Lead (POST)', method: 'POST', body: { ownerId: 'WORKSPACE_ID', actorId: 'USER_ID', module: 'leads', name: 'John Smith', email: 'john@example.com', phone: '9876543210', source: 'Website', stage: 'New', logText: 'Lead captured via app' }, resp: { success: true, id: '12345...', message: 'Record created successfully' }, errors: [{ status: 400, error: 'Invalid or missing module' }, { status: 400, error: 'ownerId is required to identify the workspace context' }] },
-      { name: 'List Leads (GET)', method: 'GET', query: 'module=leads&ownerId=WORKSPACE_ID', resp: { success: true, data: [{ id: '123', name: 'John Smith', stage: 'New' }] }, errors: [{ status: 400, error: 'Invalid or missing module' }, { status: 400, error: 'ownerId is required' }] },
+      { name: 'List Leads (GET)', method: 'GET', query: 'module=leads&ownerId=WORKSPACE_ID&actorId=CALLER_ID', notes: 'actorId identifies the caller and drives Team-Permissions visibility.\n  • Owner: pass actorId = ownerUserId (or omit actorId) — returns ALL leads in the workspace.\n  • Team member: pass actorId = teamMemberId — returns only leads that member is allowed to see based on Settings → Team Permissions (assigned-only, with or without unassigned).\n\nWhere do these IDs come from? The /api/auth Login response returns both ownerUserId and teamMemberId — store them after login and reuse for every API call.', resp: { success: true, data: [{ id: '123', name: 'John Smith', stage: 'New' }], count: 25 }, errors: [{ status: 400, error: 'Invalid or missing module' }, { status: 400, error: 'ownerId is required' }] },
       { name: 'Update Lead (PATCH)', method: 'PATCH', body: { module: 'leads', id: 'LEAD_ID', ownerId: 'WORKSPACE_ID', stage: 'Contacted', logText: 'Called client' }, resp: { success: true, message: 'Record updated successfully' }, errors: [{ status: 400, error: 'Record ID is required for updates' }] },
       { name: 'Delete Lead (DELETE)', method: 'DELETE', body: { module: 'leads', id: 'LEAD_ID', ownerId: 'WORKSPACE_ID' }, resp: { success: true, message: 'Record deleted successfully' }, errors: [{ status: 400, error: 'Record ID is required for deletion' }] }
     ]
@@ -409,13 +450,14 @@ export default function ApiDocs({ ownerId }) {
             <div>
               <h4 style={{ fontSize: 13, textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 8 }}>2. Authentication Workflow</h4>
               <p style={{ fontSize: 13, lineHeight: '1.6', color: 'var(--text-soft)' }}>
-                Login returns a <strong>token</strong> (for SDK) and an <strong>ownerUserId</strong> (Workspace Identifier). 
-                Save these locally.
+                Login (<code>/api/auth</code>) returns a <strong>token</strong>, an <strong>ownerUserId</strong> (Workspace ID) and a <strong>teamMemberId</strong>. Save these locally.
               </p>
-              <ul style={{ fontSize: 12, marginTop: 8, paddingLeft: 18, color: 'var(--text-soft)' }}>
-                <li>Every data request <strong>MUST</strong> include <code>ownerId</code> (set this to <code>ownerUserId</code> from login).</li>
-                <li><code>actorId</code> should be the logged-in user's own ID.</li>
-              </ul>
+              <div style={{ fontSize: 12, marginTop: 10, padding: '8px 12px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, color: '#065f46' }}>
+                <strong>✅ Recommended — Secure API (<code>/api/secure-data</code>):</strong> send <code>Authorization: Bearer &lt;token&gt;</code> as an HTTP <strong>header</strong>. Identity is derived from the token — do <strong>not</strong> send <code>ownerId</code> / <code>actorId</code>. Spoofed identity fields are stripped server-side.
+              </div>
+              <div style={{ fontSize: 12, marginTop: 8, padding: '8px 12px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, color: '#9a3412' }}>
+                <strong>⚠️ Legacy — <code>/api/data</code> (being phased out):</strong> no auth; every request must include <code>ownerId</code> (= <code>ownerUserId</code>) and <code>actorId</code> (= <code>teamMemberId</code>, or <code>ownerUserId</code> for owners). Migrate new apps to the secure endpoint above.
+              </div>
             </div>
 
             <div>
@@ -496,6 +538,12 @@ export default function ApiDocs({ ownerId }) {
                     
                     <div style={{ padding: 18 }}>
                       {action.desc && <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12, fontStyle: 'italic' }}>{action.desc}</div>}
+                      {action.notes && (
+                        <div style={{ fontSize: 12, color: '#0c4a6e', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 8, padding: '10px 12px', marginBottom: 12, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+                          <strong style={{ color: '#075985' }}>ℹ️ Behaviour</strong>
+                          <div style={{ marginTop: 4 }}>{action.notes}</div>
+                        </div>
+                      )}
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, width: '100%' }}>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 8, display: 'flex', justifyContent: 'space-between' }}>

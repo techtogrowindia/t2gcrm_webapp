@@ -1,4 +1,10 @@
 // Default lists for synchronization
+
+// Normalize a person/assignee name: trim edges AND collapse internal runs of
+// whitespace to a single space (so "Kanaka  Shree " -> "Kanaka Shree"). Keeps
+// name-based assignment matching robust against stray/double spaces.
+export const normalizeName = (s) => (s == null ? '' : String(s).trim().replace(/\s+/g, ' '));
+
 export const DEFAULT_SOURCES = ['FB Ads', 'Direct', 'Broker', 'Google Ads', 'Referral', 'WhatsApp', 'Website', 'IndiaMART', 'JustDial', 'Other'];
 export const DEFAULT_STAGES = ['New Enquiry', 'Enquiry Contacted', 'Quotation Created', 'Quotation Sent', 'Invoice Created', 'Invoice Sent', 'Budget Negotiation', 'Advance Paid', 'Won', 'Lost'];
 export const DEFAULT_REQUIREMENTS = ['Hot', 'Warm', 'Cold', 'VIP', 'Pending'];
@@ -6,9 +12,30 @@ export const DEFAULT_PROD_CATS = ['Electronics', 'Home Appliances', 'Services', 
 export const DEFAULT_UNITS = ['Nos', 'Hours', 'Days', 'Months', 'Kgs', 'Ltrs', 'Meters', 'Other'];
 export const SYSTEM_STAGES = ['Quotation Created', 'Quotation Sent', 'Invoice Created', 'Invoice Sent', 'Won'];
 
-// Format currency in INR
-export const fmt = (n) =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2 }).format(n || 0);
+// Supported currencies for invoices/quotations
+export const SUPPORTED_CURRENCIES = [
+  { code: 'INR', symbol: '₹', name: 'Indian Rupee', locale: 'en-IN' },
+  { code: 'USD', symbol: '$', name: 'US Dollar', locale: 'en-US' },
+  { code: 'EUR', symbol: '€', name: 'Euro', locale: 'en-IE' },
+  { code: 'GBP', symbol: '£', name: 'British Pound', locale: 'en-GB' },
+  { code: 'AED', symbol: 'د.إ', name: 'UAE Dirham', locale: 'en-AE' },
+  { code: 'SAR', symbol: '﷼', name: 'Saudi Riyal', locale: 'en-SA' },
+  { code: 'SGD', symbol: 'S$', name: 'Singapore Dollar', locale: 'en-SG' },
+  { code: 'AUD', symbol: 'A$', name: 'Australian Dollar', locale: 'en-AU' },
+  { code: 'CAD', symbol: 'C$', name: 'Canadian Dollar', locale: 'en-CA' },
+  { code: 'JPY', symbol: '¥', name: 'Japanese Yen', locale: 'ja-JP' },
+  { code: 'CNY', symbol: '¥', name: 'Chinese Yuan', locale: 'zh-CN' },
+  { code: 'ZAR', symbol: 'R', name: 'South African Rand', locale: 'en-ZA' },
+];
+
+export const currencySymbol = (code) =>
+  SUPPORTED_CURRENCIES.find(c => c.code === code)?.symbol || '₹';
+
+// Format currency — defaults to INR for backward compatibility
+export const fmt = (n, currency = 'INR') => {
+  const cfg = SUPPORTED_CURRENCIES.find(c => c.code === currency) || SUPPORTED_CURRENCIES[0];
+  return new Intl.NumberFormat(cfg.locale, { style: 'currency', currency: cfg.code, minimumFractionDigits: 2 }).format(n || 0);
+};
 
 // Format date
 export const fmtD = (d) => {
@@ -102,7 +129,22 @@ export const COUNTRIES = [
   "India", "United States", "United Kingdom", "Canada", "Australia", 
   "United Arab Emirates", "Singapore", "Malaysia", "Saudi Arabia", "Other"
 ];
-export const numberToWords = (num) => {
+export const numberToWords = (num, currency = 'INR') => {
+  const currencyNames = {
+    INR: { major: 'Indian Rupee', minor: 'Paise' },
+    USD: { major: 'US Dollar', minor: 'Cents' },
+    EUR: { major: 'Euro', minor: 'Cents' },
+    GBP: { major: 'British Pound', minor: 'Pence' },
+    AED: { major: 'UAE Dirham', minor: 'Fils' },
+    SAR: { major: 'Saudi Riyal', minor: 'Halalas' },
+    SGD: { major: 'Singapore Dollar', minor: 'Cents' },
+    AUD: { major: 'Australian Dollar', minor: 'Cents' },
+    CAD: { major: 'Canadian Dollar', minor: 'Cents' },
+    JPY: { major: 'Japanese Yen', minor: 'Sen' },
+    CNY: { major: 'Chinese Yuan', minor: 'Fen' },
+    ZAR: { major: 'South African Rand', minor: 'Cents' },
+  };
+  const cur = currencyNames[currency] || currencyNames.INR;
   if (num === 0) return 'Zero';
   const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
   const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
@@ -135,9 +177,9 @@ export const numberToWords = (num) => {
   };
 
   const [integer, decimal] = String(num).split('.');
-  let result = 'Indian Rupee ' + convert(parseInt(integer)) + ' Only';
+  let result = cur.major + ' ' + convert(parseInt(integer)) + ' Only';
   if (decimal && parseInt(decimal) > 0) {
-    result = 'Indian Rupee ' + convert(parseInt(integer)) + ' and ' + convert(parseInt(decimal)) + ' Paise Only';
+    result = cur.major + ' ' + convert(parseInt(integer)) + ' and ' + convert(parseInt(decimal)) + ' ' + cur.minor + ' Only';
   }
   return result;
 };

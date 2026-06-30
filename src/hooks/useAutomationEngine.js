@@ -49,16 +49,9 @@ const matchesConditions = (flow, lead) => {
 
 
 export default function useAutomationEngine(user, ownerId) {
-  const { data } = db.useQuery({
-    leads: { $: { where: { userId: ownerId } } },
-    amc:   { $: { where: { userId: ownerId } } },
-    automations: { $: { where: { userId: ownerId } } },
-    userProfiles: { $: { where: { userId: ownerId } } },
-    campaigns: { $: { where: { userId: ownerId } } },
-    executedAutomations: { $: { where: { userId: ownerId } } },
-    appointments: { $: { where: { userId: ownerId } } },
-    orders: { $: { where: { userId: ownerId } } },
-  });
+  // All data subscriptions disabled — server-side cron handles automations.
+  // Removed leads (11k+) and all other queries to eliminate performance impact.
+  const { data } = db.useQuery(null);
 
   const leads      = data?.leads      || [];
   const amc        = data?.amc        || [];

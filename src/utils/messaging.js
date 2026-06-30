@@ -1,5 +1,5 @@
-import db from '../instant';
 import { id } from '@instantdb/react';
+import { dbWrite, dbOp } from './dbWrite';
 
 /**
  * Replaces placeholders in a template string with actual data.
@@ -36,7 +36,7 @@ export const renderTemplate = (template, data = {}) => {
  */
 const logToOutbox = async (userId, type, recipient, content, metadata = {}) => {
   const outboxId = id();
-  await db.transact(db.tx.outbox[outboxId].update({
+  await dbWrite(dbOp.update('outbox', outboxId, {
     userId,
     type, // 'email' | 'whatsapp'
     recipient,
@@ -146,11 +146,22 @@ export const sendWhatsAppMock = async (userId, to, body, metadata = {}) => {
  */
 export const AUTO_TRIGGER_EVENTS = [
   { value: '', label: 'None (Manual Only)' },
+  // Leads
+  { value: 'lead_created', label: 'Lead Created' },
+  { value: 'lead_stage_changed', label: 'Lead Stage Changed' },
+  { value: 'lead_assigned', label: 'Lead Assigned to Staff' },
+  { value: 'customer_created', label: 'Lead Converted to Customer' },
+  { value: 'lead_followup', label: 'Lead Follow-up Reminder' },
+  // Finance
+  { value: 'quotation_created', label: 'Quotation Created' },
   { value: 'invoice_created', label: 'Invoice Created' },
   { value: 'payment_received', label: 'Payment Received' },
+  // Operations
   { value: 'appointment_booked', label: 'Appointment Booked' },
+  { value: 'task_assigned', label: 'Task Assigned to Staff' },
+  { value: 'amc_expiry', label: 'AMC Expiry Alert' },
+  // E-commerce
   { value: 'order_placed', label: 'Order Placed (E-commerce)' },
-  { value: 'lead_created', label: 'Lead Created' },
 ];
 
 /**
@@ -162,6 +173,26 @@ export const AUTO_TRIGGER_EVENTS = [
  * @param {object} profile - The userProfile object (contains whatsappTemplates, waApiToken, waPhoneId)
  * @param {string} ownerId - The business owner's userId
  */
+// ─── Date variable resolution ─────────────────────────────────────────────────
+// Resolves built-in date tokens at send time (IST-aware):
+//   #today#      → today's date  e.g. 10/06/2026
+//   #tomorrow#   → tomorrow      e.g. 11/06/2026
+//   #+1day#      → today + 1 day
+//   #+7day#      → today + 7 days  (any positive integer)
+const _fmtDate = (d) => {
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}/${d.getFullYear()}`;
+};
+const resolveDateVar = (varName) => {
+  const today = new Date();
+  if (varName === 'today')    return _fmtDate(today);
+  if (varName === 'tomorrow') { const d = new Date(today); d.setDate(d.getDate() + 1); return _fmtDate(d); }
+  const m = varName.match(/^\+(\d+)day$/i);
+  if (m) { const d = new Date(today); d.setDate(d.getDate() + parseInt(m[1])); return _fmtDate(d); }
+  return null; // not a date var
+};
+
 export const fireAutoNotifications = async (eventType, data, profile, ownerId) => {
   if (!profile || !ownerId || !eventType) return;
 
@@ -177,31 +208,73 @@ export const fireAutoNotifications = async (eventType, data, profile, ownerId) =
     return;
   }
 
-  // Must have a recipient phone number
-  const phone = data.phone?.replace(/\D/g, '');
-  if (!phone) {
-    console.warn(`[AutoNotify] No phone number provided for event: ${eventType}. Skipping.`);
-    return;
-  }
-
   for (const tpl of matching) {
     try {
-      // Build variables from template body using #variable# syntax
-      const varMatches = tpl.body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
-      const variables = varMatches.map((m, i) => {
-        const varName = m.replace(/#/g, '');
-        return { index: i + 1, name: varName, value: data[varName] || '' };
-      });
+      // Resolve recipient phones — supports multiple recipients (recipientTypes array).
+      // Backward compatible: old templates use recipientType (string).
+      const recipientTypes = tpl.recipientTypes
+        ? (Array.isArray(tpl.recipientTypes) ? tpl.recipientTypes : [tpl.recipientTypes])
+        : [tpl.recipientType || 'client'];
 
-      const message = {
-        templateId: tpl.templateId,
-        name: tpl.name,
-        body: tpl.body,
-        variables
+      // Build unique phone list (deduplicate in case two types resolve to same number)
+      const resolvePhone = (rType) => {
+        if (rType === 'owner')    return (profile.waNotifPhone || profile.phone || data.ownerPhone || '').replace(/\D/g, '');
+        if (rType === 'assignee') return (data.assigneePhone || '').replace(/\D/g, '');
+        return (data.phone || '').replace(/\D/g, '');
       };
+      const phonesToSend = [];
+      const seen = new Set();
+      for (const rType of recipientTypes) {
+        const phone = resolvePhone(rType);
+        if (phone && !seen.has(phone)) { seen.add(phone); phonesToSend.push({ phone, rType }); }
+      }
+      if (phonesToSend.length === 0) {
+        console.warn(`[AutoNotify] No phone numbers resolved for "${tpl.name}" on event: ${eventType}. Skipping.`);
+        continue;
+      }
 
-      await sendWhatsApp(phone, message, ownerId, ownerId);
-      console.log(`[AutoNotify] ✅ Sent "${tpl.name}" to ${phone} for event: ${eventType}`);
+      // Build variables once (same body for all recipients)
+      const normalVars = tpl.body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
+      const dateVars   = tpl.body?.match(/#(\+\d+day)#/gi) || [];
+      const variables = [...normalVars, ...dateVars]
+        .filter(m => m !== '#phone#')
+        .map((m, i) => {
+          const varName = m.replace(/#/g, '');
+          const dateVal = resolveDateVar(varName);
+          return { index: i + 1, name: varName, value: dateVal !== null ? dateVal : (data[varName] ?? '') };
+        });
+
+      const entityKey = data.entityId || data.invoiceno || data.apptDate || Date.now();
+
+      // Send one API call per resolved phone number
+      for (const { phone, rType } of phonesToSend) {
+        // Include rType in processedKey so client+owner both fire (different dedup keys)
+        const processedKey = `wa-auto-${ownerId}-${eventType}-${tpl.templateId}-${phone}-${entityKey}-${rType}`;
+
+        const resp = await fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: phone,
+            message: tpl.body || 'Template Message',
+            ownerId,
+            type: 'whatsapp',
+            templateId: tpl.templateId,
+            variables,
+            processedKey,
+            body: tpl.body,
+          }),
+        });
+
+        const result = await resp.json();
+        if (result?.skipped) {
+          console.log(`[AutoNotify] ⏭️ Skipped duplicate "${tpl.name}" → ${rType} (${phone})`);
+        } else if (resp.ok && result?.success) {
+          console.log(`[AutoNotify] ✅ Sent "${tpl.name}" → ${rType} (${phone}) for event: ${eventType}`);
+        } else {
+          console.error(`[AutoNotify] ❌ Failed "${tpl.name}" → ${rType} (${phone}):`, result?.error);
+        }
+      } // end per-phone loop
     } catch (err) {
       console.error(`[AutoNotify] ❌ Failed to send "${tpl.name}" for event: ${eventType}`, err);
     }

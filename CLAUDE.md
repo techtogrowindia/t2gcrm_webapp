@@ -1,501 +1,497 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
-**T2GCRM** is a B2B SaaS Customer Relationship Management platform designed for small-to-medium businesses. It handles leads, customers, invoices, projects, appointments, e-commerce, and automation workflows across a modular, multi-tenant architecture.
+**T2GCRM** is a B2B SaaS CRM for SMBs — leads, customers, invoices, projects, appointments, e-commerce, automation. Multi-tenant, modular architecture.
 
-**Key Markets:** India (integration with IndiaMART, JustDial, WhatsApp via Waprochat)
+**Key Markets:** India (IndiaMART, JustDial, TradeIndia, WhatsApp via Waprochat)
+
+**⚠️ PRODUCTION APP:** Live with real users and real data. Verify every change won't break existing functionality or corrupt data. Never run destructive operations without explicit user approval.
+
+**📝 SELF-DOCUMENTING RULE:** After any critical change (new module, bug fix, architectural decision, new API, schema change), update **both** `GEMINI.md` and `CLAUDE.md` immediately. Don't wait to be asked.
 
 ## Tech Stack
 
-- **Frontend:** React 18 + Vite, React Router (hash-based)
+- **Frontend:** React 18 + Vite, hash-based routing
 - **Backend:** Node.js + Express.js
-- **Database:** InstantDB (real-time NoSQL) - both frontend and backend
-- **Auth:** InstantDB magic codes + password (bcrypt hashing)
+- **Database:** InstantDB (real-time NoSQL) + PostgreSQL 17 (migration in progress)
+- **Auth:** InstantDB magic codes + password (bcrypt); PG path: JWT via `api/auth-pg.js`
 - **Email:** nodemailer (SMTP), EmailJS (frontend)
-- **Styling:** Plain CSS (no external UI library)
+- **Styling:** Plain CSS
+
+## 🐘 PostgreSQL Migration (IN PROGRESS)
+
+Migrating to **self-hosted PostgreSQL 17** on Contabo VPS. Architecture: one DB per app (`t2gcrm_prod`, `t2gcrm_dev`), row-level multi-tenancy (RLS), owner(DDL)+app(DML) roles, no real-time (refetch-after-mutation).
+
+**Migration scripts** live in `/root/crm-migration/` on VPS (not in this repo):
+`install-postgres.sh`, `create-crm-schema.sh`, `import.mjs`, `verify.mjs`, `05-add-write-triggers.sql`
+
+### Status
+- ✅ Postgres 17 installed, 4 DBs, owner/app roles, nightly backups
+- ✅ CRM schema (31 tables) + RLS + `login_codes` in prod & dev
+- ✅ `t2gcrm_dev` imported & verified (69,547 rows)
+- ✅ `api/db-pg.js` — pool + `tenantQuery`/`rawQuery`/`tenantTransaction`
+- ✅ `api/auth-pg.js` — password + magic-code + JWT (all 3 flows)
+- ✅ `api/data-pg.js` — generic upsert/delete/batch/query, all 31 tables
+- ✅ `api/_write-ops.js` — shared write router (InstantDB ↔ Postgres)
+- ✅ `api/_leads-cache.js` + `api/_call-logs-cache.js` — dual-path PG/InstantDB
+- ✅ All server endpoints: `api/data.js`, `team-stats.js`, `dashboard-stats.js` reads route to PG
+- ✅ Frontend: `db.useQuery` globally proxied in `src/instant.js`; `dbWrite` in `src/utils/dbWrite.js`
+- ✅ Dev CRM fully running on Postgres (auth + reads + writes)
+- ⬜ Prod cutover: run `import.mjs` + `05-add-write-triggers.sql` on `t2gcrm_prod`, set 3 env flags, build + restart
+
+### Prod Cutover Steps
+1. `git pull && pm2 restart t2gcrm` (pull bug fixes first)
+2. Run `05-add-write-triggers.sql` on `t2gcrm_prod` (owner role)
+3. Run `import.mjs` while app is live (pre-warm)
+4. `pm2 stop t2gcrm` → run `import.mjs` again (delta) → edit `.env` → `npm run build` → `pm2 start t2gcrm`
+5. Add to prod `.env`: `USE_PG_DATA=true`, `VITE_USE_PG_AUTH=true`, `VITE_USE_PG_DATA=true`, `DATABASE_URL` (app role), `JWT_SECRET` (openssl rand -hex 32)
+
+**Rollback:** remove those 5 env vars, `npm run build && pm2 restart t2gcrm`. Back on InstantDB in ~3 min.
+
+### Write/Read Architecture
+- **Writes:** `dbWrite(dbOp.update/delete)` → `/api/data-pg` (JWT). MERGE-upsert (partial updates only touch provided fields). Cascade deletes via `CASCADE` map in `data-pg.js`. Promoted typed columns maintained by triggers, not the write path.
+- **Reads:** `data-pg action:'query'` returns `{ ...doc, id: r.id }` — id ALWAYS from PG column.
+- **Gotcha:** `id` lives in the PG column, not necessarily in `doc`. All mappers do `{ ...r.doc, id: r.id }`.
+- **Not in PG:** `memberStats`, task auto-numbering — skipped gracefully (`execOp` returns `[]`).
+
+### Schema Mapping
+- `userId` → `tenant_id` on every tenant table. **Exception: `callLogSyncState` uses `ownerId`.**
+- `userProfiles` → `accounts`; `userCredentials` → `credentials`; `globalSettings` → `global_settings`
+- Auth tables have no RLS (needed before tenant is known)
+- Import runs as OWNER role (bypasses RLS); app runs as APP role (RLS enforced)
+- Credentials: `/root/pg_credentials.txt` on VPS
 
 ## Git Repository
 
-**Remote:** https://github.com/G0kulakrishnan/crm  
-**Default branch:** `main`
+**Remote:** https://github.com/G0kulakrishnan/crm — **always push to `main`**
 
-**Always push to `main`:**
 ```bash
-git add <files>
-git commit -m "your message"
-git pull origin main --rebase   # sync remote changes first
-git push origin main            # then push
+git add <files> && git commit -m "msg" && git pull origin main --rebase && git push origin main
 ```
 
-> Never push to any other branch. All changes go directly to `main`.
+**MANDATORY:** Commit and push after every code change. No uncommitted work. No permission needed to push.
 
 ## Build & Run
 
 ```bash
-npm install              # Install dependencies
-npm run dev             # Start Vite dev server (http://localhost:5173)
-npm run build           # Production build
-npm start               # Run Express server (port 3000)
+npm run dev      # Vite dev server (localhost:5173)
+npm run build    # Production build
+npm start        # Express server (port 3000)
 ```
 
-**Development:**
-- Vite with custom API simulator plugin handles `/api/*` routes
-- Hot Module Reload (HMR) enabled
-- Cron job (process-automations) runs every 60s in dev mode
-- Logs go to console
-
-**Production:**
-- Express server serves `dist/` + API endpoints
-- Designed for Vercel or similar Node.js hosting
+**VPS deployment:**
+- **API-only change** (`api/*.js`, `server.mjs`): `git pull` + `pm2 restart t2gcrm` — no build needed
+- **Frontend change** (`src/**`): `git pull` + `npm run build` + `pm2 restart t2gcrm`
+- **Production:** https://crm.t2gcrm.in — `pm2` id 0, app at `/var/www/t2gcrm`
+- **Dev/staging:** https://dev.t2gcrm.in — `pm2` id 2, app at `/var/www/dev-t2gcrm`
 
 ## Project Structure
 
 ```
-src/
-├── components/          # React components organized by feature
-│   ├── Admin/          # Admin panel, API docs, plan management
-│   ├── Leads/          # Lead management (list view, kanban, import/export)
-│   ├── Finance/        # Invoices, quotations, POS, billing templates
-│   ├── Work/           # Teams, roles, permissions, projects, tasks, call logs
-│   ├── Ecommerce/      # Store frontend, orders, checkout
-│   ├── Dashboard/      # Main dashboard with KPIs
-│   ├── Auth/           # Login, registration, password reset
-│   ├── Layout/         # MainApp, Sidebar, Topbar, notifications
-│   └── [Other features...]
-├── hooks/              # Custom React hooks
-│   ├── usePermissions.js        # Role-based permission checking
-│   ├── usePlanEnforcement.js    # Plan feature gating (which modules are enabled)
-│   └── useAutomationEngine.js   # Automation trigger logic
-├── context/            # React Context
-│   ├── AppContext.jsx  # Global UI state (activeView, sidebarExpanded)
-│   └── ToastContext.jsx # Toast notification system
-├── utils/              # Utilities
-│   ├── helpers.js      # Date formatting, stage badges, source mappings
-│   ├── constants.js    # Default values, empty templates
-│   └── messaging.js    # Notification helpers
-├── instant.js          # InstantDB client initialization
-├── App.jsx             # Root component, route definitions
-└── main.jsx            # React entry point
+src/components/   Admin/ Leads/ Finance/ Work/ Ecommerce/ Dashboard/ Auth/ Layout/
+                  Appointments/ Business/ CallLogs/ Clients/ Reports/ Settings/
+                  System/ Automation/ UI/
+src/hooks/        usePermissions.js  usePlanEnforcement.js  useAutomationEngine.js
+                  usePgQuery.js  useAuthPg.js  useData.js
+src/utils/        helpers.js  constants.js  activityLogger.js  messaging.js  dbWrite.js
+src/              instant.js  App.jsx  main.jsx
 
-api/                    # Node.js serverless handlers
-├── auth.js             # Login, register, password reset, OTP
-├── data.js             # CRUD operations (leads, invoices, etc)
-├── finance.js          # Invoice, quotation operations
-├── notify.js           # Email/WhatsApp notifications
-├── call-logs.js        # Call logging and tracking
-├── attendance.js       # Staff attendance
-├── cron/
-│   └── process-automations.js   # Email automation engine (runs every 60s)
-├── webhook/
-│   ├── gsheets.js      # Google Sheets integration
-│   ├── indiamart.js    # IndiaMART lead webhook
-│   └── justdial.js     # JustDial lead webhook
-└── ecom/checkout.js    # E-commerce checkout and billing
+api/              auth.js  auth-pg.js  data.js  data-pg.js  secure-data.js
+                  finance.js  notify.js  call-logs.js  call-logs-page.js
+                  leads-page.js  dashboard-stats.js  team-stats.js  team-activity.js
+                  lead-check-duplicate.js  lead-counts.js  lead-lookup.js
+                  sync-won-leads.js  attendance.js  _leads-cache.js  _call-logs-cache.js
+                  _write-ops.js  cleanup-duplicates.js
+api/cron/         process-automations.js  process-wa-amc.js  process-wa-followup.js
+                  process-integrations.js
+api/webhook/      gsheets.js  indiamart.js  justdial.js  tradeindia.js
+api/ecom/         checkout.js
+api/appointments/ book.js
 
-server.mjs              # Express server (production)
-vite.config.js          # Vite bundler config with API plugin
-.env                    # Environment variables (VITE_INSTANT_APP_ID, INSTANT_ADMIN_TOKEN, PORT)
+server.mjs        # Express server (production) — ALL routes must be registered here
 ```
 
 ## Key Architecture Patterns
 
-### Real-Time Data with InstantDB
+- **Multi-tenant:** every record has `userId` (InstantDB) / `tenant_id` (Postgres) for isolation
+- **Writes:** `dbWrite(dbOp.update/delete)` from `src/utils/dbWrite.js` — routes to PG or InstantDB by flag
+- **Reads (frontend):** `db.useQuery` proxied in `instant.js` — routes to `usePgQuery` when `VITE_USE_PG_DATA=true`
+- **Server reads:** `readData(db, ownerId, spec)` from `_write-ops.js`; caches via `_leads-cache.js` / `_call-logs-cache.js`
+- **Permissions:** `perms?.can('ModuleName', 'action') === true` — received as prop from MainApp
+- **Plan enforcement:** `planEnf.isModuleEnabled('key')` / `isWithinLimit('key', count)` — prop from MainApp
+- **Hardcoded restriction:** team members cannot access Admin or Settings regardless of role
 
-All data queries use InstantDB subscriptions (live updates):
+## Database Collections (InstantDB → Postgres table)
 
-```javascript
-const { data, isLoading } = db.useQuery({
-  leads: { $: { where: { userId: ownerId } } },
-  customers: { $: { where: { userId: ownerId } } }
-});
-```
-
-**Multi-Tenant:** Every record has a `userId` field for data isolation. Query by userId to fetch only this business's data.
-
-### Multi-Document Transactions
-
-When updating multiple collections atomically:
-
-```javascript
-const txs = [
-  db.tx.leads[leadId].update({ stage: 'Converted', updatedAt: Date.now() }),
-  db.tx.customers[cusId].update({ leadId: leadId, createdAt: Date.now() }),
-  db.tx.activityLogs[id()].update({ action: 'converted', ... })
-];
-await db.transact(txs);  // All-or-nothing
-```
-
-### Role-Based Permissions
-
-The `usePermissions` hook provides permission checking:
-
-```javascript
-const perms = usePermissions(user, profile, teamMembers);
-const canCreate = perms?.can('Leads', 'create') === true;  // true/false
-```
-
-Hardcoded restrictions: Team members **cannot access Admin or Settings modules**.
-
-### Plan Enforcement
-
-The `usePlanEnforcement` hook enforces which modules are enabled:
-
-```javascript
-const planEnf = usePlanEnforcement(profile, settings);
-const leadsEnabled = planEnf?.isModuleEnabled('leads');  // true/false
-const maxUsers = planEnf?.getLimit('maxUsers');  // -1 = unlimited
-```
-
-Plans are stored in `globalSettings.plans` and define:
-- Which modules are enabled/disabled per plan
-- Numeric limits (maxLeads, maxUsers, etc.)
-
-## Database Collections (InstantDB)
-
-**Auth & Users:**
-- `userProfiles` - Business owner/account (plan, settings, roles, email config, disabled stages, custom fields)
-- `userCredentials` - Login data (email, password hash, OTP, team/partner flags)
-- `teamMembers` - Staff members (name, role, email, phone, userId)
-
-**Core CRM:**
-- `leads` - Prospects (name, email, phone, source, stage, assigned staff, custom fields, followup dates)
-- `customers` - Converted leads
-- `quotations` - Quotes with line items
-- `invoices` - Billing (draft, sent, paid statuses)
-- `activityLogs` - Audit trail (who did what, timestamps)
-
-**Operations:**
-- `projects` - Project management
-- `tasks` - Todos and task tracking
-- `appointments` - Booking system (date, time, customer, status)
-- `callLogs` - Call records (direction, duration, outcome, assigned staff)
-- `attendance` - Staff check-in/out
-
-**Business:**
-- `products` - Inventory (price, tax, stock)
-- `vendors` - Suppliers
-- `purchaseOrders` - PO records
-- `expenses` - Business expenses
-- `amc` - Annual Maintenance Contracts
-
-**E-commerce:**
-- `orders` - Online store orders
-- `ecomCustomers` - E-commerce customer records
-
-**Automation & System:**
-- `automations` - Email workflow rules (trigger type, recipient, subject, body, active flag)
-- `executedAutomations` - Deduplication cache (prevents duplicate emails)
-- `globalSettings` - Branding, plans, crmDomain config
-- `partnerApplications` - Partner registration (status: Pending/Approved/Rejected)
-- `outbox` - Sent message log
+| Collection | PG Table | Notes |
+|---|---|---|
+| `userProfiles` | `accounts` | id = tenant's userId |
+| `userCredentials` | `credentials` | no RLS |
+| `teamMembers` | `team_members` | |
+| `leads` | `leads` | hot table, promoted typed columns |
+| `customers` | `customers` | |
+| `quotes` | `quotes` | **NOT** `quotations` |
+| `invoices` | `invoices` | |
+| `activityLogs` | `activity_logs` | hot table |
+| `callLogs` | `call_logs` | hot table |
+| `callLogSyncState` | `call_log_sync_state` | uses `ownerId` not `userId` |
+| `tasks` | `tasks` | |
+| `projects` | `projects` | |
+| `appointments` | `appointments` | |
+| `attendance` | `attendance` | |
+| `products` | `products` | |
+| `vendors` | `vendors` | |
+| `purchaseOrders` | `purchase_orders` | |
+| `expenses` | `expenses` | |
+| `amc` | `amc` | |
+| `orders` | `orders` | |
+| `ecomCustomers` | `ecom_customers` | |
+| `automations` | `automations` | |
+| `executedAutomations` | `executed_automations` | |
+| `globalSettings` | `global_settings` | no RLS |
+| `partnerApplications` | `partner_applications` | |
+| `partnerCommissions` | `partner_commissions` | |
+| `outbox` | `outbox` | |
 
 ## Authentication & Login Flow
 
-1. **AuthScreen** offers two methods:
-   - Password: POST `/api/auth` → email + password → validated → JWT token
-   - Magic Code: `db.auth.sendMagicCode()` → code via email → `db.auth.signInWithMagicCode()`
+1. **Password:** POST `/api/auth` (InstantDB) or `/api/auth-pg` (PG) → JWT
+2. **Magic code:** `db.auth.sendMagicCode()` → `db.auth.signInWithMagicCode()` (InstantDB) or `login_codes` table (PG)
+3. **Discovery:** team member → restricted MainApp; partner → PartnerApp; owner → full MainApp
 
-2. **Discovery** (in MainApp.jsx):
-   - If user is a team member → show MainApp with role restrictions
-   - If user is a partner → show PartnerApp (distributor/retailer portal)
-   - Otherwise → show MainApp as owner
-
-3. **Permissions** checked on every action via `usePermissions` hook
+**Gotcha — Team/Partner passwords:** Must set `isVerified: true` on `userCredentials`. Without it, they get blocked at the OTP prompt (they have no `userProfiles` record to bypass it).
 
 ## Email Automation Engine
 
-**Location:** `/api/cron/process-automations.js` (runs every 60 seconds)
+`/api/cron/process-automations.js` — runs every 60s. Trigger types: `stage-change`, `amc-expiry`, `new-appointment`, `ecom-order`. SMTP config per-business in `userProfiles`. Dedup via `executedAutomations`. Kill switch: `VITE_BLOCK_AUTOMATIONS=true`.
 
-**How it works:**
-1. Finds automation rules that match trigger type (e.g., 'stage-change' on a lead)
-2. Fetches template (subject, body) from `automations` collection
-3. Sends via configured SMTP (per-business email config in userProfiles)
-4. Records in `executedAutomations` cache to prevent duplicates
+## WhatsApp Auto-Notification System (Waprochat)
 
-**Trigger Types:**
-- `stage-change` - Lead stage updated
-- `amc-expiry` - AMC expiry alert
-- `new-appointment` - Appointment booked
-- `ecom-order` - E-commerce order placed
+**Flow:** component → `fireAutoNotifications()` in `src/utils/messaging.js` → `POST /api/notify` → Waprochat API
 
-**Integration:** SMTP config per business (stored in userProfiles, custom for white-label)
+### Critical Rules — Never Break
+
+1. **Variable names must exactly match Waprochat template variable names.** `#variableName#` in body → `templateVariable-<name>-<index>` in POST.
+2. **`#phone#` is always excluded from variables** — it is the recipient `phone_number` field. Use `#leadphoneno#` / `#clientphoneno#` to put phone inside message body.
+3. **`api/notify.js` is the sole outbox logger.** `fireAutoNotifications` must NOT also call `logToOutbox`.
+4. **Use `v.name` not `v.field` in `notify.js`.** Variables are `{ index, name, value }`. Using `v.field` posts `templateVariable-undefined-N`.
+5. **`processedKey` format:** `wa-auto-<ownerId>-<eventType>-<templateId>-<phone>-<entityId>`
+
+### Auto-trigger Events & Variables
+
+| Event key | When fires | Key variables |
+|---|---|---|
+| `lead_created` | New lead | `#lead#` `#client#` `#leadphoneno#` `#stage#` `#source#` `#requirement#` `#email#` `#date#` `#bizName#` |
+| `lead_stage_changed` | Stage edited | `#lead#` `#client#` `#fromstage#` `#tostage#` `#assignee#` `#leadphoneno#` `#date#` |
+| `lead_assigned` | Assigned/reassigned | `#lead#` `#client#` `#assignee#` `#leadphoneno#` `#stage#` `#date#` |
+| `customer_created` | Lead → Won | `#lead#` `#client#` `#leadphoneno#` `#stage#` `#date#` |
+| `quotation_created` | New quotation | `#client#` `#clientphoneno#` `#quoteno#` `#amount#` `#validuntil#` `#date#` `#bizName#` |
+| `invoice_created` | New invoice | `#client#` `#clientphoneno#` `#invoiceno#` `#amount#` `#date#` `#bizName#` |
+| `payment_received` | Payment logged | `#client#` `#clientphoneno#` `#invoiceno#` `#amount#` `#date#` `#bizName#` |
+| `appointment_booked` | Booking submitted | `#client#` `#clientphoneno#` `#service#` `#apptDate#` `#apptTime#` `#bizName#` |
+| `task_assigned` | New task with assignee | `#assignee#` `#task#` `#client#` `#duedate#` `#priority#` `#date#` |
+| `lead_followup` | Daily cron, N days before followup | `#lead#` `#client#` `#assignee#` `#leadphoneno#` `#followupdate#` `#daysLeft#` `#date#` |
+| `amc_expiry` | endDate ≤ 30 days / daily cron | `#client#` `#clientphoneno#` `#contractNo#` `#endDate#` `#daysLeft#` `#amount#` `#plan#` `#date#` |
+| `order_placed` | E-commerce checkout | `#client#` `#clientphoneno#` `#orderId#` `#orderAmount#` `#orderStatus#` `#date#` `#bizName#` |
+
+`#phone#` = recipient field (excluded from variables). Built-in date vars: `#today#` `#tomorrow#` `#+Nday#` (DD/MM/YYYY).
+
+### Call Sites
+
+| File | Events |
+|---|---|
+| `src/components/Leads/LeadsView.jsx` | `lead_created` `lead_stage_changed` `lead_assigned` `customer_created` |
+| `src/components/Finance/Invoices.jsx` | `invoice_created` `payment_received` |
+| `src/components/Finance/Quotations.jsx` | `quotation_created` |
+| `src/components/Work/AllTasks.jsx` | `task_assigned` |
+| `src/components/Appointments/BookingPage.jsx` | `appointment_booked` |
+| `src/components/Ecommerce/StorePage.jsx` | `order_placed` |
+| `src/components/Clients/AMC.jsx` | `amc_expiry` |
+| `api/cron/process-wa-followup.js` | `lead_followup` |
+
+**Add new trigger:** (1) add to `AUTO_TRIGGER_EVENTS` in `messaging.js` (2) call `fireAutoNotifications()` in component after DB write (3) add Insert Variable buttons in `Settings.jsx` (4) add to `WAVariableGuide.jsx` MODULES array (5) add row to table above.
+
+### userProfiles WhatsApp Fields
+`waApiToken`, `waPhoneId`, `whatsappTemplates[]`, `waNotifPhone` (owner recipient, include country code)
 
 ## Lead Integrations
 
-### Google Sheets
-- **Webhook:** `/api/webhook/gsheets`
-- **Sync:** Manual "Sync Now" button in Integration panel
-- **Field Mapping:** Admin configures which sheet columns → lead fields
-- **Deduplication:** Phone number matching
+| Source | Webhook | Auth | Dedup |
+|---|---|---|---|
+| Google Sheets | `/api/webhook/gsheets` | — | phone + email |
+| IndiaMART | `/api/webhook/indiamart` | `GLUSR_CRMMOBILE_KEY` | phone + email |
+| JustDial | `/api/webhook/justdial` | optional API key | phone + email |
+| TradeIndia | `/api/webhook/tradeindia` | User ID + Profile ID + API Key | phone + email |
 
-### IndiaMART
-- **Webhook:** `/api/webhook/indiamart`
-- **Sync:** Auto-webhook + manual "Sync Now"
-- **Known Fields:** SENDER_NAME, SENDER_EMAIL, SENDER_MOBILE, QUERY_MESSAGE, etc.
-- **Deduplication:** Phone number normalization
+All integrations: field mapping (Column/Fixed), custom fields, enable/disable toggle, config in `userProfiles.<source>`.
 
-### JustDial
-- **Webhook:** `/api/webhook/justdial`
-- **Sync:** Webhook only (no pull API)
-- **Known Fields:** leadid, name, mobile, email, category
-
-All integrations:
-- Auto-match phone numbers to existing leads (prevent duplicates)
-- Configurable per business in Integration settings
-- Store config in `userProfiles.gsheets`, `userProfiles.indiamart`, `userProfiles.justdial`
-
-## Common Development Tasks
-
-### Adding a New Lead Source
-
-1. Create `/api/webhook/newsource.js` handler (POST to create leads, dedup by phone)
-2. Add route in `server.mjs` and `vite.config.js`
-3. Create `/src/components/System/NewsourceIntegration.jsx` component (field mapping UI)
-4. Add to `src/components/System/Integrations.jsx` (add integration card + routing)
-5. Update `src/utils/helpers.js` DEFAULT_SOURCES array
-
-### Adding a New Module/Feature
-
-1. Create component in `src/components/FeatureName/`
-2. Add route in `App.jsx` (hash route)
-3. Add nav item in `Sidebar.jsx` with module check: `planEnf.isModuleEnabled('featureName')`
-4. Add handler in `/api/` for backend operations
-5. Create DB collection queries via InstantDB
-6. Add permissions in admin "Roles & Permissions" (MODULES array in Teams.jsx)
-
-### Debugging Permissions
-
-Set `window.DEBUG_PERMS = true` in browser console to trace permission checks. Logs will show which permissions are granted/denied and why.
-
-### Testing Email Automation
-
-1. Set `VITE_BLOCK_AUTOMATIONS=false` in .env
-2. Create automation rule in Settings → Automations
-3. Trigger the event (e.g., change lead stage)
-4. Check `/api/cron/process-automations.js` logic in server logs
-5. Verify email sent via configured SMTP
-
-## Important Implementation Notes
-
-**Lead Count Discrepancy:**
-- Sidebar badge shows total active leads (only filtered by visible stages)
-- Table shows leads filtered by user assignment, dropdowns, search, and date tab
-- These counts differ intentionally; both are correct for their context
-
-**Duplicate Profile Bug (Fixed):**
-- When admin creates account, now retrieves real auth userId from InstantDB before creating profile
-- MainApp adopts mismatched profiles via email-based secondary lookup
-- See `api/auth.js` admin-create-user action and MainApp.jsx profile adoption logic
-
-**Call Logs Connected Status (Fixed):**
-- API now derives outcome from duration or explicit outcome field (not defaulting to "Connected")
-- Web displays "Not Picked" for unanswered outgoing calls with no duration
-- Duration formats as mm:ss instead of seconds
-- Team summary includes "Not Picked" count
-
-**Plan-Based Permissions (Fixed):**
-- Teams → Roles & Permissions modal now shows only modules enabled in business plan
-- Mapping: PascalCase module keys (Teams.jsx) → camelCase plan keys (AdminPanel.jsx)
-- Uses `planEnforcement.isModuleEnabled()` to filter MODULES array
-
-## File Naming Conventions
-
-- **Components:** PascalCase (e.g., LeadsView.jsx, SheetIntegration.jsx)
-- **Hooks:** camelCase with 'use' prefix (e.g., usePermissions.js)
-- **API handlers:** kebab-case or camelCase (e.g., process-automations.js, call-logs.js)
-- **Collections/DB:** camelCase (e.g., userProfiles, executedAutomations)
+**⚠️ server.mjs gotcha:** always add both `import` + `app.all(...)` for every new API file. Dev resolves dynamically; **production returns 404 until `server.mjs` is updated.** (TradeIndia was broken in prod for months this way.)
 
 ## Common Gotchas
 
-1. **InstantDB WHERE clauses only filter on exact match / simple operators** — complex filters must be done in React after fetching
-2. **Transaction failures are silent** — wrap db.transact in try/catch to catch errors
-3. **Real-time updates trigger re-renders** — memoize expensive computations with useMemo
-4. **Hash-based routing** — URLs use `/#/leads` not `/leads`; history navigation can be tricky
-5. **SMTP config is per-business** — changing it affects all emails sent for that owner
-6. **Plan changes take immediate effect** — all users on that plan see module changes live
-7. **Disabled stages are filtered in components** — but are still queryable in DB (don't delete them)
+1. InstantDB WHERE only supports exact match / simple operators — complex filters in JS after fetch
+2. Transaction failures are silent — always wrap `db.transact` in try/catch
+3. Hash-based routing — URLs use `/#/leads` not `/leads`
+4. SMTP config is per-business — changing it affects all that owner's emails
+5. Plan module keys are case-sensitive — Teams.jsx uses PascalCase (`Leads`), AdminPanel/usePlanEnforcement use camelCase (`leads`)
+6. `isModuleEnabled` is strict — `modules[key] === true`. Missing key = disabled. Re-save existing plans after adding a new module
+7. Never add `leads` to a component's `db.useQuery` — hangs at 11k+ rows. Use server endpoints
+8. Server-paginated APIs (leads-page) only return ~25 rows client-side — dedup and search must go server-side
+9. Disabled stages are filtered in components but still exist in DB — don't delete them
 
 ## Environment Variables
 
 ```
-VITE_INSTANT_APP_ID=<uuid>          # Frontend InstantDB app ID (required)
-INSTANT_ADMIN_TOKEN=<token>         # Backend admin token (required)
-PORT=3000                           # Express server port (optional, default 3000)
-VITE_BLOCK_AUTOMATIONS=false        # Kill switch for automation engine
+VITE_INSTANT_APP_ID=        # Frontend InstantDB app ID
+INSTANT_ADMIN_TOKEN=        # Backend admin token
+PORT=3000
+VITE_BLOCK_AUTOMATIONS=false
+# PG migration (dev/prod when live):
+USE_PG_DATA=true
+VITE_USE_PG_AUTH=true
+VITE_USE_PG_DATA=true
+DATABASE_URL=               # APP role: postgresql://t2gcrm_prod_app:<pass>@localhost:5432/t2gcrm_prod
+JWT_SECRET=                 # openssl rand -hex 32
+SYSTEM_SMTP_HOST/PORT/USER/PASS/FROM=   # for magic-code login emails
 ```
 
-## Performance & Optimization
+## Performance — MANDATORY RULES
 
-- **Code Splitting:** Each major feature (Leads, Invoices, Reports) lazy-loads
-- **Bundle Size:** ~800KB gzipped (optimized CSS, no UI framework)
-- **Real-Time:** InstantDB subscriptions only subscribe to collections in use
-- **Filters:** Client-side filtering preferred for small datasets (<10k records); server-side for large datasets
+Never skip these on any new or modified component.
 
-## Critical: Hard Delete Only (No Soft Deletes)
+- **Filter at DB level** — `where: { userId: ownerId }`, never fetch all and filter client-side
+- **Defer drawer/modal data** — gate with `selectedId ? { activityLogs: ... } : {}`
+- **Always limit activityLogs queries** — `limit: 200`, never unbounded
+- **Lazy-load tab-specific data** — `db.useQuery(tab === 'team' ? { teamMembers: ... } : {})`
+- **useMemo for all derived values** — filtered lists, counts, lookup maps, totals
+- **O(1) index maps** — `Object.fromEntries(items.map(i => [i.id, i]))` instead of `.find()` inside `.map()`
+- **Paginate all lists** — default 25 rows/page
+- **Sticky table headers**, viewport-constrained height
+- **Kanban in viewport** — `overflow-y: hidden` on container, columns scroll internally
+- **Clear `tc_*` / `leads_cache_*` / `leadView_*` / `callLogView_*` localStorage keys on logout**
+- **Never `console.log` in render path**
 
-**IMPORTANT RULE:** When ANY item is deleted from the UI (business, lead, customer, invoice, team member, etc.), it MUST be **permanently removed from the database** using `db.tx.collection[id].delete()`.
+### New Page/Feature Checklist
+- [ ] Query filtered by `userId: ownerId` at DB level
+- [ ] Heavy data (logs, history) deferred to drawer query
+- [ ] All derived values in `useMemo`
+- [ ] No `.find()` / `.filter()` inside `.map()` — use index maps
+- [ ] List paginated if >25 rows possible
+- [ ] No `console.log` in render
+- [ ] localStorage cleared on logout if caching anything
 
-**DO NOT:**
-- Use soft deletes (marking as `deleted: true` or `status: 'deleted'`)
-- Leave orphaned records in the database
-- Keep temporary/backup copies of deleted data
-- Archive records instead of deleting them
+## CRITICAL: Hard Delete Only
 
-**DO:**
-- Call `db.transact(db.tx.collection[id].delete())` to hard delete
-- Clean up cascading records:
-  - Deleting business → also delete all teamMembers, leads, invoices, automations, etc.
-  - Deleting lead → also delete related quotations, activityLogs for that lead
-  - Deleting team member → also delete their attendance records, assignments
-- Keep database clean and memory-efficient
-- No duplicates or orphaned records left behind
+All deletes must be permanent via `db.tx.collection[id].delete()` (or `dbWrite(dbOp.delete(...))` for PG path). **No soft deletes (`deleted: true`), no archiving.**
 
-**Example (CORRECT):**
-```javascript
-// Hard delete lead and cascade
-const txs = [
-  db.tx.leads[leadId].delete(),
-  db.tx.quotations[quotId].delete(),  // Related records
-  db.tx.activityLogs[logId].delete()  // Audit trail for this lead
-];
-await db.transact(txs);
+Cascade delete ALL related records in one transaction:
+- Lead → activity_logs, tasks, appointments, call_logs
+- Customer → activity_logs, tasks, appointments, call_logs, amc
+- Project → activity_logs, tasks, expenses
+- Vendor → activity_logs, purchase_orders
+- Team member → userCredentials, attendance, memberStats
+
+## CRITICAL: No Orphaned Records
+
+Duplicate/orphaned records cause login bugs and data corruption (an orphaned `partnerApplications` record once redirected a business owner to the partner portal and blocked their login).
+
+**Rules:**
+1. Before creating, check for duplicates by unique keys (email/phone/userId)
+2. Delete ALL related collections in one transaction — never flip a flag instead
+3. An email must not exist in both `userCredentials` (owner) AND `partnerApplications` simultaneously
+4. A `userId` maps to exactly ONE `userProfiles` record
+5. When changing user role: DELETE obsolete records, don't just update flags
+
+**High-risk orphan pairs:**
+- `userCredentials` ↔ `userProfiles` ↔ `partnerApplications` ↔ `teamMembers` ↔ `memberProfiles`
+- `leads` ↔ `customers` (via `leadId`)
+- `quotes` ↔ `invoices` (via `quotationId`)
+
+**Delete checklist:**
+- [ ] All referencing collections identified
+- [ ] All deleted in same transaction
+- [ ] No soft-update left behind
+- [ ] Query by unique key returns 0 rows post-delete
+
+## CRITICAL: No Hardcoded Configuration
+
+Never hardcode lead stages, sources, requirements, product categories, expense categories, or any business-defined list. Always read from `userProfiles`.
+
+### Customizable userProfiles Fields
+
+| Field | Used for | Fallback |
+|---|---|---|
+| `stages` | Lead stages | `DEFAULT_STAGES` (helpers.js) |
+| `leadStages` | Visible subset of stages | all `stages` |
+| `disabledStages` | Stages hidden from UI | `[]` |
+| `wonStage` / `lostStage` | Won/Lost stage names | last stage / `'Lost'` |
+| `sources` | Lead sources | `DEFAULT_SOURCES` |
+| `requirements` | Lead requirement/interest | `DEFAULT_REQUIREMENTS` |
+| `productCats` | Product categories | none — show "All" |
+| `expCats` | Expense categories | none — hide the filter |
+| `customFields` | Per-business custom fields | `[]` |
+| `roles` | Team roles + permissions | `DEFAULT_ROLES` (Teams.jsx) |
+
+**Rule extends to reports, filters, and exports** — every dropdown, filter, breakdown that represents a business-defined category must read from `userProfiles`. If the field is empty, hide the control.
+
+**New dropdown checklist:**
+- [ ] Is it business-specific? → read from `userProfiles`
+- [ ] Empty field → hide control (never show hardcoded fallback)
+- [ ] First-run defaults → `DEFAULT_*` in `utils/helpers.js`, overridable
+- [ ] Same source used in form, filter, report, and export
+
+## CRITICAL: Roles & Permissions
+
+Every CRUD component must check permissions. Every page must be gated by plan enforcement.
+
+- `perms?.can('ModuleName', 'action') === true` before every create/edit/delete
+- `planEnf.isModuleEnabled('key')` gates page access
+- `planEnf.isWithinLimit('key', count)` gates record creation
+- Hide buttons when denied — don't just error on click
+- `perms?.isOwner` / `perms?.isAdmin` for special-case logic
+
+### Module Registry — Update ALL 4 Files When Adding a Module
+
+1. `src/components/Work/Teams.jsx` — `MODULES` array (PascalCase key + actions)
+2. `src/components/Work/Teams.jsx` — `MODULE_TO_PLAN_KEY` mapping (PascalCase → camelCase)
+3. `src/components/Admin/AdminPanel.jsx` — `ALL_MODULES` array (camelCase key)
+4. `src/hooks/usePlanEnforcement.js` — `VIEW_TO_MODULE` mapping (nav item id → plan key)
+
+Always-allowed views: `dashboard`, `userprofile`, `settings`, `admin`, `apidocs`, `manual`, `appointment-settings`
+
+**Module change checklist:**
+- [ ] Added to Teams.jsx MODULES (PascalCase)
+- [ ] Added to Teams.jsx MODULE_TO_PLAN_KEY
+- [ ] Added to AdminPanel.jsx ALL_MODULES (camelCase)
+- [ ] Added to usePlanEnforcement.js VIEW_TO_MODULE
+- [ ] If has limits: `hasLimit: true`, `limitKey`, `defaultLimit` in ALL_MODULES
+- [ ] Sidebar nav gated by `planEnforcement.isViewAllowed(viewId)`
+- [ ] Existing plans re-saved in Admin Panel to include new key
+
+## CRITICAL: Web ↔ API Parity
+
+Every business-logic change on web must be mirrored in the API in the same commit. Mobile reads the API, not web components.
+
+**Applies to:** permission checks, plan limits, validation, filtering/visibility, field derivation (`deriveOutcome`, source normalization), default values, cascade deletes.
+
+**Checklist:**
+- [ ] Identified all API endpoints for this entity (`/api/data?module=X`, `/api/leads-page`, `/api/call-logs`, webhooks)
+- [ ] Same rule applied server-side
+- [ ] Shared logic extracted to `api/_shared-*.js` (not duplicated)
+
+## Scale Architecture — Server-Driven Pages
+
+Production has 11k+ leads, 27k+ call logs. Never subscribe to large collections — use server endpoints.
+
+**Never do:** `db.useQuery({ leads: { limit: 10000 } })` — times out, returns 0 or truncated. `limit: N` has no ordering guarantee — returns arbitrary (often oldest) rows.
+
+### Server Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/leads-page` | Paginated leads + counts (web LeadsView) |
+| `POST /api/dashboard-stats` | KPI aggregates (Dashboard) |
+| `POST /api/call-logs-page` | Paginated call logs + team stats (CallLogs) |
+| `POST /api/team-stats` | Per-member performance aggregates (TeamReports) |
+| `POST /api/team-activity` | Raw activity logs for date range (TeamReports drilldown) |
+| `POST /api/lead-check-duplicate` | Dedup check by phone/email (Customers, LeadsView) |
+| `POST /api/sync-won-leads` | Won leads → customers sync (Customers on mount) |
+| `GET /api/data?module=leads` | **Mobile-only (legacy, unauthenticated)** |
+| `ALL /api/secure-data` | Secure token-authenticated replacement for `/api/data` |
+
+**Shared caches (always use, never create one-off caches):**
+- `api/_leads-cache.js` (15s TTL) — `getLeadsForOwner(ownerId)`
+- `api/_call-logs-cache.js` (30s TTL) — `getCallLogsForOwner(ownerId)`
+
+**Modal-lazy-fetch pattern** — components that only need leads in a "Select client" dropdown: fetch once on modal open via `/api/leads-page`, cache in `useState`. Don't subscribe.
+
+### Reports Must Aggregate Over the Full Dataset
+
+Reports are only correct if they see ALL records, then date-filter client-side. Never use a capped/paginated fetch for report data.
+- Use `mode:'list'` with large `pageSize` for `/api/leads-page` (not `mode:'kanban'` — caps at 1000)
+- Use `/api/team-activity` for activity logs (not `db.useQuery` with limit)
+- Cross-entity reports (Revenue-by-Source) need all-time leads to match invoices by name
+
+### Lead Visibility Rules (web ↔ mobile ↔ dashboard must match)
+
+All three endpoints (`/api/leads-page`, `/api/data?module=leads`, `/api/dashboard-stats`) must apply in order:
+1. **Source normalization** — `Retailer`/`Retailers` → `Channel Partners`
+2. **Stage visibility** — `leadStages` + `disabledStages` filter
+3. **Team visibility:**
+
+| Caller | Sees |
+|---|---|
+| Owner | All leads |
+| Team member with `Leads: delete` or `viewAll` perm | All leads |
+| Team member + `teamCanSeeAllLeads === true` | All leads |
+| Team member + `teamCanSeeAllLeads === false` | Assigned + unassigned (default) |
+| Team member + `teamCanSeeAllLeads === false` + `teamCanSeeUnassignedLeads === false` | Own leads only |
+
+**Gotcha:** `teamCanSeeAllLeads` is `undefined` by default (never saved) → reads as `true`. When debugging "team member sees all leads", check the actual DB value.
+
+**Caller resolution on `/api/data?module=leads`:** (1) `actorId` → teamMembers.id, (2) fallback `userEmail` → teamMembers.email, (3) no match → owner. Never treat missing `actorId` as owner without email fallback.
+
+### `/api/secure-data` — Token-Authenticated API
+
+`/api/data` has no auth — trusts `ownerId` from query string. `/api/secure-data` is the secure replacement:
+- Requires `Authorization: Bearer <token>` (token from `/api/auth` login)
+- Verifies via `db.asUser({ token }).query({ $users: {} })` — no `verifyToken` in admin SDK
+- Derives identity from verified email — client-supplied `actorId`/`isOwner` are stripped
+- Delegates to `data.js` after injecting trusted identity
+
+**Gotcha — Express getter:** `req.query = {...}` throws. Use `Object.defineProperty(req, 'query', { value, writable: true, configurable: true })`.
+
+## Call Logs Integrity
+
+### Dedup (3-layer, batch POST)
+1. `createdAt <= deviceLastSyncedAt` → skip (O(1))
+2. Stable ID match in last 48h logs → skip (cache hit)
+3. Duplicate within same batch → skip
+
+Stable ID = SHA1 of `phone|direction|duration|staffEmail|minute-bucket`. Minute-bucketing absorbs ms drift from mobile retries.
+
+Device sync state stored in `callLogSyncState` per device/owner — survives reinstalls. Invalidate cache after every write: `invalidateCallLogsCache(ownerId)`.
+
+### Connected = Duration > 0 (never trust `outcome`)
+Android sometimes sends `outcome:'Connected'` on zero-duration calls. Override everywhere:
+- `deriveOutcome()` in `api/call-logs.js`: `duration > 0` → Connected
+- UI badge: `isConnected = duration > 0`
+- Rollup grouping: `isUnpickedCall = !duration || Number(duration) === 0`
+
+### Repeat-Attempt Rollup
+Consecutive unpicked calls (duration 0) to same `phone + direction + staffEmail` within 24h collapse to one synthetic row (`attemptCount`, `groupedIds`). Delete grouped row → deletes all `groupedIds` in one transaction.
+
+### No Cleanup Buttons
+Data-quality fixes are one-shot migration scripts in `/root/crm-migration/`, not admin panel buttons.
+
+## Common Development Tasks
+
+### Adding a New API File
+1. Create `api/newfile.js`
+2. **Add import + `app.all('/api/newfile', wrap(handler))` in `server.mjs`** — mandatory or prod 404s
+3. Register route in `vite.config.js` if needed for dev
+
+### Adding a New Module
+1. Component in `src/components/FeatureName/`
+2. Route in `App.jsx` (hash route)
+3. Nav item in `Sidebar.jsx` with `planEnf.isModuleEnabled('key')`
+4. API handler in `api/`
+5. Update all 4 module registry files (see Roles & Permissions section)
+
+### Debugging
+```bash
+window.DEBUG_PERMS = true      # Trace permission checks
+window.__INSTANT_DEBUG__ = true # InstantDB query debug
+# Check localStorage keys:
+Object.keys(localStorage).forEach(k => console.log(k, localStorage.getItem(k)))
 ```
-
-**Example (WRONG - don't do this):**
-```javascript
-// Soft delete - FORBIDDEN
-await db.transact(db.tx.leads[leadId].update({ deleted: true }));  // ❌ WRONG
-```
-
-## CRITICAL: No Hardcoded Configuration Values
-
-**NEVER hardcode configuration values like product categories, lead stages, sources, requirements, etc.** These MUST come from `userProfiles` settings (Business Settings), not from constants or code.
-
-**Hardcoded values:**
-- ❌ Default stages: `['New Enquiry', 'Quotation Created', 'Won', 'Lost']` in code
-- ❌ Sources list: `['Direct Call', 'Website', 'Partner']` as constants
-- ❌ Product categories: `['Electronics', 'Software', 'Consulting']` in dropdown
-- ❌ Any dropdown with fixed list of options
-
-**Correct approach:**
-- ✅ Fetch from `userProfiles.stages`, `userProfiles.sources`, `userProfiles.productCats`, etc.
-- ✅ Owner customizes in Business Settings
-- ✅ Dropdown/UI uses customized values, not defaults
-- ✅ New workspace gets sensible defaults, can be overridden
-
-**Example:**
-
-```javascript
-// ❌ WRONG - Hardcoded
-const STAGES = ['New', 'Contacted', 'Won', 'Lost'];
-const stageOptions = STAGES.map(s => <option key={s}>{s}</option>);
-
-// ✅ CORRECT - From settings
-const { data } = db.useQuery({ userProfiles: { $: { where: { userId: ownerId } } } });
-const profile = data?.userProfiles?.[0];
-const stageOptions = (profile?.stages || DEFAULT_STAGES).map(s => <option key={s}>{s}</option>);
-```
-
-**When adding a new dropdown/list in any module, ask yourself:**
-- "Can the user customize this list?"
-- "Is this business-specific or truly universal?"
-- If customizable: Store in `userProfiles` + add Business Settings UI
-- If universal: Only then hardcode (rare — examples: Invoice statuses like "Draft"/"Sent"/"Paid" are hardcoded because they're system states)
-
-**Business Settings location:**
-- File: `src/components/Settings/` (or `src/components/Business/`)
-- Where user can add/edit/remove custom values
-- Stored in: `userProfiles.[ fieldName ]` array
-
----
-
-## Adding or Removing Modules
-
-**CRITICAL:** When creating or deleting a module, update THREE places:
-
-### 1. Teams.jsx — Permission Module Definition
-**File:** `src/components/Work/Teams.jsx` (lines 10-34)
-
-Add/remove from `MODULES` array:
-```javascript
-const MODULES = [
-  { key: 'YourModule', actions: ['list', 'create', 'edit', 'delete'] },
-  // ...
-];
-```
-
-### 2. AdminPanel.jsx — Plan Module Definition
-**File:** `src/components/Admin/AdminPanel.jsx` (lines 14-38)
-
-Add/remove from `ALL_MODULES` array:
-```javascript
-const ALL_MODULES = [
-  { key: 'yourModule', label: 'Your Module', hasLimit: false },
-  // If module has limits (like leads, users):
-  { key: 'yourModule', label: 'Your Module', hasLimit: true, limitKey: 'maxYourModule', defaultLimit: 100 },
-  // ...
-];
-```
-
-**Key differences:**
-- Teams uses PascalCase (`YourModule`)
-- Admin uses camelCase (`yourModule`)
-
-### 3. usePlanEnforcement.js — View Routing
-**File:** `src/hooks/usePlanEnforcement.js` (lines 12-39)
-
-Add/remove from `VIEW_TO_MODULE` mapping:
-```javascript
-const VIEW_TO_MODULE = {
-  'your-view-id': 'yourModule',
-  // ...
-};
-```
-
-**Checklist Before Committing:**
-- [ ] Module added to `Teams.jsx` MODULES array
-- [ ] Module added to `AdminPanel.jsx` ALL_MODULES array with correct case
-- [ ] Module added to `usePlanEnforcement.js` VIEW_TO_MODULE if it has a sidebar nav item
-- [ ] Case consistency: PascalCase in Teams, camelCase in Admin/Plan enforcement
-- [ ] If module has limits: Added `hasLimit: true`, `limitKey`, `defaultLimit` to ALL_MODULES
-- [ ] Sidebar nav item added to `Sidebar.jsx` (if user-facing module)
-- [ ] Default role permissions set in Teams.jsx DEFAULT_ROLES (optional)
 
 ## Known Limitations
-
-- No formal test suite (manual QA)
-- No TypeScript (plain JavaScript)
-- CSS-only styling (no Tailwind or CSS-in-JS framework)
-- Chunk loading errors reload page once (lazy boundary handler)
-- No service worker or offline support
-
-## Useful Commands for Debugging
-
-```bash
-# Check what's in localStorage (for lead view config, registration data, etc)
-Object.keys(localStorage).forEach(k => console.log(k, localStorage.getItem(k)));
-
-# Inspect InstantDB queries
-window.__INSTANT_DEBUG__ = true;  // If available
-
-# Check permissions in console
-window.DEBUG_PERMS = true;
-
-# Monitor cron job (server logs)
-npm run dev  # Tail console for "process-automations" logs
-```
-
-## Related Files to Read First
-
-- **Understanding the app:** `src/App.jsx` (routes), `src/components/Layout/MainApp.jsx` (main UI)
-- **Understanding auth:** `api/auth.js`, `src/components/Auth/`
-- **Understanding data flow:** `src/components/Leads/LeadsView.jsx` (example of full CRUD)
-- **Understanding automation:** `/api/cron/process-automations.js`
-- **Understanding integrations:** `src/components/System/Integrations.jsx` + respective handlers
+- No test suite (manual QA)
+- No TypeScript
+- Plain CSS only
+- No service worker / offline support
 
 ---
-
-**This codebase is production-ready for SaaS deployment on Vercel, AWS Lambda, or similar serverless/Node.js hosting. It demonstrates enterprise patterns: multi-tenancy, real-time sync, role-based access, email automation, and modular feature architecture.**
+**Production:** https://crm.t2gcrm.in (pm2: `t2gcrm`, `/var/www/t2gcrm`) | **Dev:** https://dev.t2gcrm.in (pm2: `dev-t2gcrm`, `/var/www/dev-t2gcrm`) | **VPS:** Contabo, `/root/pg_credentials.txt`, `/root/crm-migration/`

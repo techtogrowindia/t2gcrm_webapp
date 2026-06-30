@@ -131,14 +131,20 @@ export default function BookingPage() {
         // Fire WhatsApp auto-notification for appointment booked
         if (profile) {
           fireAutoNotifications('appointment_booked', {
+            // Provide multiple aliases so the CRM template body can use any
+            // variable name that matches the Waprochat template definition.
             client: form.name,
             phone: form.phone,
+            clientphoneno: form.phone,
+            leadphoneno: form.phone,
             email: form.email || '',
             apptDate: selectedDate,
             apptTime: selectedTime,
             service: selectedService,
             date: selectedDate,
             bizName: profile?.bizName || '',
+            ownerPhone: profile?.phone || '',
+            entityId: `${form.phone}-${selectedDate}-${selectedTime}`,
           }, profile, ownerId).catch(() => {});
         }
       }

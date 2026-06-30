@@ -1,4 +1,5 @@
 import { init } from '@instantdb/admin';
+import { opU, runOps, readData } from '../_write-ops.js';
 
 // Initialize InstantDB Admin SDK
 // We must use the Admin SDK for backend/serverless environments
@@ -39,7 +40,7 @@ export default async function handler(req, res) {
 
     // 1. Fetch the user's profile to get their Google Sheets mapping configuration
     console.log(`Fetching profile for user: ${userId}`);
-    const profileResponse = await db.query({
+    const profileResponse = await readData(db, userId, {
       userProfiles: {
         $: { where: { userId: userId } }
       }
@@ -144,7 +145,7 @@ export default async function handler(req, res) {
     let existingLead = null;
     if (lead.email || lead.phone) {
       // Find matching existing lead
-      const leadsRes = await db.query({
+      const leadsRes = await readData(db, userId, {
         leads: { $: { where: { userId: userId } } }
       });
       const allLeads = leadsRes.leads || [];
@@ -160,7 +161,7 @@ export default async function handler(req, res) {
       const createDateStr = new Date(existingLead.createdAt || Date.now()).toLocaleString();
       
       txs.push(
-        db.tx.activityLogs[logId].update({
+        opU('activityLogs', logId, {
           entityId: existingLead.id,
           entityType: 'lead',
           text: `Lead submitted again from Google Sheets.\nOriginal creation date: ${createDateStr}\n**Resubmitted on: ${new Date().toLocaleString()}**`,
@@ -169,16 +170,18 @@ export default async function handler(req, res) {
           userName: 'System (Webhook)',
           createdAt: Date.now()
         }),
-        db.tx.leads[existingLead.id].update({ updatedAt: Date.now() })
+        opU('leads', existingLead.id, { updatedAt: Date.now() })
       );
       console.log(`Lead already exists (${existingLead.id}). Added activity log instead.`);
     } else {
-      txs.push(db.tx.leads[leadId].update(lead));
+      // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
+      if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+      txs.push(opU('leads', leadId, lead));
       console.log(`Successfully added lead ${leadId} for user ${userId}`);
     }
 
     // 4. Save the lead or activity log directly into InstantDB using the Admin SDK
-    await db.transact(txs);
+    await runOps(db, userId, txs);
 
     // Return success response to Apps Script
     return res.status(200).json({ 

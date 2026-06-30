@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -140,8 +141,6 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
 
   const { data, isLoading } = db.useQuery({
     products: { $: { where: { userId: ownerId, isPartnerAvailable: true } } },
-    leads: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { id: partnerId } } }
   });
@@ -162,26 +161,22 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
     });
   };
 
-  const checkConflict = () => {
-    const checkPhone = form.phone.trim().toLowerCase();
-    const checkEmail = form.email.trim().toLowerCase();
+  const checkConflict = async () => {
+    const checkPhone = form.phone.trim();
+    const checkEmail = form.email.trim();
     if (!checkPhone && !checkEmail) return null;
 
-    const allRecords = [...(data?.leads || []), ...(data?.customers || [])];
-    const conflict = allRecords.find(r => {
-      const rPhone = String(r.phone || '').trim().toLowerCase();
-      const rEmail = String(r.email || '').trim().toLowerCase();
-      
-      const phoneMatch = checkPhone && rPhone && rPhone === checkPhone;
-      const emailMatch = checkEmail && rEmail && rEmail === checkEmail;
-      
-      if ((phoneMatch || emailMatch) && r.partnerId !== partnerId) {
-        return true;
-      }
-      return false;
-    });
-
-    return conflict;
+    try {
+      const res = await fetch('/api/lead-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, phone: checkPhone, email: checkEmail }),
+      });
+      const result = await res.json();
+      const match = result.lead || result.customer;
+      if (match && match.partnerId !== partnerId) return match;
+    } catch (e) { console.warn('Conflict check failed:', e); }
+    return null;
   };
 
   const handleSubmit = async (e) => {
@@ -190,7 +185,7 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
       return toast('Name and at least phone or email is required.', 'error');
     }
 
-    const conflict = checkConflict();
+    const conflict = await checkConflict();
     if (conflict) {
       toast('Oops! This customer is already assigned to another partner or the company directly.', 'error');
       return;
@@ -214,8 +209,8 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
       }
 
       const leadId = id();
-      await db.transact([
-        db.tx.leads[leadId].update({
+      await dbWrite([
+        dbOp.update('leads', leadId, {
           name: form.name.trim(),
           phone: form.phone.trim(),
           email: form.email.trim(),
@@ -232,7 +227,7 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
           createdAt: Date.now(),
           updatedAt: Date.now()
         }),
-        db.tx.activityLogs[id()].update({
+        dbOp.update('activityLogs', id(), {
           entityId: leadId,
           entityType: 'lead',
           text: `Requirement added by Channel Partner`,
@@ -354,15 +349,28 @@ function NewRequirementForm({ ownerId, partnerId, user }) {
 // ------ MY CUSTOMERS VIEW ------
 function MyCustomersView({ ownerId, partnerId }) {
   const [search, setSearch] = useState('');
-  const { data, isLoading } = db.useQuery({
-    leads: { $: { where: { userId: ownerId } } }
-  });
+  const [allLeads, setAllLeads] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const allLeads = useMemo(() => {
-    return (data?.leads || [])
-      .filter(l => l.partnerId === partnerId || l.distributorId === partnerId || l.retailerId === partnerId)
-      .sort((a, b) => b.createdAt - a.createdAt);
-  }, [data, partnerId]);
+  // Fetch only this partner's leads from server (avoids 11k+ subscription)
+  React.useEffect(() => {
+    if (!ownerId || !partnerId) return;
+    setIsLoading(true);
+    fetch('/api/leads-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, mode: 'kanban', tab: 'all', page: 1, pageSize: 50000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+    })
+      .then(r => r.json())
+      .then(json => {
+        const leads = (json.items || [])
+          .filter(l => l.partnerId === partnerId || l.distributorId === partnerId || l.retailerId === partnerId)
+          .sort((a, b) => b.createdAt - a.createdAt);
+        setAllLeads(leads);
+      })
+      .catch(() => {})
+      .finally(() => setIsLoading(false));
+  }, [ownerId, partnerId]);
 
   const filtered = useMemo(() => {
     if (!search) return allLeads;
@@ -595,12 +603,12 @@ function ProfileSettingsView({ ownerId, partnerId }) {
         ? `Profile updated by partner: ${changes.join(', ')}`
         : 'Profile updated by partner (no field changes detected)';
 
-      await db.transact([
-        db.tx.partnerApplications[partnerId].update({
+      await dbWrite([
+        dbOp.update('partnerApplications', partnerId, {
           ...form,
           updatedAt: Date.now()
         }),
-        db.tx.activityLogs[id()].update({
+        dbOp.update('activityLogs', id(), {
           entityId: partnerId,
           entityType: 'partner',
           text: logText,

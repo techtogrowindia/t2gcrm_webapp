@@ -1,10 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, stageBadgeClass, prioBadgeClass } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
+import { fireAutoNotifications } from '../../utils/messaging';
 
 const DEFAULT_TASK_STATUSES = ['Pending', 'In Progress', 'Completed'];
 
@@ -30,8 +32,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
     projects: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } }
+    customers: { $: { where: { userId: ownerId }, limit: 10000 } },
   });
   const tasks = useMemo(() => {
     const rawTasks = data?.tasks || [];
@@ -44,8 +45,21 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
   const projects = data?.projects || [];
   const team = data?.teamMembers || [];
   const customers = data?.customers || [];
-  const leads = data?.leads || [];
   const profile = data?.userProfiles?.[0] || {};
+
+  const [modalLeads, setModalLeads] = useState([]);
+  const fetchModalLeads = async () => {
+    if (modalLeads.length > 0) return; // already cached for this session
+    try {
+      const r = await fetch('/api/leads-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, mode: 'list', pageSize: 500, tab: 'all', page: 1, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+      });
+      const json = await r.json();
+      setModalLeads(json.items || []);
+    } catch (e) { /* silent — dropdown will be empty but save still works */ }
+  };
   const customFields = profile.customFields || [];
   const taskStatuses = profile.taskStatuses || DEFAULT_TASK_STATUSES;
   const savedCols = profile.taskCols;
@@ -78,9 +92,9 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
     const wonStage = profile.wonStage || 'Won';
     return [
       ...customers.map(c => ({ ...c, isLead: false, displayName: c.name })),
-      ...leads.filter(l => l.stage !== wonStage).map(l => ({ ...l, isLead: true, displayName: `${l.name} (Lead)` }))
+      ...modalLeads.filter(l => l.stage !== wonStage).map(l => ({ ...l, isLead: true, displayName: `${l.name} (Lead)` }))
     ];
-  }, [customers, leads, profile.wonStage]);
+  }, [customers, modalLeads, profile.wonStage]);
 
   const projName = (pid) => projects.find(p => p.id === pid)?.name || '-';
 
@@ -93,10 +107,10 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
         if (currentMax < 100) currentMax = 100;
         
         const updates = withoutNum.map((t, idx) => {
-          return db.tx.tasks[t.id].update({ taskNumber: currentMax + idx + 1 });
+          return dbOp.update('tasks', t.id, { taskNumber: currentMax + idx + 1 });
         });
         
-        db.transact(updates).then(() => {
+        dbWrite(updates).then(() => {
           console.log(`Migrated ${updates.length} tasks with numbers.`);
         });
       }
@@ -140,7 +154,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
     const matchProj = !fltProj || t.projectId === fltProj;
     const matchAssign = !fltAssign || t.assignTo === fltAssign;
     return matchSearch && matchClient && matchProj && matchAssign;
-  });
+  }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); // newest first
 
   const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
   const paginated = useMemo(() => {
@@ -153,17 +167,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
 
   const [viewData, setViewData] = useState(null);
 
-  const logActivity = async (taskId, text) => {
-    await db.transact(db.tx.activityLogs[id()].update({
-      entityId: taskId,
-      entityType: 'task',
-      text,
-      userId: ownerId,
-      actorId: user.id,
-      userName: user.email,
-      createdAt: Date.now()
-    }));
-  };
+  const myMember = useMemo(() => team.find(t => t.email === user.email), [team, user.email]);
 
   const save = async () => {
     if (!form.title.trim()) { toast('Title required', 'error'); return; }
@@ -178,15 +182,16 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
         const res = await fetch('/api/data', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            module: 'tasks', 
-            ownerId, 
-            actorId: user.id, 
-            userName: user.email, 
-            id: editData.id, 
+          body: JSON.stringify({
+            module: 'tasks',
+            ownerId,
+            actorId: user.id,
+            userName: user.email,
+            teamMemberId: myMember?.id || null,
+            id: editData.id,
             projectId: form.projectId || editData.projectId || '',
             logText: changes.length > 0 ? `Task updated: ${changes.join(' | ')}` : null,
-            ...form 
+            ...form
           })
         });
         if (!res.ok) throw new Error('Failed to update');
@@ -196,12 +201,35 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
         const res = await fetch('/api/data', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ module: 'tasks', ownerId, actorId: user.id, userName: user.email, ...form })
+          body: JSON.stringify({ module: 'tasks', ownerId, actorId: user.id, userName: user.email, teamMemberId: myMember?.id || null, ...form })
         });
         if (!res.ok) throw new Error('Failed to create');
         const result = await res.json();
         // Backend handles task numbering and creation log
         toast('Task created', 'success');
+
+        // WhatsApp notification when task is assigned to a staff member
+        if (form.assignTo) {
+          const tProfile = profile;
+          const assignedMember = (data?.teamMembers || []).find(t => t.name === form.assignTo);
+          const assignedPhone = assignedMember?.phone || '';
+          if (tProfile && assignedPhone) {
+            fireAutoNotifications('task_assigned', {
+              assignee: form.assignTo,
+              phone: assignedPhone,
+              clientphoneno: assignedPhone,
+              leadphoneno: assignedPhone,
+              task: form.title,
+              client: form.client || '',
+              duedate: form.dueDate || '',
+              priority: form.priority || '',
+              date: new Date().toISOString().split('T')[0],
+              bizName: tProfile.bizName || tProfile.businessName || '',
+              ownerPhone: tProfile.waNotifPhone || tProfile.phone || '',
+              entityId: form.title,
+            }, tProfile, ownerId).catch(() => {});
+          }
+        }
       }
       setModal(false);
     } catch (e) {
@@ -215,7 +243,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
       const res = await fetch('/api/data', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ module: 'tasks', ownerId, actorId: user.id, userName: user.email, id: tid, logText: 'Task deleted' })
+        body: JSON.stringify({ module: 'tasks', ownerId, actorId: user.id, userName: user.email, teamMemberId: myMember?.id || null, id: tid, logText: 'Task deleted' })
       });
       if (!res.ok) throw new Error('Failed to delete');
       toast('Deleted', 'error');
@@ -228,7 +256,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
     if (!newCustForm.name.trim()) return toast('Name required', 'error');
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
-    await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+    await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
     setForm(p => ({ ...p, client: newCustForm.name.trim() }));
     setCustModal(false);
     setNewCustForm(EMPTY_CUSTOMER);
@@ -237,7 +265,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
 
   const saveViewConfig = async (cols, stages, size) => {
     if (!isOwner) return toast('Only owner can change view config', 'error');
-    await db.transact(db.tx.userProfiles[profile.id].update({ taskCols: cols, taskStages: stages, taskPageSize: size }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { taskCols: cols, taskStages: stages, taskPageSize: size }));
     setColModal(false);
     toast('View saved', 'success');
   };
@@ -252,15 +280,16 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
       await fetch('/api/data', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          module: 'tasks', 
-          ownerId, 
-          actorId: user.id, 
-          userName: user.email, 
-          id: t.id, 
+        body: JSON.stringify({
+          module: 'tasks',
+          ownerId,
+          actorId: user.id,
+          userName: user.email,
+          teamMemberId: myMember?.id || null,
+          id: t.id,
           projectId: t.projectId || '',
-          status: nextStatus, 
-          logText: `Task updated: Status changed from "${t.status}" to "${nextStatus}"` 
+          status: nextStatus,
+          logText: `Task updated: Status changed from "${t.status}" to "${nextStatus}"`
         })
       });
       toast(`Status: ${nextStatus}`, 'success');
@@ -293,7 +322,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
             setTempPageSize(pageSize);
             setColModal(true);
           }}>⚙ Configure View</button>
-          {canCreate && <button className="btn btn-primary btn-sm" onClick={() => { setEditData(null); setViewData(null); setForm({ title: '', assignTo: '', dueDate: '', priority: 'Medium', status: taskStatuses[0], notes: '', projectId: '', client: '', taskNumber: null }); setModal(true); }}>+ Create Task</button>}
+          {canCreate && <button className="btn btn-primary btn-sm" onClick={() => { fetchModalLeads(); setEditData(null); setViewData(null); setForm({ title: '', assignTo: '', dueDate: '', priority: 'Medium', status: taskStatuses[0], notes: '', projectId: '', client: '', taskNumber: null }); setModal(true); }}>+ Create Task</button>}
         </div>
       </div>
       <div className="tabs">
@@ -331,12 +360,12 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
             <select 
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', fontWeight: 700, outline: 'none', cursor: 'pointer', color: 'var(--accent)', padding: '2px 4px', borderRadius: 4, fontSize: 11 }}
               value={pageSize}
-              onChange={e => setPageSize(e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10))}
+              onChange={e => setPageSize(parseInt(e.target.value, 10))}
             >
               <option value={25}>25</option>
               <option value={50}>50</option>
               <option value={100}>100</option>
-              <option value="all">All</option>
+              <option value={500}>500</option>
             </select>
           </div>
 
@@ -382,8 +411,8 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
                       <td key={cf.name} style={{ fontSize: 12 }}>{t.custom?.[cf.name] || '-'}</td>
                     ))}
                     <td>
-                      <button className="btn btn-secondary btn-sm" onClick={() => { setViewData(t); setEditData(null); setForm({ title: t.title, assignTo: t.assignTo || '', dueDate: t.dueDate || '', priority: t.priority, status: t.status, notes: t.notes || '', projectId: t.projectId || '', client: t.client || '' }); setModal(true); }}>View</button>{' '}
-                      {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => { setEditData(t); setViewData(null); setForm({ title: t.title, assignTo: t.assignTo || '', dueDate: t.dueDate || '', priority: t.priority, status: t.status, notes: t.notes || '', projectId: t.projectId || '', client: t.client || '' }); setModal(true); }}>Edit</button>}{' '}
+                      <button className="btn btn-secondary btn-sm" onClick={() => { fetchModalLeads(); setViewData(t); setEditData(null); setForm({ title: t.title, assignTo: t.assignTo || '', dueDate: t.dueDate || '', priority: t.priority, status: t.status, notes: t.notes || '', projectId: t.projectId || '', client: t.client || '' }); setModal(true); }}>View</button>{' '}
+                      {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => { fetchModalLeads(); setEditData(t); setViewData(null); setForm({ title: t.title, assignTo: t.assignTo || '', dueDate: t.dueDate || '', priority: t.priority, status: t.status, notes: t.notes || '', projectId: t.projectId || '', client: t.client || '' }); setModal(true); }}>Edit</button>}{' '}
                       {canDelete && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={() => del(t.id)}>Del</button>}
                     </td>
                   </tr>
@@ -536,7 +565,7 @@ export default function AllTasks({ user, perms, ownerId, planEnforcement }) {
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
                 <strong style={{ fontSize: 13, color: 'var(--text)', marginBottom: 12, display: 'block' }}>Default Page Size</strong>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  {[25, 50, 100, 'all'].map(size => (
+                  {[25, 50, 100, 500].map(size => (
                     <button key={size} className={`btn btn-sm ${tempPageSize === size ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTempPageSize(size)}>{size}</button>
                   ))}
                 </div>

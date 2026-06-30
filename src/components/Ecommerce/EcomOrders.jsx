@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmt, fmtD } from '../../utils/helpers';
@@ -27,12 +28,11 @@ export default function EcomOrders({ ownerId, perms }) {
     orders: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     customers: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
   });
 
   const orders = data?.orders || [];
   const customers = data?.customers || [];
-  const leads = data?.leads || [];
+  // leads fetched on-demand via /api/lead-lookup (avoids 11k+ subscription)
   const orderStatuses = data?.userProfiles?.[0]?.orderStatuses || FALLBACK_STATUSES;
 
   const filtered = useMemo(() => {
@@ -49,13 +49,13 @@ export default function EcomOrders({ ownerId, perms }) {
     const order = orders.find(o => o.id === orderId);
     if (!window.confirm(`Are you sure you want to change this order's status to ${status}?`)) return;
     
-    const txs = [db.tx.orders[orderId].update({ status, updatedAt: Date.now() })];
+    const txs = [dbOp.update('orders', orderId, { status, updatedAt: Date.now() })];
 
     if (status === 'Delivered') {
       const existingCustomer = customers.find(c => c.phone === order.customerPhone || (c.email && c.email === order.customerEmail));
       if (!existingCustomer && order.customerPhone) {
         const newCustomerId = id();
-        txs.push(db.tx.customers[newCustomerId].update({
+        txs.push(dbOp.update('customers', newCustomerId, {
           userId: ownerId,
           name: order.customerName || 'Unknown',
           phone: order.customerPhone || '',
@@ -64,20 +64,28 @@ export default function EcomOrders({ ownerId, perms }) {
           createdAt: Date.now()
         }));
         
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
           entityId: newCustomerId, entityType: 'customer', text: `Auto-converted from E-commerce order (${order.id.slice(0,8)}) upon delivery.`,
           userId: ownerId, createdAt: Date.now()
         }));
       }
       
-      // Update Lead to Converted
-      const existingLead = leads.find(l => l.phone === order.customerPhone || (l.email && l.email === order.customerEmail));
-      if (existingLead && existingLead.stage !== 'Converted') {
-        txs.push(db.tx.leads[existingLead.id].update({ stage: 'Converted', updatedAt: Date.now() }));
-      }
+      // Look up matching lead server-side (avoids 11k+ subscription)
+      try {
+        const lookupRes = await fetch('/api/lead-lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerId, phone: order.customerPhone, email: order.customerEmail }),
+        });
+        const lookupData = await lookupRes.json();
+        const existingLead = lookupData.lead;
+        if (existingLead && existingLead.stage !== 'Converted') {
+          txs.push(dbOp.update('leads', existingLead.id, { stage: 'Converted', updatedAt: Date.now() }));
+        }
+      } catch (e) { console.warn('Lead lookup failed:', e); }
     }
     
-    await db.transact(txs);
+    await dbWrite(txs);
     toast(`Order status updated to ${status}`, 'success');
   };
 
@@ -97,8 +105,8 @@ export default function EcomOrders({ ownerId, perms }) {
     const items = editForm.items;
     const total = items.reduce((s, it) => s + (it.rate * it.qty), 0);
     
-    await db.transact([
-      db.tx.orders[selectedOrder.id].update({
+    await dbWrite([
+      dbOp.update('orders', selectedOrder.id, {
         items,
         total,
         address: editForm.address,

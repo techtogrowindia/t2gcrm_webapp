@@ -1,4 +1,5 @@
 import { init, tx, id } from '@instantdb/admin';
+import { opU, runOps, readData } from './_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -35,7 +36,7 @@ export default async function handler(req, res) {
 
     /* ── GET: List attendance records ── */
     if (method === 'GET') {
-      const { attendance } = await db.query({
+      const { attendance } = await readData(db, ownerId, {
         attendance: { $: { where: { userId: ownerId } } },
       });
 
@@ -80,7 +81,7 @@ export default async function handler(req, res) {
 
       if (action === 'checkin') {
         // Check if already checked in today
-        const { attendance } = await db.query({
+        const { attendance } = await readData(db, ownerId, {
           attendance: { $: { where: { userId: ownerId } } },
         });
         const existing = (attendance || []).find(
@@ -96,7 +97,7 @@ export default async function handler(req, res) {
 
         const newId = id();
         const now = Date.now();
-        await db.transact(tx.attendance[newId].update({
+        await runOps(db, ownerId, [opU('attendance', newId, {
           staffEmail,
           staffName: staffName || '',
           date: todayStr,
@@ -113,14 +114,14 @@ export default async function handler(req, res) {
           actorId: params.actorId || ownerId,
           createdAt: now,
           updatedAt: now,
-        }));
+        })]);
 
         return res.status(201).json({ success: true, id: newId, message: 'Checked in successfully' });
       }
 
       if (action === 'checkout') {
         // Find today's open check-in
-        const { attendance } = await db.query({
+        const { attendance } = await readData(db, ownerId, {
           attendance: { $: { where: { userId: ownerId } } },
         });
         const openRecord = (attendance || []).find(
@@ -134,14 +135,14 @@ export default async function handler(req, res) {
         const now = Date.now();
         const totalHours = Math.round(((now - openRecord.checkInTime) / (1000 * 60 * 60)) * 100) / 100;
 
-        await db.transact(tx.attendance[openRecord.id].update({
+        await runOps(db, ownerId, [opU('attendance', openRecord.id, {
           checkOutTime: now,
           checkOutLat: lat ? Number(lat) : null,
           checkOutLng: lng ? Number(lng) : null,
           checkOutAddress: address || '',
           totalHours,
           updatedAt: now,
-        }));
+        })]);
 
         return res.status(200).json({
           success: true,

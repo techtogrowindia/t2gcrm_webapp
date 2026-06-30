@@ -1,8 +1,10 @@
 import React, { useState, useMemo } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmt, stageBadgeClass } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
+import { logActivity } from '../../utils/activityLogger';
 
 const DEFAULT_CATS = ['Software', 'Hardware', 'Travel', 'Office', 'Marketing', 'Utilities', 'Salaries', 'Misc'];
 const EMPTY = { desc: '', amount: '', taxRate: 0, taxAmt: 0, category: 'Office', date: '', status: 'Pending', notes: '' };
@@ -17,14 +19,17 @@ export default function Expenses({ user, perms, ownerId }) {
   const [form, setForm] = useState(EMPTY);
   const toast = useToast();
 
-  const { data } = db.useQuery({ 
+  const { data } = db.useQuery({
     expenses: { $: { where: { userId: ownerId } } },
-    userProfiles: { $: { where: { userId: ownerId } } }
+    userProfiles: { $: { where: { userId: ownerId } } },
+    teamMembers: { $: { where: { userId: ownerId } } },
   });
   const expenses = useMemo(() => {
-    return data?.expenses || [];
+    return (data?.expenses || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); // newest first
   }, [data?.expenses]);
   const profile = data?.userProfiles?.[0] || {};
+  const team = data?.teamMembers || [];
+  const myMember = useMemo(() => team.find(t => t.email === user.email), [team, user.email]);
   const cats = profile.expCats || DEFAULT_CATS;
   const taxRates = profile.taxRates || [{ label: 'None (0%)', rate: 0 }, { label: 'GST @ 5%', rate: 5 }, { label: 'GST @ 12%', rate: 12 }, { label: 'GST @ 18%', rate: 18 }, { label: 'GST @ 28%', rate: 28 }];
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
@@ -44,21 +49,40 @@ export default function Expenses({ user, perms, ownerId }) {
       userId: ownerId,
       actorId: user.id
     };
-    if (editData) { await db.transact(db.tx.expenses[editData.id].update(payload)); toast('Updated', 'success'); }
-    else { await db.transact(db.tx.expenses[id()].update(payload)); toast('Expense added', 'success'); }
+    const isEdit = !!editData;
+    const expId = isEdit ? editData.id : id();
+    await dbWrite(dbOp.update('expenses', expId, payload));
+    await logActivity({
+      entityType: 'expense', entityId: expId,
+      entityName: form.desc,
+      action: isEdit ? 'edited' : 'created',
+      text: isEdit ? `Expense updated: **${form.desc}** (₹${payload.amount})` : `Expense added: **${form.desc}** ₹${payload.amount}`,
+      userId: ownerId, user, teamMemberId: myMember?.id || null,
+      meta: { amount: payload.amount, status: payload.status },
+    });
+    toast(isEdit ? 'Updated' : 'Expense added', 'success');
     setModal(false);
   };
 
   const del = async (eid) => { 
     if (!canDelete) { toast('Permission denied: cannot delete expenses', 'error'); return; }
     if (!confirm('Delete?')) return; 
-    await db.transact(db.tx.expenses[eid].delete()); 
+    await dbWrite(dbOp.delete('expenses', eid)); 
     toast('Deleted', 'error'); 
   };
-  const changeStatus = async (eid, s) => { 
+  const changeStatus = async (eid, s) => {
     if (!canEdit) { toast('Permission denied: cannot change status', 'error'); return; }
-    await db.transact(db.tx.expenses[eid].update({ status: s })); 
-    toast(`Expense ${s.toLowerCase()}`, 'success'); 
+    const exp = expenses.find(e => e.id === eid);
+    await dbWrite(dbOp.update('expenses', eid, { status: s }));
+    await logActivity({
+      entityType: 'expense', entityId: eid,
+      entityName: exp?.desc || '',
+      action: 'edited',
+      text: `Expense **${exp?.desc || ''}** marked as ${s}`,
+      userId: ownerId, user, teamMemberId: myMember?.id || null,
+      meta: { status: s },
+    });
+    toast(`Expense ${s.toLowerCase()}`, 'success');
   };
 
   return (

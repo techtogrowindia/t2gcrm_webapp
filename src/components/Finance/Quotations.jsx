@@ -1,22 +1,27 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
-import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES } from '../../utils/helpers';
+import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
 import DocumentTemplate from './DocumentTemplate';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
+import { logActivity } from '../../utils/activityLogger';
+import { fireAutoNotifications } from '../../utils/messaging';
 
-const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', disc: 0, adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '' };
+const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
 
-function calcTotals(items, disc, tdsRate, adj) {
+function calcTotals(items, disc, discType, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
   const its = Array.isArray(items) ? items : (items ? JSON.parse(items) : []);
   const sub = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0), 0);
   const taxTotal = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0) * (it.taxRate || 0) / 100, 0);
-  const discAmt = sub * (disc || 0) / 100;
+  const discAmt = discType === '₹' ? (parseFloat(disc) || 0) : sub * (parseFloat(disc) || 0) / 100;
   const tdsAmt = (sub - discAmt) * (tdsRate || 0) / 100;
-  const total = Math.round(sub - discAmt + taxTotal - tdsAmt + (parseFloat(adj) || 0));
-  return { sub, taxTotal, discAmt, tdsAmt, total };
+  const deliveryAmt = parseFloat(delivery) || 0;
+  const deliveryTax = deliveryAmt * (parseFloat(deliveryTaxRate) || 0) / 100;
+  const total = Math.round(sub - discAmt + taxTotal + deliveryAmt + deliveryTax - tdsAmt + (parseFloat(adj) || 0));
+  return { sub, taxTotal, discAmt, tdsAmt, deliveryAmt, deliveryTax, total };
 }
 
 export default function Quotations({ user, perms, ownerId, settings }) {
@@ -33,13 +38,13 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   const [custModal, setCustModal] = useState(false);
   const [newCustForm, setNewCustForm] = useState(EMPTY_CUSTOMER);
   const [saving, setSaving] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const toast = useToast();
 
   const { data, isLoading } = db.useQuery({
     quotes: { $: { where: { userId: ownerId } } },
     products: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId, status: 'Approved' } } },
@@ -48,10 +53,35 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     return data?.quotes || [];
   }, [data?.quotes]);
 
-  const products = data?.products || [];
-  const customers = data?.customers || [];
-  const leads = data?.leads || [];
+  const products = (data?.products || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const team = data?.teamMembers || [];
+
+  const [modalCustomers, setModalCustomers] = useState([]);
+  const custFetchRef = useRef(false);
+  const fetchModalCustomers = async () => {
+    if (custFetchRef.current) return;
+    custFetchRef.current = true;
+    try {
+      const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
+      setModalCustomers(result.customers || []);
+    } catch(e) { custFetchRef.current = false; }
+  };
+  const customers = modalCustomers;
+  useEffect(() => { if (modal || printing) fetchModalCustomers(); }, [!!modal, !!printing]);
+
+  const [modalLeads, setModalLeads] = useState([]);
+  const fetchModalLeads = async () => {
+    if (modalLeads.length > 0) return; // already cached for this session
+    try {
+      const r = await fetch('/api/leads-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, mode: 'list', pageSize: 500, tab: 'all', page: 1, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+      });
+      const json = await r.json();
+      setModalLeads(json.items || []);
+    } catch (e) { /* silent — dropdown will be empty but save still works */ }
+  };
   const profile = data?.userProfiles?.[0] || {};
   const wonStage = profile.wonStage || 'Won';
   const taxRates = profile.taxRates || TAX_OPTIONS;
@@ -62,7 +92,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   
   const clientOptions = useMemo(() => {
     const savedLeadStages = profile?.leadStages;
-    const filteredLeads = leads.filter(l => {
+    const filteredLeads = modalLeads.filter(l => {
       const isVisible = !savedLeadStages || savedLeadStages.length === 0 || savedLeadStages.includes(l.stage);
       return isVisible && l.stage !== wonStage;
     });
@@ -70,7 +100,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
       ...customers.map(c => ({ ...c, isLead: false, displayName: c.companyName ? `${c.companyName} (${c.name})` : c.name })),
       ...filteredLeads.map(l => ({ ...l, isLead: true, displayName: l.companyName ? `${l.companyName} (${l.name}) (Lead)` : `${l.name} (Lead)` }))
     ];
-  }, [customers, leads, profile?.leadStages, wonStage]);
+  }, [customers, modalLeads, profile?.leadStages, wonStage]);
 
   const filtered = useMemo(() => {
     return quotes.filter(q => tab === 'all' || q.status === tab)
@@ -80,12 +110,25 @@ export default function Quotations({ user, perms, ownerId, settings }) {
         const items = Array.isArray(q.items) ? q.items : (q.items ? JSON.parse(q.items) : []);
         return [q.no, q.client, q.status, q.notes, q.terms].some(v => (v || '').toLowerCase().includes(s)) ||
                items.some(it => (it.name || '').toLowerCase().includes(s));
-      });
+      })
+      .sort((a, b) => (b.createdAt || new Date(b.date || 0).getTime()) - (a.createdAt || new Date(a.date || 0).getTime())); // newest first
   }, [quotes, tab, search]);
-  const tots = calcTotals(form.items, form.disc, form.tdsRate, form.adj);
 
-  const openCreate = () => { 
-    setEditData(null); 
+  const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
+  const paginated = useMemo(() => {
+    if (pageSize === 'all') return filtered;
+    const start = (currentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, currentPage, pageSize]);
+
+  useEffect(() => { setCurrentPage(1); }, [tab, search]);
+
+  const tots = calcTotals(form.items, form.disc, form.discType, form.tdsRate, form.adj, form.deliveryCharge, form.deliveryTaxRate);
+  const curSym = currencySymbol(form.currency || 'INR');
+
+  const openCreate = () => {
+    fetchModalLeads();
+    setEditData(null);
     const nextNo = `QUOTE/${new Date().getFullYear()}/${String(quotes.length + 1).padStart(3, '0')}`;
     const defTax = profile?.defaultTaxRate || 0;
     
@@ -94,16 +137,17 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     d.setDate(d.getDate() + 14);
     const defDue = d.toISOString().split('T')[0];
     
-    setForm({ ...EMPTY, no: nextNo, validUntil: defDue, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] }); 
+    setForm({ ...EMPTY, no: nextNo, validUntil: defDue, terms: profile?.qTerms || '', notes: profile?.qNotes || '', currency: profile?.defaultCurrency || 'INR', items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] });
     setModal(true); 
   };
   const openEdit = (q) => {
+    fetchModalLeads();
     setEditData(q);
     const normalizedItems = Array.isArray(q.items) ? q.items : (typeof q.items === 'string' ? JSON.parse(q.items) : []);
     
     setForm({ 
       no: q.no || '', client: q.client, validUntil: q.validUntil || '', status: q.status, 
-      notes: q.notes || '', terms: q.terms || '', disc: q.disc || 0, adj: q.adj || 0, tdsRate: q.tdsRate || 0, 
+      notes: q.notes || '', terms: q.terms || '', disc: q.disc || 0, discType: q.discType || '%', adj: q.adj || 0, tdsRate: q.tdsRate || 0,
       items: normalizedItems.length ? normalizedItems : EMPTY.items, 
       isAmc: !!q.amcStart || !!q.isAmc, 
       amcCycle: q.amcCycle || 'Yearly', 
@@ -112,7 +156,13 @@ export default function Quotations({ user, perms, ownerId, settings }) {
       amcPlan: q.amcPlan || '', 
       amcAmount: q.amcAmount || '', 
       amcTaxRate: q.amcTaxRate || 0,
-      shipTo: q.shipTo || '', addShipping: !!q.shipTo, assign: q.assign || '' 
+      shipTo: q.shipTo || '', addShipping: !!q.shipTo, assign: q.assign || '',
+      currency: q.currency || profile?.defaultCurrency || 'INR',
+      deliveryCharge: q.deliveryCharge || 0,
+      deliveryTaxRate: q.deliveryTaxRate || 0,
+      addDelivery: !!(q.deliveryCharge && q.deliveryCharge > 0),
+      distributorId: q.distributorId || '',
+      retailerId: q.retailerId || ''
     });
     setModal(true);
   };
@@ -149,9 +199,13 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     if (validItems.length === 0) { toast('Add at least one item with a product name', 'error'); return; }
     if (profile.reqShipping === 'Mandatory' && !form.shipTo?.trim()) { toast('Shipping Address is required', 'error'); return; }
     
-    const { addShipping, ...qPayload } = form;
+    const { addShipping, addDelivery, ...qPayload } = form;
     if (profile.reqShipping === 'Hidden' || (!addShipping && profile.reqShipping !== 'Mandatory')) {
       qPayload.shipTo = '';
+    }
+    if (!addDelivery) {
+      qPayload.deliveryCharge = 0;
+      qPayload.deliveryTaxRate = 0;
     }
 
     const payload = { 
@@ -182,12 +236,12 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     setSaving(true);
     const txs = [];
     const qId = editData ? editData.id : id();
-    txs.push(db.tx.quotes[qId].update(payload));
+    txs.push(dbOp.update('quotes', qId, payload));
 
     // Handle AMC contract creation
     if (form.isAmc && form.amcStart && form.amcEnd) {
       const amcId = id();
-      txs.push(db.tx.amcs[amcId].update({
+      txs.push(dbOp.update('amcs', amcId, {
         id: amcId,
         userId: ownerId,
         actorId: user.id,
@@ -207,27 +261,27 @@ export default function Quotations({ user, perms, ownerId, settings }) {
       }));
     }
 
-    const lMatch = leads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase() && l.stage !== wonStage);
+    const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase() && l.stage !== wonStage);
     if (lMatch) {
        if (payload.status === 'Sent') {
-          txs.push(db.tx.leads[lMatch.id].update({ 
+          txs.push(dbOp.update('leads', lMatch.id, { 
              stage: 'Quotation Sent',
              email: lMatch.email || payload.email || '',
              phone: lMatch.phone || payload.phone || '',
              stageChangedAt: Date.now()
           }));
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('activityLogs', id(), {
              entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Quotation Sent (via Quotation)',
              userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
           }));
        } else if (payload.status === 'Draft' || payload.status === 'Created') {
-           txs.push(db.tx.leads[lMatch.id].update({ 
+           txs.push(dbOp.update('leads', lMatch.id, { 
               stage: 'Quotation Created',
               email: lMatch.email || payload.email || '',
               phone: lMatch.phone || payload.phone || '',
               stageChangedAt: Date.now()
            }));
-           txs.push(db.tx.activityLogs[id()].update({
+           txs.push(dbOp.update('activityLogs', id(), {
               entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Quotation Created (via Quotation)',
               userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
            }));
@@ -235,11 +289,27 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     }
 
     try {
-      await db.transact(txs);
-      
+      await dbWrite(txs);
+
+      // Track team activity (per-module performance)
+      const myMember = (data?.teamMembers || []).find(t => t.email === user.email);
+      await logActivity({
+        entityType: 'quotation',
+        entityId: qId,
+        entityName: payload.no || form.client,
+        action: editData ? 'edited' : 'created',
+        text: editData
+          ? `Edited quotation **${payload.no}** for ${form.client} (${fmt(tots.total, form.currency)})`
+          : `Created quotation **${payload.no}** for ${form.client} (${fmt(tots.total, form.currency)})`,
+        userId: ownerId,
+        user,
+        teamMemberId: myMember?.id || null,
+        meta: { amount: tots.total, status: payload.status },
+      });
+
       // Email Recipient Warning
       if (payload.status === 'Sent') {
-        const lMatch = leads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
+        const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
         const cMatch = customers.find(c => (c.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
         const targetEmail = lMatch?.email || cMatch?.email;
         if (!targetEmail) {
@@ -251,6 +321,29 @@ export default function Quotations({ user, perms, ownerId, settings }) {
         toast('Quotation saved', 'success');
       }
       
+      // WhatsApp auto-notification for new quotation
+      if (!editData) {
+        const qProfile = data?.userProfiles?.[0];
+        const lMatch2 = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
+        const cMatch2 = customers.find(c => (c.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase());
+        const recipientPhone = lMatch2?.phone || cMatch2?.phone;
+        if (qProfile && recipientPhone) {
+          fireAutoNotifications('quotation_created', {
+            client: form.client,
+            phone: recipientPhone,
+            clientphoneno: recipientPhone,
+            leadphoneno: recipientPhone,
+            quoteno: payload.no,
+            amount: tots.total,
+            date: new Date().toISOString().split('T')[0],
+            validuntil: form.validUntil || '',
+            bizName: qProfile.bizName || qProfile.businessName || '',
+            ownerPhone: qProfile.waNotifPhone || qProfile.phone || '',
+            entityId: payload.no,
+          }, qProfile, ownerId).catch(() => {});
+        }
+      }
+
       setModal(false);
     } catch { toast('Error saving quotation', 'error'); }
     finally { setSaving(false); }
@@ -300,26 +393,26 @@ export default function Quotations({ user, perms, ownerId, settings }) {
       delete payload.id;
       
       const txs = [
-        db.tx.invoices[id()].update(payload),
-        db.tx.quotes[q.id].update({ status: 'Completed' })
+        dbOp.update('invoices', id(), payload),
+        dbOp.update('quotes', q.id, { status: 'Completed' })
       ];
 
       // Sync lead stage
-      const lMatch = (data?.leads || []).find(l => l.name === q.client && l.stage !== wonStage);
+      const lMatch = modalLeads.find(l => l.name === q.client && l.stage !== wonStage);
       if (lMatch) {
-        txs.push(db.tx.leads[lMatch.id].update({ 
+        txs.push(dbOp.update('leads', lMatch.id, { 
            stage: 'Invoice Created',
            email: lMatch.email || q.email || '',
            phone: lMatch.phone || q.phone || '',
            stageChangedAt: Date.now()
         }));
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
            entityId: lMatch.id, entityType: 'lead', text: `Quotation converted to Invoice (${invNo}). Stage changed to Invoice Created.`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       }
 
-      await db.transact(txs);
+      await dbWrite(txs);
       toast('Converted to Invoice successfully!', 'success');
     } catch { toast('Error converting', 'error'); }
   };
@@ -335,7 +428,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   }, [form.client, customers, editData, profile?.reqShipping]);
 
   if (printing) {
-    const clientMatch = customers.find(c => c.name === printing.client) || leads.find(l => l.name === printing.client);
+    const clientMatch = customers.find(c => c.name === printing.client) || modalLeads.find(l => l.name === printing.client);
     const dataWithContext = {
       ...printing,
       items: (Array.isArray(printing.items) ? printing.items : JSON.parse(printing.items || '[]')).map(it => ({
@@ -396,7 +489,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
             <tbody>
               {filtered.length === 0 ? (
                 <tr><td colSpan={8} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>No quotations yet</td></tr>
-              ) : filtered.map((q, i) => (
+              ) : paginated.map((q, i) => (
                 <tr key={q.id}>
                   <td style={{ color: 'var(--muted)', fontSize: 11 }}>{i + 1}</td>
                   <td>
@@ -411,7 +504,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                   <td><span className={`badge ${stageBadgeClass(q.status)}`}>{q.status}</span></td>
                   <td style={{ fontSize: 12 }}>{fmtD(q.date)}</td>
                   <td style={{ fontSize: 12 }}>{fmtD(q.validUntil)}</td>
-                  <td style={{ fontWeight: 700 }}>{fmt(q.total)}</td>
+                  <td style={{ fontWeight: 700 }}>{fmt(q.total, q.currency)}</td>
                   <td>
                     <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4 }}>
                       <button className="btn btn-secondary btn-sm" onClick={() => setPrinting(q)}>View</button>
@@ -433,12 +526,27 @@ export default function Quotations({ user, perms, ownerId, settings }) {
             </tbody>
           </table>
         </div>
+        {totalPages > 1 && (
+          <div style={{ padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', background: 'var(--bg-soft)', flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+              Showing <strong>{(currentPage - 1) * pageSize + 1}</strong>–<strong>{Math.min(currentPage * pageSize, filtered.length)}</strong> of <strong>{filtered.length}</strong>
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <select value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setCurrentPage(1); }} style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                {[25, 50, 100, 500].map(s => <option key={s} value={s}>{`${s} / page`}</option>)}
+              </select>
+              <button className="btn btn-secondary btn-sm" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)}>&#8249; Prev</button>
+              <span style={{ fontSize: 12 }}>Page {currentPage} / {totalPages}</span>
+              <button className="btn btn-secondary btn-sm" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)}>Next &#8250;</button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* MODAL */}
       {modal && (
-        <div className="mo open">
-          <div className="mo-box wide">
+        <div className="mo open fullpage">
+          <div className="mo-box wide fullpage">
             <div className="mo-head">
               <h3>{editData ? 'Edit Quotation' : 'Create Quotation'}</h3>
               <button className="btn-icon" onClick={() => setModal(false)}>✕</button>
@@ -460,7 +568,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                         value={form.client} 
                         onChange={val => {
                           // Auto-map distributor/retailer from matching lead
-                          const matchedLead = leads.find(l => (l.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
+                          const matchedLead = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
                           const matchedCust = customers.find(c => (c.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
                           setForm(p => ({ 
                             ...p, 
@@ -580,7 +688,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                   <button className="btn btn-secondary btn-sm" onClick={addItem}>+ Add Row</button>
                 </div>
                 <table className="li-table">
-                  <thead><tr><th>Item</th><th style={{ width: 60, textAlign: 'center' }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90, textAlign: 'right' }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80, textAlign: 'right' }}>Amount</th><th style={{ width: 28 }}></th></tr></thead>
+                  <thead><tr><th>Item</th><th style={{ width: 95, textAlign: 'center' }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90, textAlign: 'right' }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80, textAlign: 'right' }}>Amount</th><th style={{ width: 28 }}></th></tr></thead>
                   <tbody>
                     {form.items.map((it, i) => (
                       <tr key={i}>
@@ -593,10 +701,10 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                             value={it.productId || it.name}
                             onChange={val => {
                               const pMatch = products.find(p => p.id === val || p.name === val);
-                              const updates = { 
-                                productId: pMatch?.id || '', 
+                              const updates = {
+                                productId: pMatch?.id || '',
                                 sku: pMatch?.code || '',
-                                name: pMatch?.name || val 
+                                name: pMatch?.name || val
                               };
                               if (pMatch) {
                                 updates.rate = pMatch.rate || 0;
@@ -604,13 +712,25 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                                 updates.unit = pMatch.unit || 'Nos';
                               }
                               const its = form.items.map((x, idx) => idx === i ? { ...x, ...updates } : x);
-                              setForm(prev => ({ ...prev, items: its }));
+                              setForm(prev => {
+                                let nextCurrency = prev.currency;
+                                if (pMatch && pMatch.currency && pMatch.currency !== prev.currency) {
+                                  const hasOtherFilled = prev.items.some((x, idx) => idx !== i && (x.name || x.rate));
+                                  if (!hasOtherFilled) {
+                                    nextCurrency = pMatch.currency;
+                                    toast(`Currency set to ${pMatch.currency} from product`, 'success');
+                                  } else {
+                                    toast(`Warning: product priced in ${pMatch.currency} but quotation is in ${prev.currency}`, 'warning');
+                                  }
+                                }
+                                return { ...prev, items: its, currency: nextCurrency };
+                              });
                             }}
                             placeholder="Select Product"
                           />
                         </div>
                       </td>
-                        <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 55, textAlign: 'center' }} /></td>
+                        <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 95, textAlign: 'center' }} /></td>
                       <td>
                         <select className="li-input" value={it.unit || 'Nos'} onChange={e => updateItem(i, 'unit', e.target.value)}>
                           {(profile?.productUnits || ['Nos', 'Kgs', 'Ltrs', 'Mtrs', 'Pkt', 'Box', 'Set']).map(u => <option key={u}>{u}</option>)}
@@ -634,46 +754,75 @@ export default function Quotations({ user, perms, ownerId, settings }) {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 14 }}>
                 <div>
                   <div className="fg"><label>Notes</label><textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} style={{ minHeight: 60 }} placeholder="Customer notes..." /></div>
-                  <div className="fg"><label>Terms & Conditions</label><textarea value={form.terms} onChange={e => setForm(p => ({ ...p, terms: e.target.value }))} style={{ minHeight: 55 }} /></div>
+                  <div className="fg"><label>Terms & Conditions</label><textarea value={form.terms} onChange={e => setForm(p => ({ ...p, terms: e.target.value }))} style={{ minHeight: 120 }} /></div>
                 </div>
                 <div className="totals-box">
-                  <div className="total-row"><span style={{ color: 'var(--muted)' }}>Sub Total</span><span style={{ fontWeight: 700 }}>{fmt(tots.sub)}</span></div>
-                  <div className="total-row">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ color: 'var(--muted)', fontSize: 12 }}>Discount</span>
-                      <input type="number" value={form.disc} onChange={e => setForm(p => ({ ...p, disc: parseFloat(e.target.value) || 0 }))} style={{ width: 50, padding: '2px 5px', border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 12, fontFamily: 'inherit', outline: 'none' }} />
-                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>%</span>
-                    </div>
-                    <span style={{ color: '#dc2626', fontSize: 12 }}>- {fmt(tots.discAmt)}</span>
+                  <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--muted)', fontSize: 13 }}>Currency</span>
+                    <select value={form.currency || 'INR'} onChange={e => setForm(p => ({ ...p, currency: e.target.value }))} style={{ border: '1px solid var(--border)', background: '#fff', borderRadius: 4, padding: '3px 6px', fontSize: 12, cursor: 'pointer' }}>
+                      {SUPPORTED_CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.symbol} {c.code}</option>)}
+                    </select>
                   </div>
+                  <div className="total-row"><span style={{ color: 'var(--muted)' }}>Sub Total</span><span style={{ fontWeight: 700 }}>{fmt(tots.sub, form.currency)}</span></div>
+                  <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--muted)', fontSize: 13, marginRight: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      Discount
+                      <select value={form.discType} onChange={e => setForm(p => ({ ...p, discType: e.target.value, disc: 0 }))} style={{ border: '1px solid var(--border)', background: '#fff', borderRadius: 4, padding: '2px', fontSize: 11, cursor: 'pointer' }}>
+                        <option value="%">%</option>
+                        <option value={curSym}>{curSym}</option>
+                      </select>
+                    </span>
+                    <input type="number" value={form.disc} onChange={e => setForm(p => ({ ...p, disc: parseFloat(e.target.value) || 0 }))} style={{ width: 80, padding: 4, textAlign: 'right', border: '1px solid var(--border)', borderRadius: 4 }} placeholder="0" />
+                  </div>
+                  {(tots.discAmt > 0 && form.discType === '%') && <div className="total-row"><span style={{ color: 'var(--muted)' }}>Discount Amount</span><span style={{ color: '#dc2626' }}>- {fmt(tots.discAmt, form.currency)}</span></div>}
                   {(() => {
                     const clientMatchForm = customers.find(c => c.name === form.client);
                     const isInterStateForm = profile?.bizState && clientMatchForm?.state && profile.bizState !== clientMatchForm.state;
                     if (tots.taxTotal > 0) {
                       return isInterStateForm ? (
-                        <div className="total-row"><span style={{ color: 'var(--muted)' }}>IGST</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(tots.taxTotal)}</span></div>
+                        <div className="total-row"><span style={{ color: 'var(--muted)' }}>IGST</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(tots.taxTotal, form.currency)}</span></div>
                       ) : (
                         <>
-                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>CGST</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(tots.taxTotal / 2)}</span></div>
-                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>SGST</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(tots.taxTotal / 2)}</span></div>
+                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>CGST</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(tots.taxTotal / 2, form.currency)}</span></div>
+                          <div className="total-row"><span style={{ color: 'var(--muted)' }}>SGST</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(tots.taxTotal / 2, form.currency)}</span></div>
                         </>
                       );
                     }
-                    return <div className="total-row"><span style={{ color: 'var(--muted)' }}>Tax (GST)</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(0)}</span></div>;
+                    return <div className="total-row"><span style={{ color: 'var(--muted)' }}>Tax (GST)</span><span style={{ fontWeight: 600, color: '#16a34a' }}>{fmt(0, form.currency)}</span></div>;
                   })()}
+                  <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <label style={{ color: 'var(--muted)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={!!form.addDelivery} onChange={e => setForm(p => ({ ...p, addDelivery: e.target.checked, deliveryCharge: e.target.checked ? p.deliveryCharge : 0, deliveryTaxRate: e.target.checked ? p.deliveryTaxRate : 0 }))} style={{ width: 14, height: 14 }} />
+                      Delivery Charges
+                    </label>
+                    {form.addDelivery && (
+                      <input type="number" value={form.deliveryCharge} onChange={e => setForm(p => ({ ...p, deliveryCharge: parseFloat(e.target.value) || 0 }))} style={{ width: 70, padding: '2px 5px', border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 12, textAlign: 'right' }} placeholder="0" />
+                    )}
+                  </div>
+                  {form.addDelivery && (
+                    <div className="total-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--muted)', fontSize: 12 }}>Delivery Tax</span>
+                      <select value={form.deliveryTaxRate} onChange={e => setForm(p => ({ ...p, deliveryTaxRate: parseFloat(e.target.value) || 0 }))} style={{ width: 120, padding: 3, border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 12 }}>
+                        {taxRates.map(t => <option key={t.label} value={t.rate}>{t.label}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {form.addDelivery && tots.deliveryTax > 0 && (
+                    <div className="total-row"><span style={{ color: 'var(--muted)' }}>Delivery Tax Amt</span><span style={{ color: '#16a34a' }}>{fmt(tots.deliveryTax, form.currency)}</span></div>
+                  )}
                   <div className="total-row">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ color: 'var(--muted)', fontSize: 12 }}>TDS</span>
                       <input type="number" value={form.tdsRate} onChange={e => setForm(p => ({ ...p, tdsRate: parseFloat(e.target.value) || 0 }))} style={{ width: 50, padding: '2px 5px', border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 12, fontFamily: 'inherit', outline: 'none' }} />
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>%</span>
                     </div>
-                    <span style={{ color: '#dc2626', fontSize: 12 }}>- {fmt(tots.tdsAmt)}</span>
+                    <span style={{ color: '#dc2626', fontSize: 12 }}>- {fmt(tots.tdsAmt, form.currency)}</span>
                   </div>
                   <div className="total-row">
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}>Adjustment</span>
                     <input type="number" value={form.adj} onChange={e => setForm(p => ({ ...p, adj: parseFloat(e.target.value) || 0 }))} style={{ width: 70, padding: '2px 5px', border: '1.5px solid var(--border)', borderRadius: 6, fontSize: 12, fontFamily: 'inherit', outline: 'none', textAlign: 'right' }} />
                   </div>
-                  <div className="total-row grand"><strong style={{ fontSize: 14 }}>Total (₹)</strong><strong style={{ fontSize: 18, color: 'var(--accent2)' }}>{fmt(tots.total)}</strong></div>
+                  <div className="total-row grand"><strong style={{ fontSize: 14 }}>Total ({curSym})</strong><strong style={{ fontSize: 18, color: 'var(--accent2)' }}>{fmt(tots.total, form.currency)}</strong></div>
                 </div>
               </div>
             </div>
@@ -769,8 +918,10 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                 if (!newCustForm.name.trim()) return toast('Name required', 'error');
                 if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
                 const newId = id();
-                await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), companyName: newCustForm.companyName || '', userId: ownerId, actorId: user.id, createdAt: Date.now() }));
-                setForm(p => ({ ...p, client: newCustForm.name.trim(), distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
+                const newCustData = { ...newCustForm, name: newCustForm.name.trim(), companyName: newCustForm.companyName || '', userId: ownerId, actorId: user.id, createdAt: Date.now() };
+                await dbWrite(dbOp.update('customers', newId, newCustData));
+                setModalCustomers(prev => [...prev, { ...newCustData, id: newId }]);
+                setForm(p => ({ ...p, client: newCustData.name, distributorId: newCustForm.distributorId || p.distributorId, retailerId: newCustForm.retailerId || p.retailerId }));
                 setCustModal(false);
                 setNewCustForm(EMPTY_CUSTOMER);
                 toast('Customer created!', 'success');

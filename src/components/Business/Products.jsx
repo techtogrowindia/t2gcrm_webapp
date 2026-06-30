@@ -1,11 +1,12 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
-import { fmt, stageBadgeClass, DEFAULT_UNITS } from '../../utils/helpers';
+import { fmt, stageBadgeClass, DEFAULT_UNITS, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import StockLog from './StockLog';
 
-const EMPTY = { name: '', code: '', hsn: '', type: 'Product', category: 'General', unit: 'Nos', rate: '', purchasePrice: '', tax: 18, desc: '', stock: 0, lowStockThreshold: 5, trackStock: true, listInEcom: false, isPartnerAvailable: false, imageUrl: '', description: '' };
+const EMPTY = { name: '', code: '', hsn: '', type: 'Product', category: 'General', unit: 'Nos', rate: '', purchasePrice: '', tax: 18, desc: '', stock: 0, lowStockThreshold: 5, trackStock: true, listInEcom: false, isPartnerAvailable: false, imageUrl: '', description: '', currency: 'INR' };
 const generateSKU = () => 'P-' + Math.random().toString(36).substring(2, 8).toUpperCase();
 
 const CSV_HEADERS = ['Name', 'Code', 'HSN', 'Category', 'Type', 'Unit', 'Rate', 'PurchasePrice', 'Tax', 'Stock', 'LowStockThreshold', 'TrackStock', 'Description', 'ListInEcom', 'ImageUrl', 'FullDescription'];
@@ -52,12 +53,11 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
   const fileRef = useRef();
   const toast = useToast();
 
-  const { data } = db.useQuery({ 
+  // Only products + profile needed for the list. The migration backfill
+  // (amcs/invoices/quotes/purchaseOrders) loaded 4 large collections on every
+  // page open — moved to a lazy fetch inside the migration effect instead.
+  const { data } = db.useQuery({
     products: { $: { where: { userId: ownerId } } },
-    amcs: { $: { where: { userId: ownerId } } },
-    invoices: { $: { where: { userId: ownerId } } },
-    quotes: { $: { where: { userId: ownerId } } },
-    purchaseOrders: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } }
   });
   const products = data?.products || [];
@@ -72,7 +72,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
       if (!search) return true;
       const q = search.toLowerCase();
       return [p.name, p.code, p.type, p.unit, p.desc].some(v => String(v || '').toLowerCase().includes(q));
-    });
+    }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); // newest first
   }, [products, search]);
 
   const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
@@ -84,71 +84,51 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
 
   useEffect(() => { setCurrentPage(1); }, [search, pageSize]);
   
-  // Migration: Ensure all products have a SKU/Code & Link existing records by ID
+  // Migration: backfill productId/sku on related records. Runs once per session
+  // after products load; fetches the heavy collections lazily so the Products
+  // list doesn't wait for 4 extra queries on every page open.
   useEffect(() => {
-    if (!data?.products) return;
-    const txs = [];
-    
+    if (!data?.products || !data.products.length) return;
+    if (window._migDone) return;
+    window._migDone = true;
 
-    // 2. Backfill AMCs
-    (data.amcs || []).filter(a => !a.productId).forEach(a => {
-      const pMatch = products.find(p => p.name === a.plan);
-      if (pMatch) txs.push(db.tx.amcs[a.id].update({ productId: pMatch.id, sku: pMatch.code }));
-    });
+    const db2 = db; // same client, queried imperatively
+    const productsByName = Object.fromEntries(products.map(p => [p.name, p]));
 
-    // 3. Backfill Invoices
-    (data.invoices || []).forEach(inv => {
-      let changed = false;
-      const rawItems = Array.isArray(inv.items) ? inv.items : JSON.parse(inv.items || '[]');
-      const items = rawItems.map(it => {
-        if (!it.productId) {
-          const pMatch = products.find(p => p.name === it.name);
-          if (pMatch) { changed = true; return { ...it, productId: pMatch.id, sku: pMatch.code }; }
-        }
-        return it;
+    (async () => {
+      const txs = [];
+      const { amcs, invoices, quotes, purchaseOrders } = (await db2.queryOnce({
+        amcs:           { $: { where: { userId: ownerId } } },
+        invoices:       { $: { where: { userId: ownerId } } },
+        quotes:         { $: { where: { userId: ownerId } } },
+        purchaseOrders: { $: { where: { userId: ownerId } } },
+      }));
+
+      (amcs || []).filter(a => !a.productId).forEach(a => {
+        const p = productsByName[a.plan];
+        if (p) txs.push(dbOp.update('amcs', a.id, { productId: p.id, sku: p.code }));
       });
-      if (changed) txs.push(db.tx.invoices[inv.id].update({ items: Array.isArray(inv.items) ? items : JSON.stringify(items) }));
-    });
-
-    // 4. Backfill Quotes
-    (data.quotes || []).forEach(q => {
-      let changed = false;
-      const rawItems = Array.isArray(q.items) ? q.items : JSON.parse(q.items || '[]');
-      const items = rawItems.map(it => {
-        if (!it.productId) {
-          const pMatch = products.find(p => p.name === it.name);
-          if (pMatch) { changed = true; return { ...it, productId: pMatch.id, sku: pMatch.code }; }
-        }
-        return it;
+      (invoices || []).forEach(inv => {
+        const rawItems = Array.isArray(inv.items) ? inv.items : JSON.parse(inv.items || '[]');
+        let changed = false;
+        const items = rawItems.map(it => { if (!it.productId && productsByName[it.name]) { changed = true; const p = productsByName[it.name]; return { ...it, productId: p.id, sku: p.code }; } return it; });
+        if (changed) txs.push(dbOp.update('invoices', inv.id, { items: Array.isArray(inv.items) ? items : JSON.stringify(items) }));
       });
-      if (changed) txs.push(db.tx.quotes[q.id].update({ items: Array.isArray(q.items) ? items : JSON.stringify(items) }));
-    });
-
-    // 5. Backfill Purchase Orders
-    (data.purchaseOrders || []).forEach(po => {
-      let changed = false;
-      const items = (po.items || []).map(it => {
-        if (!it.productId) {
-          const pMatch = products.find(p => p.name === it.name);
-          if (pMatch) { changed = true; return { ...it, productId: pMatch.id, sku: pMatch.code }; }
-        }
-        return it;
+      (quotes || []).forEach(q => {
+        const rawItems = Array.isArray(q.items) ? q.items : JSON.parse(q.items || '[]');
+        let changed = false;
+        const items = rawItems.map(it => { if (!it.productId && productsByName[it.name]) { changed = true; const p = productsByName[it.name]; return { ...it, productId: p.id, sku: p.code }; } return it; });
+        if (changed) txs.push(dbOp.update('quotes', q.id, { items: Array.isArray(q.items) ? items : JSON.stringify(items) }));
       });
-      if (changed) txs.push(db.tx.purchaseOrders[po.id].update({ items }));
-    });
+      (purchaseOrders || []).forEach(po => {
+        let changed = false;
+        const items = (po.items || []).map(it => { if (!it.productId && productsByName[it.name]) { changed = true; const p = productsByName[it.name]; return { ...it, productId: p.id, sku: p.code }; } return it; });
+        if (changed) txs.push(dbOp.update('purchaseOrders', po.id, { items }));
+      });
 
-    if (txs.length > 0) {
-      // Avoid infinite loop by only running if we actually have changes
-      const runId = txs.length; 
-      if (window._lastMigRun === runId) return;
-      window._lastMigRun = runId;
-      
-      console.log(`Running migration for ${txs.length} records...`);
-      for (let i = 0; i < txs.length; i += 25) {
-        db.transact(txs.slice(i, i + 25));
-      }
-    }
-  }, [data]);
+      for (let i = 0; i < txs.length; i += 25) dbWrite(txs.slice(i, i + 25));
+    })().catch(() => { window._migDone = false; }); // retry next session on error
+  }, [!!data?.products?.length]);
 
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
 
@@ -183,8 +163,8 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
       userId: ownerId 
     };
     if (!payload.code) payload.code = '';
-    if (editData) { await db.transact(db.tx.products[editData.id].update(payload)); toast('Updated', 'success'); }
-    else { await db.transact(db.tx.products[id()].update(payload)); toast('Product created', 'success'); }
+    if (editData) { await dbWrite(dbOp.update('products', editData.id, payload)); toast('Updated', 'success'); }
+    else { await dbWrite(dbOp.update('products', id(), payload)); toast('Product created', 'success'); }
     setModal(false);
   };
 
@@ -194,14 +174,14 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
     if (delta === 0) return;
     const newStock = (stockModal.stock || 0) + delta;
     const txs = [
-      db.tx.products[stockModal.id].update({ stock: newStock }),
-      db.tx.activityLogs[id()].update({
+      dbOp.update('products', stockModal.id, { stock: newStock }),
+      dbOp.update('activityLogs', id(), {
         entityId: stockModal.id, entityType: 'product',
         text: `Stock adjusted by ${delta > 0 ? '+' : ''}${delta} (${adjustForm.reason}). New stock: ${newStock}`,
         userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
       })
     ];
-    await db.transact(txs);
+    await dbWrite(txs);
     toast('Stock updated', 'success');
     setStockModal(null);
     setAdjustForm({ delta: 0, reason: 'Purchase' });
@@ -210,7 +190,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
   const del = async (pid) => { 
     if (!canDelete) { toast('Permission denied: cannot delete products', 'error'); return; }
     if (!confirm('Delete?')) return; 
-    await db.transact(db.tx.products[pid].delete()); 
+    await dbWrite(dbOp.delete('products', pid)); 
     toast('Deleted', 'error'); 
   };
 
@@ -227,8 +207,8 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
 
   const bulkEcomAction = async (enable) => {
     if (selectedIds.size === 0) return toast('Select products first', 'error');
-    const txs = [...selectedIds].map(pid => db.tx.products[pid].update({ listInEcom: enable }));
-    await db.transact(txs);
+    const txs = [...selectedIds].map(pid => dbOp.update('products', pid, { listInEcom: enable }));
+    await dbWrite(txs);
     toast(`${selectedIds.size} products ${enable ? 'added to' : 'removed from'} E-com store`, 'success');
     setSelectedIds(new Set());
   };
@@ -250,7 +230,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
     try {
       const txs = csvPreview.map(row => {
         const newId = id();
-        return db.tx.products[newId].update({
+        return dbOp.update('products', newId, {
           name: row['Name'] || '',
           category: row['Category'] || 'General',
           type: row['Type'] || 'Product',
@@ -273,7 +253,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
       });
       // Batch in chunks of 25
       for (let i = 0; i < txs.length; i += 25) {
-        await db.transact(txs.slice(i, i + 25));
+        await dbWrite(txs.slice(i, i + 25));
       }
       toast(`✅ Imported ${csvPreview.length} products successfully`, 'success');
       setBulkModal(false);
@@ -327,7 +307,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
           )}
           <button className="btn btn-secondary btn-sm" onClick={handleExport}>📊 Export CSV</button>
           {canCreate && <button className="btn btn-secondary btn-sm" onClick={() => setBulkModal(true)}>📤 Bulk Upload</button>}
-          {canCreate && <button className="btn btn-primary btn-sm" onClick={() => { setEditData(null); setForm(EMPTY); setModal(true); }}>+ Create</button>}
+          {canCreate && <button className="btn btn-primary btn-sm" onClick={() => { setEditData(null); setForm({ ...EMPTY, currency: profile?.defaultCurrency || 'INR' }); setModal(true); }}>+ Create</button>}
         </div>
       </div>
       <div className="tw">
@@ -346,13 +326,12 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
             <select 
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', fontWeight: 700, outline: 'none', cursor: 'pointer', color: 'var(--accent)', padding: '2px 4px', borderRadius: 4, fontSize: 11 }}
               value={pageSize}
-              onChange={e => setPageSize(e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10))}
+              onChange={e => setPageSize(parseInt(e.target.value, 10))}
             >
               <option value={25}>25</option>
               <option value={50}>50</option>
               <option value={100}>100</option>
               <option value={500}>500</option>
-              <option value="all">All</option>
             </select>
           </div>
 
@@ -433,15 +412,15 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
                         ) : <span style={{ color: 'var(--muted)', fontSize: 11 }}>Service</span>}
                       </td>
                       <td style={{ fontSize: 12 }}>{p.unit}</td>
-                      <td style={{ fontSize: 12, color: 'var(--muted)' }}>{p.purchasePrice ? fmt(p.purchasePrice) : '—'}</td>
+                      <td style={{ fontSize: 12, color: 'var(--muted)' }}>{p.purchasePrice ? fmt(p.purchasePrice, p.currency) : '—'}</td>
                       <td>
-                        <div style={{ fontWeight: 700 }}>{fmt(p.rate)}</div>
+                        <div style={{ fontWeight: 700 }}>{fmt(p.rate, p.currency)}</div>
                         {(() => { const m = margin(p.rate, p.purchasePrice); return m !== null ? <div style={{ fontSize: 10, color: m >= 0 ? '#16a34a' : '#dc2626' }}>{m >= 0 ? '▲' : '▼'} {Math.abs(m)}% margin</div> : null; })()}
                       </td>
                       <td>{p.tax}%</td>
                       <td>
                         <button
-                          onClick={() => db.transact(db.tx.products[p.id].update({ listInEcom: !p.listInEcom }))}
+                          onClick={() => dbWrite(dbOp.update('products', p.id, { listInEcom: !p.listInEcom }))}
                           style={{ background: p.listInEcom ? '#ecfdf5' : 'var(--bg-soft)', color: p.listInEcom ? '#065f46' : 'var(--muted)', border: `1px solid ${p.listInEcom ? '#6ee7b7' : 'var(--border)'}`, borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}
                           title={p.listInEcom ? 'Listed in E-com Store' : 'Not listed in E-com'}
                         >
@@ -450,7 +429,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
                       </td>
                       <td>
                         <button
-                          onClick={() => db.transact(db.tx.products[p.id].update({ isPartnerAvailable: !p.isPartnerAvailable }))}
+                          onClick={() => dbWrite(dbOp.update('products', p.id, { isPartnerAvailable: !p.isPartnerAvailable }))}
                           style={{ background: p.isPartnerAvailable ? '#eff6ff' : 'var(--bg-soft)', color: p.isPartnerAvailable ? '#1d4ed8' : 'var(--muted)', border: `1px solid ${p.isPartnerAvailable ? '#93c5fd' : 'var(--border)'}`, borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}
                           title={p.isPartnerAvailable ? 'Available to Partners' : 'Hidden from Partners'}
                         >
@@ -459,7 +438,7 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
                       </td>
                       <td>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => { setEditData(p); setForm({ name: p.name, code: p.code || '', hsn: p.hsn || '', type: p.type, category: p.category || 'General', unit: p.unit, rate: p.rate, purchasePrice: p.purchasePrice || '', tax: p.tax, desc: p.desc || '', stock: p.stock || 0, lowStockThreshold: p.lowStockThreshold || 5, trackStock: p.trackStock !== false, listInEcom: p.listInEcom || false, isPartnerAvailable: p.isPartnerAvailable || false, imageUrl: p.imageUrl || '', description: p.description || '' }); setModal(true); }}>Edit</button>}
+                          {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => { setEditData(p); setForm({ name: p.name, code: p.code || '', hsn: p.hsn || '', type: p.type, category: p.category || 'General', unit: p.unit, rate: p.rate, purchasePrice: p.purchasePrice || '', tax: p.tax, desc: p.desc || '', stock: p.stock || 0, lowStockThreshold: p.lowStockThreshold || 5, trackStock: p.trackStock !== false, listInEcom: p.listInEcom || false, isPartnerAvailable: p.isPartnerAvailable || false, imageUrl: p.imageUrl || '', description: p.description || '', currency: p.currency || profile?.defaultCurrency || 'INR' }); setModal(true); }}>Edit</button>}
                           {p.trackStock && <button className="btn btn-secondary btn-sm" onClick={() => setShowLog(showLog === p.id ? null : p.id)}>History</button>}
                           {canDelete && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={() => del(p.id)}>Del</button>}
                         </div>
@@ -498,8 +477,14 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
                 </div>
                 <div className="fg"><label>Type</label><select value={form.type} onChange={f('type')}>{['Service', 'Product'].map(s => <option key={s}>{s}</option>)}</select></div>
                 <div className="fg"><label>Unit</label><select value={form.unit} onChange={f('unit')}>{productUnits.map(s => <option key={s}>{s}</option>)}</select></div>
-                <div className="fg"><label>Purchase Price (₹)</label><input type="number" value={form.purchasePrice} onChange={f('purchasePrice')} placeholder="Cost price" /></div>
-                <div className="fg"><label>Selling Rate (₹)</label><input type="number" value={form.rate} onChange={f('rate')} /></div>
+                <div className="fg">
+                  <label>Currency</label>
+                  <select value={form.currency || 'INR'} onChange={f('currency')}>
+                    {SUPPORTED_CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.name}</option>)}
+                  </select>
+                </div>
+                <div className="fg"><label>Purchase Price ({currencySymbol(form.currency)})</label><input type="number" value={form.purchasePrice} onChange={f('purchasePrice')} placeholder="Cost price" /></div>
+                <div className="fg"><label>Selling Rate ({currencySymbol(form.currency)})</label><input type="number" value={form.rate} onChange={f('rate')} /></div>
                 {form.purchasePrice && form.rate && (() => { const m = margin(form.rate, form.purchasePrice); return m !== null ? <div className="fg" style={{ background: m >= 0 ? '#f0fdf4' : '#fff5f5', borderRadius: 8, padding: '10px 12px', display: 'flex', alignItems: 'center' }}><span style={{ fontSize: 13, color: m >= 0 ? '#16a34a' : '#dc2626', fontWeight: 700 }}>{m >= 0 ? '▲' : '▼'} Margin: {Math.abs(m)}%</span></div> : null; })()}
                 <div className="fg"><label>GST %</label><select value={form.tax} onChange={f('tax')}>{taxRates.map(t => <option key={t.label} value={t.rate}>{t.label}</option>)}</select></div>
                 <div className="fg span2" style={{ background: 'var(--bg-soft)', padding: 12, borderRadius: 8, marginTop: 5 }}>

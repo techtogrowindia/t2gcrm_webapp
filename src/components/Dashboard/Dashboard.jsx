@@ -1,73 +1,104 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 import db from '../../instant';
 import { useApp } from '../../context/AppContext';
 import { fmt, fmtD, fmtDT, daysLeft, stageBadgeClass } from '../../utils/helpers';
 
 export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const { setActiveView } = useApp();
-  const { data } = db.useQuery({
-    leads: { $: { where: { userId: ownerId } } },
-    quotes: { $: { where: { userId: ownerId } } },
-    invoices: { $: { where: { userId: ownerId } } },
-    projects: { $: { where: { userId: ownerId } } },
-    tasks: { $: { where: { userId: ownerId } } },
-    amc: { $: { where: { userId: ownerId } } },
+  // Core: needed immediately for KPI cards, calendar, recent leads.
+  // NOTE: `leads` is NOT subscribed here — at >10k leads the InstantDB
+  // subscription silently truncates/times out (symptom: TOTAL LEADS = 0 or
+  // 9999). Lead-derived aggregates now come from /api/dashboard-stats below.
+  const { data: coreData } = db.useQuery({
+    invoices: { $: { where: { userId: ownerId }, limit: 5000 } },
+    projects: { $: { where: { userId: ownerId }, limit: 2000 } },
+    amc: { $: { where: { userId: ownerId }, limit: 2000 } },
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
-    products: { $: { where: { userId: ownerId } } },
-    expenses: { $: { where: { userId: ownerId } } },
-    orders: { $: { where: { userId: ownerId } } },
-    appointments: { $: { where: { userId: ownerId } } },
-    partnerCommissions: { $: { where: { userId: ownerId } } },
+  });
+  // Deferred: charts, ecom, appointments, tasks — non-blocking
+  const { data: deferredData } = db.useQuery({
+    quotes: { $: { where: { userId: ownerId }, limit: 5000 } },
+    tasks: { $: { where: { userId: ownerId }, limit: 2000 } },
+    products: { $: { where: { userId: ownerId }, limit: 2000 } },
+    expenses: { $: { where: { userId: ownerId }, limit: 2000 } },
+    orders: { $: { where: { userId: ownerId }, limit: 5000 } },
+    appointments: { $: { where: { userId: ownerId }, limit: 2000 } },
+    partnerCommissions: { $: { where: { userId: ownerId }, limit: 2000 } },
   });
 
-  const profile = data?.userProfiles?.[0] || {};
+  const profile = coreData?.userProfiles?.[0] || {};
   const wonStage = profile.wonStage || 'Won';
   const lostStage = profile.lostStage || 'Lost';
-  const leadsRaw = (data?.leads || []).map(l => (l.source === 'Retailer' || l.source === 'Retailers') ? { ...l, source: 'Channel Partners' } : l);
-  const quotesRaw = data?.quotes || [];
-  const invoicesRaw = data?.invoices || [];
-  const projectsRaw = data?.projects || [];
-  const tasksRaw = data?.tasks || [];
-  const amcRaw = data?.amc || [];
-  const ordersRaw = data?.orders || [];
-  const apptsRaw = data?.appointments || [];
-  const commissionsRaw = data?.partnerCommissions || [];
-  
-  console.log("🔍 [Dashboard] Props - ownerId:", ownerId, "perms:", perms?.isOwner ? "Owner" : "Team");
-  console.log("📊 [Dashboard] Data - leadsRaw count:", leadsRaw.length);
+  const quotesRaw = deferredData?.quotes || [];
+  const invoicesRaw = coreData?.invoices || [];
+  const projectsRaw = coreData?.projects || [];
+  const tasksRaw = deferredData?.tasks || [];
+  const amcRaw = coreData?.amc || [];
+  const ordersRaw = deferredData?.orders || [];
+  const apptsRaw = deferredData?.appointments || [];
+  const commissionsRaw = deferredData?.partnerCommissions || [];
 
-  const teamMembers = data?.teamMembers || [];
+  const teamMembers = coreData?.teamMembers || [];
   const myTeamMember = teamMembers.find(t => t.email === user.email);
   const myName = myTeamMember?.name || user.name || '';
   const teamCanSeeAllLeads = profile.teamCanSeeAllLeads !== false;
+  const teamCanSeeUnassignedLeads = profile.teamCanSeeUnassignedLeads !== false;
 
-  const { leads, quotes, invoices, projects, amc, orders, appts } = useMemo(() => {
-    const savedLeadStages = profile.leadStages;
-    const disabledStages = profile.disabledStages || [];
-    let filteredLeads = leadsRaw.filter(l => {
-      if (savedLeadStages?.length > 0 && !savedLeadStages.includes(l.stage)) return false;
-      if (disabledStages.includes(l.stage)) return false;
-      return true;
-    });
-    // For team members, only show their assigned leads (unless teamCanSeeAllLeads is on)
-    if (!perms?.isOwner && !teamCanSeeAllLeads) {
-      filteredLeads = filteredLeads.filter(l => !l.assign || l.assign === user.email || l.assign === myName);
-    }
+  // --- Server-driven lead stats ------------------------------------------
+  // Replaces the 10k-lead subscription. Refreshes every 30s.
+  const [leadStats, setLeadStats] = useState(null);
+  useEffect(() => {
+    if (!ownerId) return;
+    let cancelled = false;
+    const fetchStats = async () => {
+      try {
+        const res = await fetch('/api/dashboard-stats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ownerId,
+            userEmail: user.email,
+            myName,
+            teamCanSeeAllLeads,
+            teamCanSeeUnassignedLeads,
+            isOwner: perms?.isOwner === true,
+            wonStage,
+            lostStage,
+            savedLeadStages: profile.leadStages || null,
+            disabledStages: profile.disabledStages || [],
+            nowMs: Date.now(),
+          }),
+        });
+        const data = await res.json();
+        if (!cancelled && !data.error) setLeadStats(data);
+      } catch (e) {
+        console.error('dashboard-stats fetch failed:', e);
+      }
+    };
+    fetchStats();
+    const iv = setInterval(fetchStats, 30000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [ownerId, user.email, myName, teamCanSeeAllLeads, teamCanSeeUnassignedLeads, perms?.isOwner, wonStage, lostStage, JSON.stringify(profile.leadStages), JSON.stringify(profile.disabledStages)]);
 
-    return { leads: filteredLeads, quotes: quotesRaw, invoices: invoicesRaw, projects: projectsRaw, amc: amcRaw, orders: ordersRaw, appts: apptsRaw };
-  }, [leadsRaw, quotesRaw, invoicesRaw, projectsRaw, amcRaw, ordersRaw, apptsRaw, profile.leadStages, profile.disabledStages, perms?.isOwner, teamCanSeeAllLeads, user.email, myName]);
+  const quotes = quotesRaw;
+  const invoices = invoicesRaw;
+  const projects = projectsRaw;
+  const amc = amcRaw;
+  const orders = ordersRaw;
+  const appts = apptsRaw;
   const now = new Date();
 
   const stats = useMemo(() => {
-    const overdue = leads.filter(l => l.followup && new Date(l.followup) < now).length;
-    const active = leads.filter(l => l.stage !== wonStage && l.stage !== lostStage).length;
+    const total = leadStats?.totals?.total || 0;
+    const active = leadStats?.totals?.active || 0;
+    const overdue = leadStats?.totals?.overdue || 0;
     const amcExp = amc.filter(a => { const d = daysLeft(a.endDate); return d <= 30 && d >= 0; }).length;
     const inProgress = projects.filter(p => p.status === 'In Progress').length;
-    const outOfStock = (data?.products || []).filter(p => p.trackStock && p.stock <= 0).length;
-    const lowStock = (data?.products || []).filter(p => p.trackStock && p.stock > 0 && p.stock <= (p.lowStockThreshold || 5)).length;
-    return { overdue, active, amcExp, inProgress, outOfStock, lowStock };
-  }, [leads, amc, projects, data?.products]);
+    const outOfStock = (deferredData?.products || []).filter(p => p.trackStock && p.stock <= 0).length;
+    const lowStock = (deferredData?.products || []).filter(p => p.trackStock && p.stock > 0 && p.stock <= (p.lowStockThreshold || 5)).length;
+    return { total, overdue, active, amcExp, inProgress, outOfStock, lowStock };
+  }, [leadStats, amc, projects, deferredData?.products]);
 
   const ecomStats = useMemo(() => {
     const total = orders.length;
@@ -84,12 +115,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     return { todayAppts };
   }, [appts]);
 
-  // Source chart data
-  const srcData = useMemo(() => {
-    const src = {};
-    leads.forEach(l => { if (l.source) src[l.source] = (src[l.source] || 0) + 1; });
-    return Object.entries(src);
-  }, [leads]);
+  // Source chart data (from server)
+  const srcData = useMemo(() => leadStats?.sourceCounts || [], [leadStats]);
   const maxSrc = Math.max(...srcData.map(([, v]) => v), 1);
   const CHART_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'];
 
@@ -97,16 +124,16 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const reminders = useMemo(() => {
     const rem = [];
     amc.forEach(a => { const d = daysLeft(a.endDate); if (d <= 30 && d >= 0) rem.push({ icon: '🛡', text: `<strong>${a.client}</strong> AMC ${a.plan ? `(<strong>${a.plan}</strong>) ` : ''}expires in <strong>${d} days</strong>`, actionInfo: { type: 'amc', id: a.id } }); });
-    leads.filter(l => l.followup && new Date(l.followup) < now).forEach(l => rem.push({ icon: '⏰', text: `Follow-up overdue: <strong>${l.name}</strong>`, actionInfo: { type: 'lead', id: l.id } }));
-    
+    (leadStats?.overdueReminders || []).forEach(l => rem.push({ icon: '⏰', text: `Follow-up overdue: <strong>${l.name}</strong>`, actionInfo: { type: 'lead', id: l.id } }));
+
     // Inventory Alerts
-    (data?.products || []).filter(p => p.trackStock).forEach(p => {
+    (deferredData?.products || []).filter(p => p.trackStock).forEach(p => {
       if (p.stock <= 0) rem.push({ icon: '🔴', text: `Out of Stock: <strong>${p.name}</strong> (Available: 0)`, actionInfo: { type: 'product', id: p.id } });
       else if (p.stock <= (p.lowStockThreshold || 5)) rem.push({ icon: '🟡', text: `Low Stock: <strong>${p.name}</strong> (Only <strong>${p.stock}</strong> left)`, actionInfo: { type: 'product', id: p.id } });
     });
 
     return rem;
-  }, [amc, leads, data?.products]);
+  }, [amc, leadStats, deferredData?.products]);
 
   // Revenue Trend (Last 6 Months)
   const revenueTrend = useMemo(() => {
@@ -134,7 +161,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
   // Profit & Loss
   const pnl = useMemo(() => {
-    const prodMap = (data?.products || []).reduce((acc, p) => { acc[p.name] = p; return acc; }, {});
+    const prodMap = (deferredData?.products || []).reduce((acc, p) => { acc[p.name] = p; return acc; }, {});
     let revenue = 0;
     let cogs = 0;
 
@@ -156,24 +183,24 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
       }
     });
 
-    const totalExpenses = (data?.expenses || []).filter(e => e.status === 'Approved').reduce((s, e) => s + (e.amount || 0), 0);
+    const totalExpenses = (deferredData?.expenses || []).filter(e => e.status === 'Approved').reduce((s, e) => s + (e.amount || 0), 0);
     const showPartners = planEnforcement?.isModuleEnabled('distributors') !== false;
     const totalCommissions = showPartners ? commissionsRaw.filter(c => c.status === 'Paid').reduce((s, c) => s + (c.amount || 0), 0) : 0;
     const grossProfit = revenue - cogs;
     const netProfit = grossProfit - totalExpenses - totalCommissions;
     const margin = revenue > 0 ? Math.round((netProfit / revenue) * 100) : 0;
     return { revenue, cogs, grossProfit, netProfit, totalExpenses, totalCommissions, margin };
-  }, [invoices, data?.products, data?.expenses, commissionsRaw]);
+  }, [invoices, deferredData?.products, deferredData?.expenses, commissionsRaw]);
 
-  // Hot Leads
-  const hotLeads = useMemo(() => {
-    return leads.filter(l => l.label === 'Hot' || (l.followup && new Date(l.followup) >= now)).slice(0, 5);
-  }, [leads]);
+  // Hot Leads (from server, already sorted/capped)
+  const hotLeads = useMemo(() => leadStats?.hotLeads || [], [leadStats]);
 
   // Calendar
   const [calDate, setCalDate] = React.useState(new Date());
+  const [selectedCalDate, setSelectedCalDate] = React.useState(null);
+  const followupLeads = leadStats?.followupLeads || [];
   const calDays = useMemo(() => {
-    const fDates = new Set(leads.filter(l => l.followup).map(l => new Date(l.followup).toDateString()));
+    const fDates = new Set(followupLeads.map(l => new Date(l.followup).toDateString()));
     const yr = calDate.getFullYear(), mo = calDate.getMonth();
     const first = new Date(yr, mo, 1).getDay(), total = new Date(yr, mo + 1, 0).getDate();
     const today = new Date();
@@ -181,10 +208,16 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     for (let i = 0; i < first; i++) days.push({ empty: true, i });
     for (let d = 1; d <= total; d++) {
       const dt = new Date(yr, mo, d);
-      days.push({ d, isToday: dt.toDateString() === today.toDateString(), hasEvent: fDates.has(dt.toDateString()) });
+      days.push({ d, dt, isToday: dt.toDateString() === today.toDateString(), hasEvent: fDates.has(dt.toDateString()) });
     }
     return days;
-  }, [calDate, leads]);
+  }, [calDate, followupLeads]);
+
+  const calSelectedLeads = useMemo(() => {
+    if (!selectedCalDate) return [];
+    const target = selectedCalDate.toDateString();
+    return followupLeads.filter(l => new Date(l.followup).toDateString() === target);
+  }, [selectedCalDate, followupLeads]);
 
   const greeting = useMemo(() => {
     const h = now.getHours();
@@ -221,32 +254,32 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
       {/* Stats */}
       <div className="stat-grid">
-        {perms.can('Leads', 'list') === true && mod('leads') && (
+        {perms?.can('Leads', 'list') === true && mod('leads') && (
           <>
-            <div className="stat-card sc-green"><div className="lbl">Total Leads</div><div className="val">{leads.length}</div></div>
+            <div className="stat-card sc-green"><div className="lbl">Total Leads</div><div className="val">{stats.total}</div></div>
             <div className="stat-card sc-blue"><div className="lbl">Active</div><div className="val">{stats.active}</div></div>
             <div className="stat-card sc-red"><div className="lbl">Overdue Follow</div><div className="val">{stats.overdue}</div></div>
           </>
         )}
-        {perms.can('Quotations', 'list') === true && mod('quotations') && (
+        {perms?.can('Quotations', 'list') === true && mod('quotations') && (
           <div className="stat-card sc-yellow"><div className="lbl">Quotations</div><div className="val">{quotes.length}</div></div>
         )}
-        {perms.can('Invoices', 'list') === true && mod('invoices') && (
+        {perms?.can('Invoices', 'list') === true && mod('invoices') && (
           <div className="stat-card sc-purple"><div className="lbl">Invoices</div><div className="val">{invoices.length}</div></div>
         )}
-        {perms.can('Projects', 'list') === true && mod('projects') && (
+        {perms?.can('Projects', 'list') === true && mod('projects') && (
           <div className="stat-card sc-teal"><div className="lbl">Projects</div><div className="val">{stats.inProgress}</div></div>
         )}
-        {perms.can('AMC', 'list') === true && mod('amc') && (
+        {perms?.can('AMC', 'list') === true && mod('amc') && (
           <div className="stat-card sc-red"><div className="lbl">AMC Expiring</div><div className="val">{stats.amcExp}</div></div>
         )}
-        {perms.can('Products', 'list') === true && mod('products') && (
+        {perms?.can('Products', 'list') === true && mod('products') && (
           <>
             <div className="stat-card sc-red" style={{ background: '#fff5f5', borderColor: '#feb2b2' }}><div className="lbl" style={{ color: '#c53030' }}>Out of Stock</div><div className="val" style={{ color: '#c53030' }}>{stats.outOfStock}</div></div>
             <div className="stat-card sc-yellow" style={{ background: '#fffff0', borderColor: '#faf089' }}><div className="lbl" style={{ color: '#b7791f' }}>Low Stock</div><div className="val" style={{ color: '#b7791f' }}>{stats.lowStock}</div></div>
           </>
         )}
-        {perms.can('Ecommerce', 'list') === true && mod('ecommerce') && (
+        {perms?.can('Ecommerce', 'list') === true && mod('ecommerce') && (
           <>
             <div className="stat-card sc-blue" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}><div className="lbl" style={{ color: '#1d4ed8' }}>Store Orders</div><div className="val" style={{ color: '#1d4ed8' }}>{ecomStats.total}</div></div>
             <div className="stat-card sc-green" style={{ background: '#f0fdf4', borderColor: '#bbf7d0' }}><div className="lbl" style={{ color: '#15803d' }}>Store Revenue</div><div className="val" style={{ color: '#15803d' }}>{fmt(ecomStats.revenue)}</div></div>
@@ -257,7 +290,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
       {/* Charts Row */}
       <div className="dash-grid-2">
         {/* Source Chart */}
-        {perms.can('Leads', 'list') === true && mod('leads') && (
+        {perms?.can('Leads', 'list') === true && mod('leads') && (
           <div className="tw">
             <div className="tw-head"><h3>Leads by Source</h3></div>
             <div style={{ padding: '14px 16px' }}>
@@ -275,14 +308,17 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* Reminders */}
-        {((perms.can('Leads', 'list') === true && mod('leads')) || (perms.can('AMC', 'list') === true && mod('amc'))) && (
+        {((perms?.can('Leads', 'list') === true && mod('leads')) || (perms?.can('AMC', 'list') === true && mod('amc'))) && (
           <div className="tw">
-            <div className="tw-head"><h3>⏰ Upcoming Reminders</h3></div>
-            <div style={{ padding: '6px 0' }}>
+            <div className="tw-head">
+              <h3>⏰ Upcoming Reminders</h3>
+              {reminders.length > 0 && <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>{reminders.length} total</span>}
+            </div>
+            <div style={{ padding: '6px 0', maxHeight: 320, overflowY: 'auto' }}>
               {reminders.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>✓ No pending reminders</div>
               ) : reminders.map((r, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'start', gap: 10, padding: '10px 16px', borderBottom: '1px solid var(--border)', cursor: 'pointer', transition: '.15s', ':hover': { background: 'var(--bg)' } }} onClick={() => handleReminderClick(r.actionInfo)} className="rem-item-hover">
+                <div key={i} style={{ display: 'flex', alignItems: 'start', gap: 10, padding: '10px 16px', borderBottom: '1px solid var(--border)', cursor: 'pointer', transition: '.15s' }} onClick={() => handleReminderClick(r.actionInfo)} className="rem-item-hover">
                   <span style={{ fontSize: 16, flexShrink: 0 }}>{r.icon}</span>
                   <div style={{ flex: 1, fontSize: 12, lineHeight: 1.6 }} dangerouslySetInnerHTML={{ __html: r.text }} />
                 </div>
@@ -294,21 +330,21 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
       {/* Recent Leads + Calendar */}
       <div className="dash-grid-2">
-        {perms.can('Leads', 'list') === true && mod('leads') && (
+        {perms?.can('Leads', 'list') === true && mod('leads') && (
           <>
             <div className="tw">
               <div className="tw-head"><h3>Recent Leads</h3></div>
               <table>
                 <thead><tr><th>Name</th><th>Stage</th><th>Source</th></tr></thead>
                 <tbody>
-                  {leads.slice(-5).reverse().map(l => (
+                  {(leadStats?.recentLeads || []).map(l => (
                     <tr key={l.id}>
                       <td><strong>{l.name}</strong></td>
                       <td><span className={`badge ${stageBadgeClass(l.stage, wonStage)}`}>{l.stage}</span></td>
                       <td style={{ color: 'var(--muted)' }}>{l.source}</td>
                     </tr>
                   ))}
-                  {leads.length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No leads yet</td></tr>}
+                  {(leadStats?.recentLeads || []).length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No leads yet</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -339,7 +375,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* P&L Summary */}
-        {perms.can('Invoices', 'list') === true && mod('invoices') && (
+        {perms?.can('Invoices', 'list') === true && mod('invoices') && (
           <div className="tw">
             <div className="tw-head"><h3>💰 Profit &amp; Loss Summary</h3><span style={{ fontSize: 11, color: 'var(--muted)' }}>Based on Paid Invoices</span></div>
             <div className="pnl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
@@ -362,7 +398,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* Revenue Trend */}
-        {perms.can('Invoices', 'list') === true && mod('invoices') && (
+        {perms?.can('Invoices', 'list') === true && mod('invoices') && (
           <div className="tw">
             <div className="tw-head"><h3>📈 Monthly Revenue Trend</h3></div>
             <div style={{ padding: '24px 20px', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10, height: 160 }}>
@@ -381,7 +417,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* Calendar */}
-        {perms.can('Leads', 'list') === true && mod('leads') && (
+        {perms?.can('Leads', 'list') === true && mod('leads') && (
           <div className="tw">
             <div className="tw-head">
               <h3>Follow-Up Calendar</h3>
@@ -401,11 +437,48 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
                 {calDays.map((item, i) => (
                   item.empty
                     ? <div key={i} />
-                    : <div key={i} className={`cal-day${item.isToday ? ' today' : item.hasEvent ? ' has-event' : ''}`}>
-                      {item.d}{item.hasEvent && !item.isToday ? '•' : ''}
-                    </div>
+                    : <div
+                        key={i}
+                        onClick={() => item.hasEvent ? setSelectedCalDate(selectedCalDate?.toDateString() === item.dt.toDateString() ? null : item.dt) : null}
+                        className={`cal-day${item.isToday ? ' today' : item.hasEvent ? ' has-event' : ''}${selectedCalDate?.toDateString() === item.dt.toDateString() ? ' cal-day-selected' : ''}`}
+                        style={{ cursor: item.hasEvent ? 'pointer' : 'default' }}
+                      >
+                        {item.d}{item.hasEvent && !item.isToday ? '•' : ''}
+                      </div>
                 ))}
               </div>
+
+              {/* Follow-up leads popup for selected date */}
+              {selectedCalDate && calSelectedLeads.length > 0 && (
+                <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      {selectedCalDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — {calSelectedLeads.length} Follow-up{calSelectedLeads.length > 1 ? 's' : ''}
+                    </span>
+                    <button onClick={() => setSelectedCalDate(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 16, lineHeight: 1, padding: '0 2px' }}>×</button>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
+                    {calSelectedLeads.map(l => (
+                      <div
+                        key={l.id}
+                        onClick={() => { localStorage.setItem('tc_open_lead', l.id); setActiveView('leads'); }}
+                        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', borderRadius: 8, background: 'var(--bg-soft)', cursor: 'pointer', border: '1px solid var(--border)' }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-light, #f0fdf4)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-soft)'}
+                      >
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>{l.name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>{l.phone || l.email || '—'}</div>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 10, background: '#dcfce7', color: '#15803d', fontWeight: 600 }}>{l.stage}</span>
+                          {l.assign && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 3 }}>{l.assign}</div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -413,7 +486,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
       {/* Ecom & Appointments Row */}
       <div className="dash-grid-2" style={{ marginTop: 18 }}>
-        {perms.can('Ecommerce', 'list') === true && mod('ecommerce') && (
+        {perms?.can('Ecommerce', 'list') === true && mod('ecommerce') && (
           <div className="tw">
             <div className="tw-head"><h3>Recent Store Orders</h3></div>
             <table>
@@ -435,7 +508,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           </div>
         )}
 
-        {perms.can('Appointments', 'list') === true && mod('appointments') && (
+        {perms?.can('Appointments', 'list') === true && mod('appointments') && (
           <div className="tw">
             <div className="tw-head"><h3>Appointments Today</h3></div>
             <div style={{ padding: 0 }}>

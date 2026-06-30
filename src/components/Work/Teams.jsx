@@ -1,9 +1,10 @@
 import React, { useState, useMemo, lazy, Suspense } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_MEMBER } from '../../utils/constants';
-import { fmtDT } from '../../utils/helpers';
+import { fmtDT, normalizeName } from '../../utils/helpers';
 
 const CallLogs = lazy(() => import('../CallLogs/CallLogs'));
 const TeamReports = lazy(() => import('./TeamReports'));
@@ -150,9 +151,28 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     if (!editData && planEnforcement && !planEnforcement.isWithinLimit('maxUsers', team.length)) { toast('Team member limit reached for your plan. Please upgrade.', 'error'); return; }
     if (!form.name.trim() || !form.email.trim()) { toast('Name and email required', 'error'); return; }
     const normalizedEmail = form.email.trim().toLowerCase();
-    const payload = { ...form, email: normalizedEmail, userId: ownerId };
-    if (editData) { await db.transact(db.tx.teamMembers[editData.id].update(payload)); toast('Member updated', 'success'); }
-    else { await db.transact(db.tx.teamMembers[id()].update(payload)); toast('Member added', 'success'); }
+    const trimmedName = normalizeName(form.name);   // trim edges + collapse internal double-spaces — stray spaces break name-based assignment matching
+    const payload = { ...form, name: trimmedName, email: normalizedEmail, userId: ownerId };
+    if (editData) {
+      const oldName = (editData.name || '').trim();
+      await dbWrite(dbOp.update('teamMembers', editData.id, payload));
+      // Renamed? Cascade the new name onto all their leads so name-based
+      // assignment/reports don't orphan. Server-side (leads table is too large
+      // to load here); routes to PG or InstantDB via the shared write path.
+      if (oldName && oldName !== trimmedName) {
+        try {
+          const r = await fetch('/api/rename-assignee', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ownerId, oldName, newName: trimmedName }),
+          });
+          const d = await r.json().catch(() => ({}));
+          toast(`Member updated — reassigned ${d.updated ?? 0} lead(s) to "${trimmedName}"`, 'success');
+        } catch { toast('Member updated, but lead reassignment failed — please retry', 'warning'); }
+      } else {
+        toast('Member updated', 'success');
+      }
+    }
+    else { await dbWrite(dbOp.update('teamMembers', id(), payload)); toast('Member added', 'success'); }
     setModal(false);
   };
 
@@ -181,7 +201,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
   };
   const toggleActive = async (m) => { 
     if (!canEdit) { toast('Permission denied', 'error'); return; }
-    await db.transact(db.tx.teamMembers[m.id].update({ active: !m.active })); 
+    await dbWrite(dbOp.update('teamMembers', m.id, { active: !m.active })); 
   };
 
   const saveRole = async () => {
@@ -203,8 +223,8 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
       }
       newRoles.push({ name: roleForm.name.trim(), perms: roleForm.perms });
     }
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update({ roles: newRoles })); }
-    else { await db.transact(db.tx.userProfiles[id()].update({ roles: newRoles, userId: ownerId })); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, { roles: newRoles })); }
+    else { await dbWrite(dbOp.update('userProfiles', id(), { roles: newRoles, userId: ownerId })); }
     toast('Role saved', 'success');
     setRoleModal(false);
   };
@@ -213,7 +233,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     if (!canDelete) { toast('Permission denied: cannot delete roles', 'error'); return; }
     if (!confirm('Delete this role?')) return;
     const newRoles = roles.filter(r => r.name !== rName);
-    if (profileId) await db.transact(db.tx.userProfiles[profileId].update({ roles: newRoles }));
+    if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, { roles: newRoles }));
     toast('Role deleted', 'error');
   };
 
@@ -262,7 +282,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
       if (res.ok) {
         toast(`Password set for ${pwdModal.name}!`, 'success');
         // Mark as having password
-        await db.transact(db.tx.teamMembers[pwdModal.id].update({ hasPassword: true }));
+        await dbWrite(dbOp.update('teamMembers', pwdModal.id, { hasPassword: true }));
         setPwdModal(null);
         setPwdForm({ password: '', confirm: '' });
       } else {
@@ -395,7 +415,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
       {/* Team Performance Tab */}
       {tab === 'performance' && (
         <Suspense fallback={<div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ width: 20, height: 20, margin: '0 auto' }} /></div>}>
-          <TeamReports user={user} ownerId={ownerId} perms={perms} />
+          <TeamReports user={user} ownerId={ownerId} perms={perms} planEnforcement={planEnforcement} />
         </Suspense>
       )}
 

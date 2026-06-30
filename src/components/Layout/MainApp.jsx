@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, Suspense } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useApp } from '../../context/AppContext';
@@ -62,6 +63,7 @@ const AdminPanel = lazyWithRetry(() => import('../Admin/AdminPanel'));
 const ApiDocs = lazyWithRetry(() => import('../Admin/ApiDocs'));
 const Integrations = lazyWithRetry(() => import('../System/Integrations'));
 const UserManual = lazyWithRetry(() => import('../System/UserManual'));
+const WAVariableGuide = lazyWithRetry(() => import('../Settings/WAVariableGuide'));
 const UserProfile = lazyWithRetry(() => import('../Settings/UserProfile'));
 const EcomSettings = lazyWithRetry(() => import('../Ecommerce/EcomSettings'));
 const EcomOrders = lazyWithRetry(() => import('../Ecommerce/EcomOrders'));
@@ -160,7 +162,6 @@ export default function MainApp({ user, settings }) {
     memberProfiles: user.id ? { $: { where: { userId: user.id }, limit: 1 } } : null,
     teamMembers: { $: { where: { userId: targetUserId } } },
     amc: { $: { where: { userId: targetUserId } } },
-    leads: { $: { where: { userId: targetUserId } } },
     subs: { $: { where: { userId: targetUserId } } },
     checkProfiles: { userProfiles: { $: { limit: 1 } } },
   });
@@ -175,7 +176,6 @@ export default function MainApp({ user, settings }) {
 
   if (error) console.error("MainApp Query Error:", error);
 
-  const leads = data?.leads || [];
   const amc = data?.amc || [];
   const subs = data?.subs || [];
   const teamMembers = data?.teamMembers || [];
@@ -183,12 +183,7 @@ export default function MainApp({ user, settings }) {
   let profile = data?.userProfiles?.[0] || emailProfileData?.userProfiles?.[0];
   const memberProfile = data?.memberProfiles?.[0];
 
-  const visibleLeads = useMemo(() => {
-    const savedLeadStages = profile?.leadStages;
-    if (!savedLeadStages || savedLeadStages.length === 0) return leads;
-    // Only count leads whose stage is in the active/visible stages list
-    return leads.filter(l => savedLeadStages.includes(l.stage));
-  }, [leads, profile?.leadStages]);
+
 
   // Security: Cleanse profile for team members (remove tokens/passwords)
   if (isTeamMember && profile) {
@@ -210,6 +205,34 @@ export default function MainApp({ user, settings }) {
 
   // 2. Load Automation Engine (for background checks)
   useAutomationEngine(user, targetUserId);
+
+  // Lightweight overdue-follow-up data for notifications (replaces 11k+ lead subscription)
+  const [notifLeadData, setNotifLeadData] = useState([]);
+  useEffect(() => {
+    if (!targetUserId || !profile) return;
+    const fetchNotifs = () => {
+      fetch('/api/dashboard-stats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ownerId: targetUserId,
+          savedLeadStages: profile?.leadStages || null,
+          disabledStages: profile?.disabledStages || [],
+          nowMs: Date.now(),
+          isOwner: !isTeamMember,
+          userEmail: user.email || '',
+          myName: perms?.name || '',
+          teamCanSeeAllLeads: true,
+        }),
+      })
+        .then(r => r.json())
+        .then(d => setNotifLeadData(d?.overdueReminders || []))
+        .catch(() => {});
+    };
+    fetchNotifs();
+    const interval = setInterval(fetchNotifs, 60000);
+    return () => clearInterval(interval);
+  }, [targetUserId, profile?.id, isTeamMember]);
 
   const isExpired = profile?.planExpiry && profile.planExpiry < Date.now();
 
@@ -233,7 +256,7 @@ export default function MainApp({ user, settings }) {
          syncRef.current = true;
          const memberId = id();
          const teamRec = discoveredMember || teamMembers.find(m => m.id === teamInfo?.teamMemberId);
-         db.transact(db.tx.memberProfiles[memberId].update({
+         dbWrite(dbOp.update('memberProfiles', memberId, {
             userId: user.id,
             ownerUserId: targetUserId,
             email: user.email,
@@ -261,7 +284,7 @@ export default function MainApp({ user, settings }) {
       console.log("🛠 [MainApp] Creating user profile for:", user.email, "Role:", role);
 
       const profileId = id();
-      db.transact(db.tx.userProfiles[profileId].update({
+      dbWrite(dbOp.update('userProfiles', profileId, {
         userId: user.id,
         email: user.email,
         fullName: regData.fullName || '',
@@ -288,7 +311,7 @@ export default function MainApp({ user, settings }) {
       if (profile.userId !== user.id && !isTeamMember && !syncRef.current) {
         syncRef.current = true;
         console.log("🔗 [MainApp] Adopting admin-created profile — updating userId from", profile.userId, "to", user.id);
-        db.transact(db.tx.userProfiles[profile.id].update({ userId: user.id }))
+        dbWrite(dbOp.update('userProfiles', profile.id, { userId: user.id }))
           .then(() => { console.log("✅ [MainApp] Profile userId adopted successfully"); syncRef.current = false; })
           .catch(e => { console.error("❌ [MainApp] Profile adoption failed", e); syncRef.current = false; });
       }
@@ -312,7 +335,7 @@ export default function MainApp({ user, settings }) {
         }
         
         console.log("⚡ [MainApp] Metadata Sync Required:", updates);
-        db.transact(db.tx.userProfiles[profile.id].update(updates))
+        dbWrite(dbOp.update('userProfiles', profile.id, updates))
           .then(() => console.log("✅ [MainApp] Metadata synced successfully"))
           .catch(e => console.error("❌ [MainApp] Metadata sync failed", e));
       }
@@ -321,7 +344,7 @@ export default function MainApp({ user, settings }) {
     // 3. Strict Role Cleanup: Demote unauthorized superadmins
     if (profile && profile.role === 'superadmin' && user.email !== SUPERADMIN_KEY) {
       console.warn("🛡 [MainApp] Unauthorized Superadmin detected. Demoting:", user.email);
-      db.transact(db.tx.userProfiles[profile.id].update({ role: 'user' }))
+      dbWrite(dbOp.update('userProfiles', profile.id, { role: 'user' }))
         .then(() => { toast('Profile role updated', 'info'); console.log("✅ [MainApp] User demoted to 'user'"); })
         .catch(e => console.error("❌ [MainApp] Demotion failed", e));
     }
@@ -347,19 +370,13 @@ export default function MainApp({ user, settings }) {
         notifs.push({ id: 'sub-' + s.id, unread: true, title: `💰 Payment Due: ${s.client}`, desc: `₹${(s.amount || 0).toLocaleString()} for ${s.plan} due in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString() });
     });
 
-    const leadFilter = l => {
-      if (!isTeam) return true;
-      const isAssigned = l.assign === user.email || (perms?.name && l.assign === perms.name) || perms?.isAdmin || perms?.isManager;
-      const isCreator = l.actorId === user.id;
-      return isAssigned || isCreator;
-    };
-
-    const overdueLeads = visibleLeads.filter(l => leadFilter(l) && l.followup && new Date(l.followup) < now);
-    if (overdueLeads.length)
-      notifs.push({ id: 'fu-overdue', unread: true, title: `⏰ ${overdueLeads.length} Overdue Follow-up${overdueLeads.length > 1 ? 's' : ''}`, desc: `Leads: ${overdueLeads.map(l => l.name).join(', ')}`, time: new Date().toLocaleString() });
+    // Overdue follow-ups — sourced from server to avoid 11k+ lead subscription
+    if (notifLeadData.length > 0) {
+      notifs.push({ id: 'fu-overdue', unread: true, title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString() });
+    }
 
     return notifs;
-  }, [amc, subs, visibleLeads, perms, user]);
+  }, [amc, subs, notifLeadData, perms, user]);
 
   const amcExpiringCount = amc.filter(a => {
     const isTeam = perms && !perms.isOwner;
@@ -390,12 +407,13 @@ export default function MainApp({ user, settings }) {
     reports: { component: <Reports user={user} perms={perms} ownerId={targetUserId} profile={profile} />, label: 'Reports' },
     'ecom-settings': { component: <EcomSettings ownerId={targetUserId} globalSettings={settings} perms={perms} />, label: 'Ecommerce' },
     'ecom-orders': { component: <EcomOrders ownerId={targetUserId} perms={perms} />, label: 'Ecommerce' },
-    appointments: { component: <Appointments ownerId={targetUserId} perms={perms} settings={settings} />, label: 'Appointments' },
-    'appointment-settings': { component: <Appointments ownerId={targetUserId} perms={perms} initialTab="settings" settings={settings} />, label: 'Appointments' },
+    appointments: { component: <Appointments user={user} ownerId={targetUserId} perms={perms} settings={settings} />, label: 'Appointments' },
+    'appointment-settings': { component: <Appointments user={user} ownerId={targetUserId} perms={perms} initialTab="settings" settings={settings} />, label: 'Appointments' },
     distributors: { component: <Distributors user={user} ownerId={targetUserId} perms={perms} />, label: 'Distributors' },
     distributor_performance: { component: <Distributors user={user} ownerId={targetUserId} perms={perms} initialTab="Reports" />, label: 'Distributors' },
     userprofile: { component: <UserProfile user={user} profile={profile} perms={perms} memberProfile={memberProfile} ownerId={targetUserId} />, label: 'Public' },
     manual: { component: <UserManual settings={settings} />, label: 'Public' },
+    'wa-guide': { component: <WAVariableGuide onBack={() => setActiveView('settings')} />, label: 'WA Guide' },
     settings: { component: isTeamMember ? null : <Settings user={user} profile={profile} isExpired={isExpired} ownerId={targetUserId} initialTab={settingsTab} perms={perms} teamInfo={teamMembers.find(m => m.id === teamInfo?.teamMemberId)} memberProfile={memberProfile} settings={settings} />, label: 'Settings' },
     admin: { component: isSuperadmin ? <AdminPanel user={user} /> : null, label: 'Admin' },
     apidocs: { component: isSuperadmin ? <ApiDocs ownerId={targetUserId} /> : null, label: 'API Docs' },
@@ -509,7 +527,7 @@ export default function MainApp({ user, settings }) {
                 if (!fn || !bn || !ph) { toast('All fields are required', 'error'); return; }
                 setSetupSaving(true);
                 try {
-                  await db.transact(db.tx.userProfiles[profile.id].update({ fullName: fn, bizName: bn, phone: ph }));
+                  await dbWrite(dbOp.update('userProfiles', profile.id, { fullName: fn, bizName: bn, phone: ph }));
                   toast('Profile saved! Welcome! 🎉', 'success');
                 } catch (e) { toast(e.message, 'error'); }
                 finally { setSetupSaving(false); }

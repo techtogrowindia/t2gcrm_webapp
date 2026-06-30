@@ -1,4 +1,5 @@
 import { init, tx, id } from '@instantdb/admin';
+import { opU, runOps, readData } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -19,7 +20,7 @@ export default async function handler(req, res) {
     }
 
     // Check slot availability (Exclude Cancelled/No Show)
-    const existing = await db.query({
+    const existing = await readData(db, ownerId, {
       appointments: { 
         $: { 
           where: { userId: ownerId, date, time } 
@@ -42,7 +43,7 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     const txs = [
-      tx.appointments[appointmentId].update({
+      opU('appointments', appointmentId, {
         userId: ownerId,
         slug: slug || '',
         service: service || 'General Appointment',
@@ -58,7 +59,7 @@ export default async function handler(req, res) {
     ];
 
     // 2. Lead/Customer Uniqueness & Matching
-    const { leads = [], customers = [] } = await db.query({
+    const { leads = [], customers = [] } = await readData(db, ownerId, {
       leads: { $: { where: { userId: ownerId } } },
       customers: { $: { where: { userId: ownerId } } }
     });
@@ -97,7 +98,7 @@ export default async function handler(req, res) {
 
     if (!matchLead && !customers.some(c => matches.some(m => m.id === c.id))) {
       // Create new lead if no lead or customer matched
-      txs.push(tx.leads[id()].update({
+      txs.push(opU('leads', id(), {
         userId: ownerId,
         name: customer.name,
         email: customer.email || '',
@@ -113,14 +114,14 @@ export default async function handler(req, res) {
       const timestampedNote = `[${new Date().toLocaleDateString('en-IN')}] Booked appointment for: ${service || 'General'} on ${date} at ${time}`;
       const newNotes = oldNotes ? `${oldNotes}\n${timestampedNote}` : timestampedNote;
       
-      txs.push(tx.leads[matchLead.id].update({
+      txs.push(opU('leads', matchLead.id, {
         name: customer.name,
         notes: newNotes,
         updatedAt: now,
       }));
     }
 
-    await db.transact(txs);
+    await runOps(db, ownerId, txs);
 
     return res.status(200).json({ success: true, appointmentId });
   } catch (err) {

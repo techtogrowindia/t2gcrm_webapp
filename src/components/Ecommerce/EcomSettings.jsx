@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
@@ -74,11 +75,11 @@ export default function EcomSettings({ ownerId, globalSettings }) {
     if (!/^[a-z0-9-]+$/.test(form.ecomName)) { toast('Slug must be lowercase letters, numbers, and hyphens only', 'error'); return; }
     setSaving(true);
     try {
-      const txs = [db.tx.ecomSettings[settingsId].update({ ...form, userId: ownerId, updatedAt: Date.now() })];
+      const txs = [dbOp.update('ecomSettings', settingsId, { ...form, userId: ownerId, updatedAt: Date.now() })];
       if (profileId) {
-        txs.push(db.tx.userProfiles[profileId].update({ slug: form.ecomName }));
+        txs.push(dbOp.update('userProfiles', profileId, { slug: form.ecomName }));
       }
-      await db.transact(txs);
+      await dbWrite(txs);
       toast('Store settings saved!', 'success');
     } catch (err) {
       toast('Save failed: ' + err.message, 'error');

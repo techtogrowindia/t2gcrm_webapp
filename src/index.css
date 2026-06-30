@@ -178,7 +178,7 @@ input[type="email"] { padding-right: 35px !important; }
 
 /* TABLES */
 .tw { background: var(--surface); border-radius: 12px; border: 1px solid var(--border); overflow: hidden; margin-bottom: 20px; }
-.tw-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 140px; }
+.tw-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 4px; }
 .tw-head {
   padding: 14px 18px; display: flex; align-items: center;
   justify-content: space-between; border-bottom: 1px solid var(--border); gap: 10px; flex-wrap: wrap;
@@ -189,6 +189,7 @@ th {
   background: #f8faf9; padding: 9px 15px; text-align: left; font-size: 11px;
   font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 1;
 }
 td { padding: 11px 15px; border-bottom: 1px solid var(--border); }
 tr:last-child td { border-bottom: none; }
@@ -221,6 +222,14 @@ tr:hover td { background: #f8faf9; }
 .mo-head h3 { font-size: 14px; font-weight: 700; }
 .mo-body { padding: 22px; }
 .mo-foot { padding: 14px 22px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+/* Full-page form (Zoho-style): invoice/quotation/AMC create-edit fills the
+   main content area to the RIGHT of the sidebar — sidebar stays visible.
+   On mobile the sidebar slides off-canvas, so left: 0 is correct there. */
+.mo.fullpage { background: var(--surface); left: 220px; }
+.mo-box.fullpage { width: 100%; max-width: 100%; height: 100vh; max-height: 100vh; border-radius: 0; box-shadow: none; overflow: hidden; display: flex; flex-direction: column; }
+.mo-box.fullpage .mo-body { flex: 1; overflow-y: auto; }
+.mo-box.fullpage .mo-head, .mo-box.fullpage .mo-foot { flex: 0 0 auto; }
+@media (max-width: 768px) { .mo.fullpage { left: 0; } }
 .fg { display: flex; flex-direction: column; gap: 5px; margin-bottom: 13px; }
 .fg label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .fg input, .fg select, .fg textarea {
@@ -229,6 +238,10 @@ tr:hover td { background: #f8faf9; }
 }
 .fg input:focus, .fg select:focus, .fg textarea:focus { border-color: var(--accent); }
 .fg textarea { resize: vertical; min-height: 72px; }
+/* Auto-grow every textarea to fit its content while editing, so long values
+   (addresses, terms, notes) are fully visible without scrolling. field-sizing
+   is progressive (Chromium 123+); min-height + resize:vertical is the fallback. */
+textarea { field-sizing: content; max-height: 55vh; }
 .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .span2 { grid-column: 1/-1; }
 
@@ -278,12 +291,12 @@ tr:hover td { background: #f8faf9; }
 
 /* KANBAN */
 .kanban-wrapper { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-.kanban { display: flex; gap: 12px; overflow-x: auto; padding: 5px 0 20px; flex: 1; min-height: 0; scrollbar-width: thin; align-items: flex-start; justify-content: flex-start; }
+.kanban { display: flex; gap: 12px; overflow-x: auto; overflow-y: hidden; padding: 5px 0 12px; flex: 1; min-height: 0; height: 0; scrollbar-width: thin; align-items: stretch; justify-content: flex-start; }
 .kanban::-webkit-scrollbar { height: 8px; }
 .kanban::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
 .kanban::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-.kb-col { background: var(--bg); border-radius: 12px; width: 280px; min-width: 280px; flex: 0 0 280px; padding: 12px; flex-shrink: 0; display: flex; flex-direction: column; max-height: 100%; overflow: hidden; }
+.kb-col { background: var(--bg); border-radius: 12px; width: 280px; min-width: 280px; flex: 0 0 280px; padding: 12px; flex-shrink: 0; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .kb-col-cards { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
 .kb-col-cards::-webkit-scrollbar { width: 4px; }
 .kb-col-cards::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
@@ -384,6 +397,7 @@ tr:hover td { background: #f8faf9; }
 .cal-day { padding: 4px; border-radius: 5px; text-align: center; font-size: 11px; cursor: pointer; }
 .cal-day.today { background: var(--accent); color: #fff; font-weight: 700; }
 .cal-day.has-event { background: #dcfce7; color: #166534; font-weight: 600; }
+.cal-day.cal-day-selected { background: #16a34a !important; color: #fff !important; font-weight: 700; outline: 2px solid #15803d; }
 
 /* RESPONSIVE UTILITY CLASSES */
 .dash-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
@@ -416,6 +430,7 @@ tr:hover td { background: #f8faf9; }
   .topbar-title { font-size: 13px; }
   .topbar-right { gap: 6px; }
   .topbar-right .plan-badge-text { display: none; }
+  .topbar-right .topbar-username { display: none; }
   .topbar-right .role-badge { font-size: 9px; padding: 3px 7px; }
   .content { padding: 12px; }
   

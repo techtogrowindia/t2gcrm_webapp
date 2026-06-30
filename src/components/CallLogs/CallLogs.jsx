@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD, fmtDT, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
@@ -18,6 +19,14 @@ const directionIcon = (dir) => {
 
 const EMPTY_FORM = { phone: '', contactName: '', direction: 'Outgoing', outcome: 'Connected', duration: '', notes: '', leadId: '' };
 
+// Repeat-attempt rollup: consecutive unpicked calls to the same number by the
+// same staff within 24 hours collapse into one row showing "× N". A call is
+// "not picked" when its duration is 0 — the only reliable signal, since the
+// mobile app sometimes labels unpicked calls as outcome='Connected'. Calls
+// with real duration always render as individual rows.
+const REPEAT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+const isUnpickedCall = (l) => !l.duration || Number(l.duration) === 0;
+
 export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const canCreate = perms?.can('CallLogs', 'create') === true;
   const canEdit = perms?.can('CallLogs', 'edit') === true;
@@ -29,8 +38,17 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [search, setSearch] = useState('');
   const [dirFilter, setDirFilter] = useState('');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  // Default the date filter to today so the page opens scoped to today's calls.
+  // User can clear or change it; the "Clear" button resets to empty (unfiltered).
+  const todayStr = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  const [dateFrom, setDateFrom] = useState(todayStr);
+  const [dateTo, setDateTo] = useState(todayStr);
   const [staffFilter, setStaffFilter] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -41,47 +59,74 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
   const [addLeadLog, setAddLeadLog] = useState(null);
   const [addLeadForm, setAddLeadForm] = useState({ ...EMPTY_LEAD });
   const [savingLead, setSavingLead] = useState(false);
+  const [groupRepeats, setGroupRepeats] = useState(() => {
+    try { return localStorage.getItem(`callLogGroupRepeats_${user.email}`) !== 'false'; } catch { return true; }
+  });
+  // Default ON — businesses want one row per phone unless they explicitly untick.
+  const [groupByPhone, setGroupByPhone] = useState(() => {
+    try { return localStorage.getItem(`callLogGroupByPhone_${user.email}`) !== 'false'; } catch { return true; }
+  });
+  const [dedupRunning, setDedupRunning] = useState(false);
+  // Which phone-group row (by index in `paged`) is currently expanded inline
+  const [expandedIdx, setExpandedIdx] = useState(null);
 
-  // FIX 1: Split into critical (immediate) + deferred (background) queries
-  // Critical data — callLogs + profile must load before table can render
+  // Profile + team via lightweight subscriptions. callLogs are NOT subscribed —
+  // they come from /api/call-logs-page (server-driven pagination + counts +
+  // teamStats) which is the only thing that scales to 100k+ rows.
   const { data: coreData, isLoading: coreLoading } = db.useQuery({
-    callLogs: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
   });
 
-  // Deferred data — leads + team load in background without blocking the table
   const { data: deferredData } = db.useQuery({
-    leads: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
   });
 
-  const callLogs = useMemo(() => (coreData?.callLogs || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), [coreData?.callLogs]);
   const profile = coreData?.userProfiles?.[0];
 
-  // FIX 3: Cache leads in localStorage (5-min TTL) so tab switching is instant
+  // Server-driven page state — { items, totalFiltered, totalUngrouped, counts, teamStats }
+  const [pageData, setPageData] = useState(null);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [refetchCounter, setRefetchCounter] = useState(0);
+  const refetchPage = () => setRefetchCounter(c => c + 1);
+
+  // Debounce search input by 300ms so we don't refetch per keystroke
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Leads: localStorage cache (5-min TTL) + server fetch on mount.
+  // Replaced the limit:10000 subscription that timed out at 11k leads.
   const LEADS_CACHE_KEY = `leads_cache_${ownerId}`;
-  const cachedLeads = useMemo(() => {
+  const [fetchedLeads, setFetchedLeads] = useState(() => {
     try {
-      const raw = localStorage.getItem(LEADS_CACHE_KEY);
+      const raw = localStorage.getItem(`leads_cache_${ownerId}`);
       if (!raw) return [];
       const { data: cached, timestamp } = JSON.parse(raw);
       if (Date.now() - timestamp < 5 * 60 * 1000) return cached;
     } catch { /* ignore */ }
     return [];
-  }, [LEADS_CACHE_KEY]);
+  });
 
-  // Use live data if available, fall back to cache while deferred loads
-  const allLeads = deferredData?.leads || cachedLeads;
-  const team = deferredData?.teamMembers || [];
-
-  // Persist leads to cache whenever fresh data arrives
   useEffect(() => {
-    if (deferredData?.leads?.length > 0) {
-      try {
-        localStorage.setItem(LEADS_CACHE_KEY, JSON.stringify({ data: deferredData.leads, timestamp: Date.now() }));
-      } catch { /* ignore */ }
-    }
-  }, [deferredData?.leads, LEADS_CACHE_KEY]);
+    if (!ownerId) return;
+    fetch('/api/leads-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, mode: 'kanban', tab: 'all', page: 1, pageSize: 1000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+    })
+      .then(r => r.json())
+      .then(json => {
+        const items = json.items || [];
+        setFetchedLeads(items);
+        try { localStorage.setItem(LEADS_CACHE_KEY, JSON.stringify({ data: items, timestamp: Date.now() })); } catch { /* ignore */ }
+      })
+      .catch(() => { /* keep cached */ });
+  }, [ownerId]);
+
+  const allLeads = fetchedLeads;
+  const team = deferredData?.teamMembers || [];
 
   const allStages = profile?.stages || DEFAULT_STAGES;
   const disabledStages = profile?.disabledStages || [];
@@ -174,16 +219,33 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     if (!addLeadForm.stage) { toast('Please select a stage', 'error'); return; }
     setSavingLead(true);
     try {
+      // Duplicate check before creating
+      const dupRes = await fetch('/api/lead-check-duplicate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, phone: addLeadForm.phone, email: addLeadForm.email }),
+      });
+      const dupData = await dupRes.json();
+      if (dupData.duplicate) {
+        const d = dupData.duplicate;
+        const proceed = window.confirm(
+          `A ${d.type} with the same ${d.matchedOn} already exists:\n\n` +
+          `Name: ${d.name}\nPhone: ${d.phone}\nEmail: ${d.email}\n\n` +
+          `Do you still want to create this lead?`
+        );
+        if (!proceed) { setSavingLead(false); return; }
+      }
+
       const newLeadId = id();
-      await db.transact([
-        db.tx.leads[newLeadId].update({
+      await dbWrite([
+        dbOp.update('leads', newLeadId, {
           ...addLeadForm,
           userId: ownerId,
           actorId: user.id,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }),
-        db.tx.callLogs[addLeadLog.id].update({
+        dbOp.update('callLogs', addLeadLog.id, {
           leadId: newLeadId,
           leadName: addLeadForm.name,
           updatedAt: Date.now(),
@@ -191,6 +253,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
       ]);
       toast('Lead created and call log linked', 'success');
       setAddLeadModal(false);
+      refetchPage();
     } catch (e) { toast(e.message, 'error'); }
     finally { setSavingLead(false); }
   };
@@ -208,56 +271,93 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
           ? `Up to ${dateTo}`
           : `Today (${today})`;
 
-  const teamCallStats = useMemo(() => {
-    return team.map(m => {
-      const allMemberLogs = callLogs.filter(l => l.staffEmail === m.email);
-      // Apply date filter if set, otherwise default to today
-      const memberLogs = allMemberLogs.filter(l => {
-        const d = l.createdAt ? new Date(l.createdAt).toISOString().split('T')[0] : null;
-        if (!d) return false;
-        if (dateFrom || dateTo) {
-          if (dateFrom && d < dateFrom) return false;
-          if (dateTo && d > dateTo) return false;
-          return true;
-        }
-        return d === today;
+  // Server-driven values — replaces local filtered/grouped/paged/teamCallStats
+  const paged = pageData?.items || [];
+  const totalFiltered = pageData?.totalFiltered || 0;     // grouped count (rows shown)
+  const totalUngrouped = pageData?.totalUngrouped || 0;   // raw call count (for the "X records" label)
+  const teamCallStats = pageData?.teamStats || [];
+  const totalPages = pageSize === 'all' ? 1 : Math.max(1, Math.ceil(totalFiltered / (Number(pageSize) || 25)));
+
+  // Reset to page 1 on any filter / pageSize change
+  useEffect(() => { setCurrentPage(1); setExpandedIdx(null); }, [debouncedSearch, dirFilter, staffFilter, dateFrom, dateTo, pageSize, groupRepeats, groupByPhone]);
+
+  // Fetch the current page from the server whenever filters, page, or group toggle change
+  useEffect(() => {
+    if (!ownerId) return;
+    setPageLoading(true);
+    let cancelled = false;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const body = {
+          ownerId,
+          page: currentPage,
+          pageSize,
+          search: debouncedSearch,
+          dirFilter,
+          staffFilter,
+          dateFrom,
+          dateTo,
+          groupRepeats,
+          groupByPhone,
+          summaryDate: new Date().toISOString().split('T')[0],
+          team: team.map(t => ({ email: t.email, name: t.name })),
+        };
+        const r = await fetch('/api/call-logs-page', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const json = await r.json();
+        if (!cancelled) setPageData(json);
+      } catch { /* keep previous pageData so UI doesn't flash */ }
+      finally { if (!cancelled) setPageLoading(false); }
+    })();
+    return () => { cancelled = true; controller.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerId, currentPage, pageSize, debouncedSearch, dirFilter, staffFilter, dateFrom, dateTo, groupRepeats, groupByPhone, refetchCounter, team.length]);
+
+  const toggleGroupRepeats = () => {
+    const next = !groupRepeats;
+    setGroupRepeats(next);
+    try { localStorage.setItem(`callLogGroupRepeats_${user.email}`, String(next)); } catch { /* ignore */ }
+  };
+
+  const toggleGroupByPhone = () => {
+    const next = !groupByPhone;
+    setGroupByPhone(next);
+    setExpandedIdx(null);
+    try { localStorage.setItem(`callLogGroupByPhone_${user.email}`, String(next)); } catch { /* ignore */ }
+  };
+
+  const removeDuplicates = async () => {
+    if (dedupRunning) return;
+    const ok = window.confirm('Permanently delete duplicate call logs?\n\nThis groups every call by phone, direction, duration and staff, then keeps the oldest in each 10-minute cluster and removes the rest. This cannot be undone.');
+    if (!ok) return;
+    setDedupRunning(true);
+    try {
+      const r = await fetch('/api/call-logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'dedupe-duplicates', ownerId }),
       });
-      return {
-        name: m.name,
-        email: m.email,
-        total: memberLogs.length,
-        connected: memberLogs.filter(l => (l.duration && Number(l.duration) > 0) || l.outcome === 'Connected').length,
-        toLeads: memberLogs.filter(l => l.leadId).length,
-        toUnknown: memberLogs.filter(l => !l.leadId).length,
-        outgoing: memberLogs.filter(l => l.direction === 'Outgoing').length,
-        incoming: memberLogs.filter(l => l.direction === 'Incoming').length,
-        missed: memberLogs.filter(l => l.direction === 'Missed').length,
-        notPicked: memberLogs.filter(l => l.direction === 'Outgoing' && (!l.duration || Number(l.duration) === 0) && l.outcome !== 'Connected').length,
-      };
-    });
-  }, [team, callLogs, today, dateFrom, dateTo]);
-
-  // Filtered logs
-  const filtered = useMemo(() => {
-    let list = callLogs;
-    if (search) {
-      const s = search.toLowerCase();
-      list = list.filter(l => (l.phone || '').toLowerCase().includes(s) || (l.contactName || '').toLowerCase().includes(s) || (l.notes || '').toLowerCase().includes(s));
+      const j = await r.json();
+      if (!r.ok || !j.success) {
+        toast(j.error || 'Failed to remove duplicates', 'error');
+      } else if (j.deleted === 0) {
+        toast('No duplicate call logs found', 'info');
+      } else {
+        toast(`Removed ${j.deleted} duplicate call log${j.deleted !== 1 ? 's' : ''}`, 'success');
+        refetchPage();
+      }
+    } catch (e) {
+      toast('Failed to remove duplicates: ' + (e?.message || e), 'error');
+    } finally {
+      setDedupRunning(false);
     }
-    if (dirFilter) list = list.filter(l => l.direction === dirFilter);
-    if (staffFilter) list = list.filter(l => l.staffEmail === staffFilter);
-    if (dateFrom) list = list.filter(l => l.createdAt && new Date(l.createdAt).toISOString().split('T')[0] >= dateFrom);
-    if (dateTo) list = list.filter(l => l.createdAt && new Date(l.createdAt).toISOString().split('T')[0] <= dateTo);
-    setCurrentPage(1);
-    return list;
-  }, [callLogs, search, dirFilter, staffFilter, dateFrom, dateTo]);
+  };
 
-  const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
-  const paged = useMemo(() => {
-    if (pageSize === 'all') return filtered;
-    const start = (currentPage - 1) * pageSize;
-    return filtered.slice(start, start + pageSize);
-  }, [filtered, currentPage, pageSize]);
 
   const openNew = () => { setForm(EMPTY_FORM); setEditData(null); setModal(true); };
   const openEdit = (log) => {
@@ -282,31 +382,71 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
     };
     try {
       if (editData) {
-        await db.transact(db.tx.callLogs[editData.id].update(payload));
+        await dbWrite(dbOp.update('callLogs', editData.id, payload));
         toast('Call log updated', 'success');
       } else {
         payload.createdAt = Date.now();
         payload.actorId = user.id;
-        await db.transact(db.tx.callLogs[id()].update(payload));
+        await dbWrite(dbOp.update('callLogs', id(), payload));
         toast('Call logged', 'success');
       }
       setModal(false);
+      refetchPage();
     } catch (e) { toast(e.message, 'error'); }
   };
 
-  const remove = async (logId) => {
-    if (!window.confirm('Delete this call log?')) return;
+  const remove = async (logIdOrIds) => {
+    // Accepts either a single id or an array (grouped row → delete all attempts)
+    const ids = Array.isArray(logIdOrIds) ? logIdOrIds : [logIdOrIds];
+    const msg = ids.length === 1 ? 'Delete this call log?' : `Delete all ${ids.length} grouped attempts?`;
+    if (!window.confirm(msg)) return;
     try {
-      await db.transact(db.tx.callLogs[logId].delete());
-      toast('Call log deleted', 'success');
+      // Hard delete (per CLAUDE.md rule) — also runs as a single transaction
+      // so the rows disappear atomically.
+      await dbWrite(ids.map(id => dbOp.delete('callLogs', id)));
+      toast(ids.length === 1 ? 'Call log deleted' : `${ids.length} attempts deleted`, 'success');
+      refetchPage();
     } catch (e) { toast(e.message, 'error'); }
   };
 
-  // Only block render on critical data (callLogs + profile), not on leads/team
-  if (coreLoading) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ width: 20, height: 20, margin: '0 auto' }} /><p style={{ color: 'var(--muted)', marginTop: 8 }}>Loading call logs...</p></div>;
+  // Block initial render on profile + first server-side page fetch
+  if (coreLoading || (pageLoading && !pageData)) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ width: 20, height: 20, margin: '0 auto' }} /><p style={{ color: 'var(--muted)', marginTop: 8 }}>Loading call logs...</p></div>;
 
   return (
-    <div style={{ padding: '20px 24px', maxWidth: 1200 }}>
+    <div style={{ padding: '20px 24px', maxWidth: 1200, position: 'relative' }}>
+      {/* Refetch overlay — shown during filter / page / search changes */}
+      {pageLoading && pageData && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255, 255, 255, 0.6)',
+            backdropFilter: 'blur(1px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            zIndex: 10,
+            pointerEvents: 'all',
+          }}
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              border: '3px solid #e2e8f0',
+              borderTopColor: 'var(--accent, #16a34a)',
+              borderRadius: '50%',
+              animation: 'tr-spin 0.7s linear infinite',
+            }}
+          />
+          <div style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>Loading call logs…</div>
+        </div>
+      )}
+      <style>{`@keyframes tr-spin { to { transform: rotate(360deg); } }`}</style>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <div>
@@ -322,7 +462,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
       </div>
 
       {/* Team Member Call Summary */}
-      {(perms?.isOwner || perms?.isAdmin || perms?.isManager) && team.length > 0 && !staffFilter && (
+      {(perms?.isOwner || perms?.isAdmin || perms?.isManager) && team.length > 0 && (
         <div style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)', overflow: 'hidden', marginBottom: 20 }}>
           <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
             <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>Team Member Call Summary</h4>
@@ -333,12 +473,12 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                 <tr style={{ background: 'var(--bg)' }}>
                   <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>Member</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Total</th>
-                  <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Connected</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>To Leads</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Unknown</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Outgoing</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Incoming</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Missed</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Connected</th>
                   <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>Not Picked</th>
                 </tr>
               </thead>
@@ -352,24 +492,25 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                       </div>
                     </td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600 }}>{m.total}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 600 }}>{m.connected}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#8b5cf6', fontWeight: 600 }}>{m.toLeads}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f59e0b', fontWeight: 600 }}>{m.toUnknown}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#2563eb' }}>{m.outgoing}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a' }}>{m.incoming}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#ef4444' }}>{m.missed}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 600 }}>{m.connected}</td>
                     <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f97316', fontWeight: 600 }}>{m.notPicked}</td>
                   </tr>
                 ))}
+
                 <tr style={{ borderTop: '2px solid var(--border)', background: 'var(--bg)', fontWeight: 700 }}>
                   <td style={{ padding: '8px 12px', fontWeight: 700 }}>Total</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.total, 0)}</td>
-                  <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.connected, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#8b5cf6', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.toLeads, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f59e0b', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.toUnknown, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#2563eb', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.outgoing, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.incoming, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#ef4444', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.missed, 0)}</td>
+                  <td style={{ padding: '8px 12px', textAlign: 'center', color: '#16a34a', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.connected, 0)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'center', color: '#f97316', fontWeight: 700 }}>{teamCallStats.reduce((s, m) => s + m.notPicked, 0)}</td>
                 </tr>
               </tbody>
@@ -405,7 +546,31 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
           <button onClick={() => { setSearch(''); setDirFilter(''); setDateFrom(''); setDateTo(''); setStaffFilter(''); }} style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--card)', fontSize: 12, cursor: 'pointer' }}>Clear</button>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: 'var(--muted)' }}>{filtered.length} record{filtered.length !== 1 ? 's' : ''}</span>
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+            {totalUngrouped} record{totalUngrouped !== 1 ? 's' : ''}
+            {groupRepeats && totalFiltered !== totalUngrouped && (
+              <> · <strong>{totalFiltered}</strong> rows (grouped)</>
+            )}
+          </span>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: groupByPhone ? '#94a3b8' : 'var(--muted)', cursor: groupByPhone ? 'not-allowed' : 'pointer' }} title={groupByPhone ? 'Disabled while "Group by phone" is on' : 'Collapse consecutive unanswered calls to the same number into one row'}>
+            <input type="checkbox" checked={groupRepeats && !groupByPhone} disabled={groupByPhone} onChange={toggleGroupRepeats} style={{ margin: 0 }} />
+            Group repeats
+          </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }} title="Show one row per phone number with a breakdown of outgoing/incoming/missed and total talk time. Click a row to expand.">
+            <input type="checkbox" checked={groupByPhone} onChange={toggleGroupByPhone} style={{ margin: 0 }} />
+            Group by phone
+          </label>
+          {canDelete && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={removeDuplicates}
+              disabled={dedupRunning}
+              title="Scan all call logs and permanently delete duplicates (same phone, direction, duration, staff within 10 minutes)"
+              style={{ borderColor: '#fecaca', color: '#b91c1c' }}
+            >
+              {dedupRunning ? 'Removing…' : '🧹 Remove Duplicates'}
+            </button>
+          )}
           <button className="btn btn-secondary btn-sm" onClick={() => {
             setTempCols(activeCols);
             setTempPageSize(pageSize);
@@ -424,13 +589,12 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
             <select
               style={{ border: '1px solid var(--border)', background: 'var(--surface)', fontWeight: 700, outline: 'none', cursor: 'pointer', color: 'var(--accent)', padding: '2px 4px', borderRadius: 4, fontSize: 11 }}
               value={pageSize}
-              onChange={e => setPageSize(e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10))}
+              onChange={e => setPageSize(parseInt(e.target.value, 10))}
             >
               <option value={25}>25</option>
               <option value={50}>50</option>
               <option value={100}>100</option>
               <option value={500}>500</option>
-              <option value="all">All Records</option>
             </select>
           </div>
 
@@ -476,29 +640,76 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
             <tbody>
               {paged.length === 0 && (
                 <tr><td colSpan={activeCols.length + 2} style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
-                  {filtered.length === 0 && callLogs.length === 0 ? 'No call logs yet. Click "Log Call" to add one.' : 'No matching records.'}
+                  {totalUngrouped === 0 && !search && !dirFilter && !staffFilter && !dateFrom && !dateTo ? 'No call logs yet. Click "Log Call" to add one.' : 'No matching records.'}
                 </td></tr>
               )}
               {paged.map((log, i) => {
                 const di = directionIcon(log.direction);
-                // FIX 2: O(1) index lookups instead of O(n) array scans
-                const matchedLead = log.leadId
-                  ? (leadIdIndex[log.leadId] || matchLead(log.phone))
-                  : matchLead(log.phone);
+                // Server enriched each row with matchedLeadId / matchedLeadName.
+                // Fall back to local index for any client-side lookup needs.
+                const matchedLead = log.matchedLeadId
+                  ? { id: log.matchedLeadId, name: log.matchedLeadName }
+                  : (log.leadId ? leadIdIndex[log.leadId] : matchLead(log.phone));
                 const rowNum = (currentPage - 1) * (pageSize === 'all' ? 0 : pageSize) + i + 1;
+                const isPhoneGroup = !!log.phoneGroup;
+                const isExpanded = isPhoneGroup && expandedIdx === i;
+                const breakdown = log.breakdown || null;
+                const fmtDuration = (sec) => {
+                  const s = Number(sec) || 0;
+                  if (s <= 0) return '-';
+                  const m = Math.floor(s / 60);
+                  const r = s % 60;
+                  return m >= 60
+                    ? `${Math.floor(m / 60)}h ${m % 60}m`
+                    : `${m}:${String(r).padStart(2, '0')}`;
+                };
                 return (
-                  <tr key={log.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--muted)' }}>{rowNum}</td>
+                  <React.Fragment key={log.id}>
+                  <tr
+                    style={{
+                      borderBottom: '1px solid var(--border)',
+                      cursor: isPhoneGroup ? 'pointer' : 'default',
+                      background: isExpanded ? '#f8fafc' : 'transparent',
+                    }}
+                    onClick={isPhoneGroup ? () => setExpandedIdx(isExpanded ? null : i) : undefined}
+                  >
+                    <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--muted)' }}>
+                      {isPhoneGroup && (
+                        <span style={{ marginRight: 4, fontSize: 9, color: '#94a3b8' }}>{isExpanded ? '▾' : '▸'}</span>
+                      )}
+                      {rowNum}
+                    </td>
                     {activeCols.includes('Direction') && (
                       <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: di.color, fontWeight: 600, fontSize: 12 }}>
-                          <svg viewBox="0 0 24 24" width="14" height="14" stroke={di.color} strokeWidth="2" fill="none"><path d={PHONE_ICON} /></svg>
-                          {log.direction || 'Outgoing'}
-                        </span>
+                        {isPhoneGroup && breakdown ? (
+                          <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                            {breakdown.outgoing > 0 && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, background: '#dbeafe', color: '#1e40af', fontWeight: 700 }}>{breakdown.outgoing} Out</span>}
+                            {breakdown.incoming > 0 && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, background: '#dcfce7', color: '#15803d', fontWeight: 700 }}>{breakdown.incoming} In</span>}
+                            {breakdown.missed > 0 && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, background: '#fee2e2', color: '#b91c1c', fontWeight: 700 }}>{breakdown.missed} Miss</span>}
+                          </span>
+                        ) : (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: di.color, fontWeight: 600, fontSize: 12 }}>
+                            <svg viewBox="0 0 24 24" width="14" height="14" stroke={di.color} strokeWidth="2" fill="none"><path d={PHONE_ICON} /></svg>
+                            {log.direction || 'Outgoing'}
+                          </span>
+                        )}
                       </td>
                     )}
-                    {activeCols.includes('Phone') && <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12 }}>{log.phone}</td>}
-                    {activeCols.includes('Contact') && <td style={{ padding: '10px 12px' }}>{log.contactName || '-'}</td>}
+                    {activeCols.includes('Phone') && (
+                      <td style={{ padding: '10px 12px', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {log.phone}
+                        {log.attemptCount > 1 && (
+                          <span style={{ marginLeft: 4, fontSize: 10, padding: '2px 5px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontWeight: 700, verticalAlign: 'middle' }} title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>
+                            ×{log.attemptCount}
+                          </span>
+                        )}
+                      </td>
+                    )}
+                    {activeCols.includes('Contact') && (
+                      <td style={{ padding: '10px 12px' }}>
+                        {log.contactName || '-'}
+                      </td>
+                    )}
                     {activeCols.includes('Lead') && (
                       <td style={{ padding: '10px 12px' }}>
                         {matchedLead ? (
@@ -510,40 +721,122 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
                     )}
                     {activeCols.includes('Outcome') && (
                       <td style={{ padding: '10px 12px' }}>
-                        {(() => {
-                          const isConnected = log.outcome === 'Connected' || (log.duration && Number(log.duration) > 0);
-                          const isNotPicked = !isConnected && log.direction === 'Outgoing' && log.outcome !== 'Connected';
-                          const label = isConnected ? 'Connected' : isNotPicked ? 'Not Picked' : log.outcome || '-';
+                        {isPhoneGroup && breakdown ? (
+                          <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                            {breakdown.connected > 0 && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, background: '#f0fdf4', color: '#16a34a', fontWeight: 700 }}>✓ {breakdown.connected}</span>}
+                            {breakdown.notPicked > 0 && <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, background: '#fef2f2', color: '#ef4444', fontWeight: 700 }}>✗ {breakdown.notPicked}</span>}
+                          </span>
+                        ) : (() => {
+                          // Duration is the source of truth — outcome label is unreliable
+                          const isConnected = log.duration && Number(log.duration) > 0;
+                          const isNotPicked = !isConnected && log.direction === 'Outgoing';
+                          const label = isConnected ? 'Connected' : isNotPicked ? 'Not Picked' : log.outcome || 'No Answer';
                           const bg = isConnected ? '#f0fdf4' : (isNotPicked || log.outcome === 'No Answer' || log.direction === 'Missed') ? '#fef2f2' : '#f8fafc';
                           const fg = isConnected ? '#16a34a' : (isNotPicked || log.outcome === 'No Answer' || log.direction === 'Missed') ? '#ef4444' : '#64748b';
                           return <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: bg, color: fg, fontWeight: 500 }}>{label}</span>;
                         })()}
                       </td>
                     )}
-                    {activeCols.includes('Duration') && <td style={{ padding: '10px 12px', fontSize: 12 }}>{log.duration && Number(log.duration) > 0 ? `${Math.floor(Number(log.duration) / 60)}:${String(Number(log.duration) % 60).padStart(2, '0')}` : '-'}</td>}
+                    {activeCols.includes('Duration') && (
+                      <td style={{ padding: '10px 12px', fontSize: 12 }}>
+                        {isPhoneGroup
+                          ? <span title="Total talk time across all calls in this group" style={{ fontWeight: 600 }}>{fmtDuration(log.duration)}</span>
+                          : (log.duration && Number(log.duration) > 0 ? `${Math.floor(Number(log.duration) / 60)}:${String(Number(log.duration) % 60).padStart(2, '0')}` : '-')}
+                      </td>
+                    )}
                     {activeCols.includes('Staff') && <td style={{ padding: '10px 12px', fontSize: 12 }}>{log.staffName || '-'}</td>}
-                    {activeCols.includes('Date & Time') && <td style={{ padding: '10px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtDT(log.createdAt)}</td>}
+                    {activeCols.includes('Date & Time') && (
+                      <td style={{ padding: '10px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {isPhoneGroup
+                          ? <span title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>{fmtDT(log.lastAttemptAt)}</span>
+                          : log.attemptCount > 1
+                            ? <span title={`First: ${fmtDT(log.firstAttemptAt)}\nLast: ${fmtDT(log.lastAttemptAt)}`}>{fmtDT(log.lastAttemptAt)}</span>
+                            : fmtDT(log.createdAt)}
+                      </td>
+                    )}
                     {activeCols.includes('Notes') && <td style={{ padding: '10px 12px', fontSize: 12, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.notes}>{log.notes || '-'}</td>}
-                    <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                    <td style={{ padding: '10px 12px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
                         {canCreate && !matchedLead && (
                           <button onClick={() => openAddAsLead(log)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#16a34a', padding: 4 }} title="Add as Lead">
                             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" /></svg>
                           </button>
                         )}
-                        {canEdit && (
+                        {canEdit && !isPhoneGroup && (
                           <button onClick={() => openEdit(log)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2563eb', padding: 4 }} title="Edit">
                             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                           </button>
                         )}
                         {canDelete && (
-                          <button onClick={() => remove(log.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4 }} title="Delete">
+                          <button onClick={() => remove(log.groupedIds || log.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4 }} title={isPhoneGroup ? `Delete all ${log.attemptCount} calls` : (log.attemptCount > 1 ? `Delete all ${log.attemptCount} attempts` : 'Delete')}>
                             <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" strokeWidth="2" fill="none"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
                           </button>
                         )}
                       </div>
                     </td>
                   </tr>
+                  {isExpanded && Array.isArray(log.calls) && (
+                    <tr style={{ background: '#f8fafc', borderBottom: '1px solid var(--border)' }}>
+                      <td colSpan={activeCols.length + 2} style={{ padding: '8px 28px 12px' }}>
+                        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6, fontWeight: 600 }}>
+                          All {log.calls.length} call{log.calls.length !== 1 ? 's' : ''} for {log.phone}
+                        </div>
+                        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse', background: 'var(--card)', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                          <thead>
+                            <tr style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
+                              <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, fontSize: 11 }}>Direction</th>
+                              <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, fontSize: 11 }}>Outcome</th>
+                              <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, fontSize: 11 }}>Duration</th>
+                              <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, fontSize: 11 }}>Staff</th>
+                              <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, fontSize: 11 }}>Date & Time</th>
+                              <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, fontSize: 11 }}>Notes</th>
+                              <th style={{ padding: '6px 10px', textAlign: 'center', fontWeight: 600, fontSize: 11, width: 60 }}>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {log.calls.map((c) => {
+                              const cdi = directionIcon(c.direction);
+                              const cConnected = c.duration && Number(c.duration) > 0;
+                              const cNotPicked = !cConnected && c.direction === 'Outgoing';
+                              const cLabel = cConnected ? 'Connected' : cNotPicked ? 'Not Picked' : c.outcome || 'No Answer';
+                              const cBg = cConnected ? '#f0fdf4' : '#fef2f2';
+                              const cFg = cConnected ? '#16a34a' : '#ef4444';
+                              return (
+                                <tr key={c.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                                  <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: cdi.color, fontWeight: 600, fontSize: 11 }}>
+                                      <svg viewBox="0 0 24 24" width="11" height="11" stroke={cdi.color} strokeWidth="2" fill="none"><path d={PHONE_ICON} /></svg>
+                                      {c.direction || '-'}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: '6px 10px' }}>
+                                    <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, background: cBg, color: cFg, fontWeight: 500 }}>{cLabel}</span>
+                                  </td>
+                                  <td style={{ padding: '6px 10px', fontSize: 11 }}>{cConnected ? `${Math.floor(Number(c.duration) / 60)}:${String(Number(c.duration) % 60).padStart(2, '0')}` : '-'}</td>
+                                  <td style={{ padding: '6px 10px', fontSize: 11 }}>{c.staffName || '-'}</td>
+                                  <td style={{ padding: '6px 10px', fontSize: 11, whiteSpace: 'nowrap' }}>{fmtDT(c.createdAt)}</td>
+                                  <td style={{ padding: '6px 10px', fontSize: 11, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.notes}>{c.notes || '-'}</td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'center' }}>
+                                    {canEdit && (
+                                      <button onClick={() => openEdit({ ...c, phone: log.phone, contactName: log.contactName, leadId: log.leadId })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2563eb', padding: 2 }} title="Edit">
+                                        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                                      </button>
+                                    )}
+                                    {canDelete && (
+                                      <button onClick={() => remove(c.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 2, marginLeft: 4 }} title="Delete this call">
+                                        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2" fill="none"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
+                                      </button>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -554,7 +847,7 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
         {pageSize !== 'all' && totalPages > 1 && (
           <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', background: 'var(--bg)', flexWrap: 'wrap', gap: 15 }}>
             <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-              Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to <strong>{Math.min(currentPage * pageSize, filtered.length)}</strong> of <strong>{filtered.length}</strong> records
+              Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to <strong>{Math.min(currentPage * pageSize, totalFiltered)}</strong> of <strong>{totalFiltered}</strong> rows
             </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
               <button className="btn btn-secondary btn-sm" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)} style={{ padding: '4px 10px' }}>Prev</button>
@@ -606,14 +899,14 @@ export default function CallLogs({ user, perms, ownerId, planEnforcement }) {
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
                 <strong style={{ fontSize: 13, color: 'var(--text)', marginBottom: 12, display: 'block' }}>Default Records per Page</strong>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {[25, 50, 100, 500, 'all'].map(size => (
+                  {[25, 50, 100, 500].map(size => (
                     <button
                       key={size}
                       className={`btn btn-sm ${tempPageSize === size ? 'btn-primary' : 'btn-secondary'}`}
                       onClick={() => setTempPageSize(size)}
                       style={{ padding: '6px 12px' }}
                     >
-                      {size === 'all' ? 'All Records' : size}
+                      {size}
                     </button>
                   ))}
                 </div>

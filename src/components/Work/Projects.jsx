@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { stageBadgeClass, prioBadgeClass, fmtD } from '../../utils/helpers';
@@ -33,19 +34,33 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
     tasks: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
-    activityLogs: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
+    customers: { $: { where: { userId: ownerId }, limit: 10000 } },
   });
   const tasks = data?.tasks || [];
   const team = data?.teamMembers || [];
   const customers = data?.customers || [];
-  const leads = data?.leads || [];
   const profile = data?.userProfiles?.[0] || {};
+
+  const [modalLeads, setModalLeads] = useState([]);
+  const fetchModalLeads = async () => {
+    if (modalLeads.length > 0) return; // already cached for this session
+    try {
+      const r = await fetch('/api/leads-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, mode: 'list', pageSize: 500, tab: 'all', page: 1, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+      });
+      const json = await r.json();
+      setModalLeads(json.items || []);
+    } catch (e) { /* silent — dropdown will be empty but save still works */ }
+  };
   const taxRates = profile.taxRates || [];
   const customFields = profile.customFields || [];
   const taskStatuses = profile.taskStatuses || DEFAULT_TASK_STATUSES;
-  const activityLogs = data?.activityLogs || [];
+  const drawerProjectId = selectedProj?.id || null;
+  const { data: drawerData } = db.useQuery(drawerProjectId ? {
+    activityLogs: { $: { where: { entityId: drawerProjectId } } },
+  } : {});
   const [noteText, setNoteText] = useState('');
   
   const [custModal, setCustModal] = useState(false);
@@ -58,9 +73,9 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
     const wonStage = profile.wonStage || 'Won';
     return [
       ...customers.map(c => ({ ...c, isLead: false, displayName: c.name })),
-      ...leads.filter(l => l.stage !== wonStage).map(l => ({ ...l, isLead: true, displayName: `${l.name} (Lead)` }))
+      ...modalLeads.filter(l => l.stage !== wonStage).map(l => ({ ...l, isLead: true, displayName: `${l.name} (Lead)` }))
     ];
-  }, [customers, leads, profile.wonStage]);
+  }, [customers, modalLeads, profile.wonStage]);
   
   const projects = useMemo(() => {
     const raw = data?.projects || [];
@@ -72,7 +87,7 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
     if (!search) return true;
     const q = search.toLowerCase();
     return [p.name, p.client, p.desc, p.status].some(v => (v || '').toLowerCase().includes(q));
-  });
+  }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); // newest first
 
   // Handle deep-linking from activity logs
   useEffect(() => {
@@ -87,6 +102,8 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
   }, [projects]);
 
   const [taskForm, setTaskForm] = useState({ title: '', assignTo: '', dueDate: '', priority: 'Medium', status: taskStatuses[0], notes: '', client: '' });
+
+  const myMember = useMemo(() => team.find(t => t.email === user.email), [team, user.email]);
 
   const pf = (k) => (e) => setProjForm(p => ({ ...p, [k]: e.target.value }));
   const tf = (k) => (e) => setTaskForm(p => ({ ...p, [k]: e.target.value }));
@@ -114,14 +131,15 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
       const res = await fetch('/api/data', {
         method: isEdit ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          module: 'projects', 
-          ownerId, 
-          actorId: user.id, 
+        body: JSON.stringify({
+          module: 'projects',
+          ownerId,
+          actorId: user.id,
           userName: user.email,
-          id: editProj?.id, 
+          teamMemberId: myMember?.id || null,
+          id: editProj?.id,
           logText,
-          ...projForm 
+          ...projForm
         })
       });
       if (!res.ok) throw new Error('Failed to save project');
@@ -140,11 +158,12 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
       const res = await fetch('/api/data', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          module: 'projects', 
-          ownerId, 
-          actorId: user.id, 
+        body: JSON.stringify({
+          module: 'projects',
+          ownerId,
+          actorId: user.id,
           userName: user.email,
+          teamMemberId: myMember?.id || null,
           id: pid,
           logText: `Project "${pName}" deleted with all its tasks`
         })
@@ -179,15 +198,16 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
       const res = await fetch('/api/data', {
         method: isEdit ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          module: 'tasks', 
-          ownerId, 
-          actorId: user.id, 
+        body: JSON.stringify({
+          module: 'tasks',
+          ownerId,
+          actorId: user.id,
           userName: user.email,
+          teamMemberId: myMember?.id || null,
           projectId: selectedProj.id,
-          id: editTask?.id, 
+          id: editTask?.id,
           logText,
-          ...taskForm 
+          ...taskForm
         })
       });
       if (!res.ok) throw new Error('Failed to save task');
@@ -206,11 +226,12 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
       const res = await fetch('/api/data', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          module: 'tasks', 
-          ownerId, 
-          actorId: user.id, 
+        body: JSON.stringify({
+          module: 'tasks',
+          ownerId,
+          actorId: user.id,
           userName: user.email,
+          teamMemberId: myMember?.id || null,
           projectId: selectedProj.id,
           id: tid,
           logText: `Task "${tTitle}" deleted`
@@ -232,13 +253,14 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
       const res = await fetch('/api/data', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          module: 'tasks', 
-          ownerId, 
-          actorId: user.id, 
+        body: JSON.stringify({
+          module: 'tasks',
+          ownerId,
+          actorId: user.id,
           userName: user.email,
+          teamMemberId: myMember?.id || null,
           projectId: selectedProj.id,
-          id: t.id, 
+          id: t.id,
           status: nextStatus,
           logText: `Status changed from ${t.status} to ${nextStatus}`
         })
@@ -253,7 +275,7 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
     if (!newCustForm.name.trim()) return toast('Name required', 'error');
     if (!newCustForm.email.trim()) return toast('Email is mandatory for clients', 'error');
     const newId = id();
-    await db.transact(db.tx.customers[newId].update({ ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+    await dbWrite(dbOp.update('customers', newId, { ...newCustForm, name: newCustForm.name.trim(), userId: ownerId, actorId: user.id, createdAt: Date.now() }));
     if (projModal) setProjForm(p => ({ ...p, client: newCustForm.name.trim() }));
     if (taskModal) setTaskForm(p => ({ ...p, client: newCustForm.name.trim() }));
     setCustModal(false);
@@ -272,7 +294,7 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
           {((selectedProj && canCreateTask) || (!selectedProj && canCreateProj)) && (
             <button className="btn btn-primary btn-sm" onClick={() => {
               if (selectedProj) { setEditTask(null); setTaskForm({ title: '', assignTo: '', dueDate: '', priority: 'Medium', status: taskStatuses[0], notes: '', client: selectedProj.client || '' }); setTaskModal(true); }
-              else { setEditProj(null); setProjForm(PROJ_EMPTY); setProjModal(true); }
+              else { fetchModalLeads(); setEditProj(null); setProjForm(PROJ_EMPTY); setProjModal(true); }
             }}>
               + {selectedProj ? 'Create Task' : 'Create Project'}
             </button>
@@ -315,7 +337,7 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
                         <td><span className={`badge ${stageBadgeClass(p.status)}`}>{p.status}</span></td>
                         <td>
                           <button className="btn btn-primary btn-sm" onClick={() => setSelectedProj(p)}>Tasks</button>{' '}
-                          {canEditProj && <button className="btn btn-secondary btn-sm" onClick={() => { setEditProj(p); setProjForm({ name: p.name, client: p.client || '', status: p.status, startDate: p.startDate || '', endDate: p.endDate || '', desc: p.desc || '', assignTo: p.assignTo || '' }); setProjModal(true); }}>Edit</button>}{' '}
+                          {canEditProj && <button className="btn btn-secondary btn-sm" onClick={() => { fetchModalLeads(); setEditProj(p); setProjForm({ name: p.name, client: p.client || '', status: p.status, startDate: p.startDate || '', endDate: p.endDate || '', desc: p.desc || '', assignTo: p.assignTo || '' }); setProjModal(true); }}>Edit</button>}{' '}
                           {canDeleteProj && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={() => delProj(p.id, p.name, p.client)}>Del</button>}
                         </td>
                       </tr>
@@ -405,7 +427,7 @@ export default function Projects({ user, perms, ownerId, planEnforcement }) {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 300, overflowY: 'auto' }}>
               {(() => {
-                const relevantLogs = activityLogs.filter(l => l.entityId === selectedProj.id || l.projectId === selectedProj.id).sort((a,b) => b.createdAt - a.createdAt);
+                const relevantLogs = (drawerData?.activityLogs || []).sort((a,b) => b.createdAt - a.createdAt);
                 if (relevantLogs.length === 0) return <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: 20 }}>No activity recorded yet for this project.</div>;
                 return relevantLogs.map(log => (
                   <div key={log.id} style={{ display: 'flex', gap: 12, paddingBottom: 10, borderBottom: '1px solid var(--border)' }}>

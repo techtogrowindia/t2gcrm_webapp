@@ -5,6 +5,10 @@ import { fmtD, INDIAN_STATES, COUNTRIES } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_CUSTOMER } from '../../utils/constants';
 import SearchableSelect from '../UI/SearchableSelect';
+import { useData } from '../../hooks/useData';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
+
+const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
 
 export default function Customers({ user, perms, ownerId, planEnforcement }) {
   const canCreate = perms?.can('Customers', 'create') === true;
@@ -18,33 +22,49 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [noteText, setNoteText] = useState('');
+  const [viewCustomer, setViewCustomer] = useState(null);
   const toast = useToast();
 
-  const { data } = db.useQuery({
-    customers: { $: { where: { userId: ownerId } } },
+  // NOTE: `leads` is NOT subscribed here — at 11k+ leads the subscription
+  // times out and data stays undefined forever (page stuck on spinner).
+  // Duplicate checks use /api/lead-check-duplicate; Won-lead sync uses
+  // /api/sync-won-leads; contact sync on edit uses a targeted narrow query.
+  const { data, refetch } = useData({
+    customers: { $: { where: { userId: ownerId }, limit: 10000 } },
     userProfiles: { $: { where: { userId: ownerId } } },
     projects: { $: { where: { userId: ownerId } } },
     quotes: { $: { where: { userId: ownerId } } },
     invoices: { $: { where: { userId: ownerId } } },
     tasks: { $: { where: { userId: ownerId } } },
-    activityLogs: { $: { where: { userId: ownerId } } },
     amc: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
+    teamMembers: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId, status: 'Approved' } } },
-  });
-  const customers = useMemo(() => {
-    return data?.customers || [];
-  }, [data?.customers]);
+  }, ['customers', 'userProfiles', 'projects', 'quotes', 'invoices', 'tasks', 'amc', 'teamMembers', 'partnerApplications']);
+  const team = data?.teamMembers || [];
+  const myMember = useMemo(() => team.find(t => t.email === user.email), [team, user.email]);
+  const customers = useMemo(() => data?.customers || [], [data?.customers]);
 
   const customFields = data?.userProfiles?.[0]?.customFields || [];
   const projects = data?.projects || [];
   const quotes = data?.quotes || [];
   const invoices = data?.invoices || [];
   const tasks = data?.tasks || [];
-  const activityLogs = data?.activityLogs || [];
+  const drawerCustomerId = viewCustomer?.id || null;
+  const { data: drawerData } = useData(
+    drawerCustomerId ? { activityLogs: { $: { where: { entityId: drawerCustomerId } } } } : {},
+    drawerCustomerId ? { activityLogs: { where: { entityId: drawerCustomerId } } } : {}
+  );
   const amcList = data?.amc || [];
-  const leads = data?.leads || [];
-  const partners = data?.partnerApplications || [];
+  const partners = (data?.partnerApplications || []).filter(p => p.status === 'Approved');
+
+  // Targeted lead lookup — only runs while a customer edit drawer is open.
+  // Avoids subscribing to all 11k leads just to find one name match.
+  const editName = editData?.name || null;
+  const { data: leadSyncData } = useData(
+    editName ? { leads: { $: { where: { userId: ownerId, name: editName } } } } : {},
+    editName ? { leads: { where: { name: editName } } } : {}
+  );
+  const matchedLead = leadSyncData?.leads?.[0] || null;
 
   const filtered = useMemo(() => {
     return customers.filter(c => {
@@ -53,7 +73,7 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
       // search in name, email, phone, and all custom fields
       const customVals = c.custom ? Object.values(c.custom) : [];
       return [c.name, c.email, c.phone, ...customVals].some(v => (v || '').toLowerCase().includes(q));
-    });
+    }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); // newest first
   }, [customers, search]);
 
   const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
@@ -79,13 +99,9 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
   };
 
   const logActivity = async (customerId, text) => {
-    await db.transact(db.tx.activityLogs[id()].update({
-      entityId: customerId,
-      entityType: 'customer',
-      text,
-      userId: ownerId,
-      actorId: user.id,
-      userName: user.email,
+    await dbWrite(dbOp.update('activityLogs', id(), {
+      entityId: customerId, entityType: 'customer', text,
+      userId: ownerId, actorId: user.id, userName: user.email,
       createdAt: Date.now()
     }));
   };
@@ -97,21 +113,33 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
     if (!form.name.trim()) { toast('Name is required', 'error'); return; }
     if (!form.email.trim()) { toast('Email is mandatory for clients', 'error'); return; }
 
-    // Duplicate phone/email check across customers + leads
-    const checkPhone = (form.phone || '').trim().toLowerCase();
-    const checkEmail = (form.email || '').trim().toLowerCase();
+    // Duplicate phone/email check via server (scans full leads + customers,
+    // not just the 25 loaded on current page)
+    const checkPhone = (form.phone || '').trim();
+    const checkEmail = (form.email || '').trim();
     if (checkPhone || checkEmail) {
-      const allRecords = [...customers, ...leads];
-      const duplicate = allRecords.find(r => {
-        if (editData && r.id === editData.id) return false; // skip self when editing
-        const rPhone = (r.phone || '').trim().toLowerCase();
-        const rEmail = (r.email || '').trim().toLowerCase();
-        return (checkPhone && rPhone && rPhone === checkPhone) ||
-               (checkEmail && rEmail && rEmail === checkEmail);
-      });
-      if (duplicate) {
-        toast(`Duplicate! A record with this ${(duplicate.phone || '').toLowerCase() === checkPhone ? 'phone number' : 'email'} already exists (${duplicate.name}).`, 'error');
-        return;
+      try {
+        const dupRes = await fetch('/api/lead-check-duplicate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ownerId,
+            phone: checkPhone,
+            email: checkEmail,
+            excludeLeadId: editData?.leadId || null,
+            excludeCustomerId: editData?.id || null,
+          }),
+        });
+        const dupData = await dupRes.json();
+        if (dupData.duplicate) {
+          const d = dupData.duplicate;
+          const matchedOn = checkPhone && d.phone?.replace(/\D/g, '') === checkPhone.replace(/\D/g, '') ? 'phone number' : 'email';
+          toast(`Duplicate! A ${d.type} with this ${matchedOn} already exists (${d.name}).`, 'error');
+          return;
+        }
+      } catch (e) {
+        // If API fails, skip check rather than blocking the save
+        console.warn('Duplicate check API failed, skipping:', e);
       }
     }
 
@@ -136,37 +164,44 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
           }
         });
 
-        txs.push(db.tx.customers[editData.id].update({ ...form, userId: ownerId, actorId: user.id, updatedAt: Date.now() }));
-        
-        // Sync to Lead if name matches (case-insensitive & trimmed)
-        const lMatch = leads.find(l => (l.name || '').trim().toLowerCase() === (editData.name || '').trim().toLowerCase());
+        txs.push(dbOp.update('customers', editData.id, { ...form, userId: ownerId, actorId: user.id, updatedAt: Date.now() }));
+
+        // Sync to Lead if a matching lead was found via targeted query
+        const lMatch = matchedLead;
         if (lMatch) {
-          txs.push(db.tx.leads[lMatch.id].update({ name: form.name, companyName: form.companyName, email: form.email, phone: form.phone }));
-          txs.push(db.tx.activityLogs[id()].update({
+          txs.push(dbOp.update('leads', lMatch.id, { name: form.name, companyName: form.companyName, email: form.email, phone: form.phone }));
+          txs.push(dbOp.update('activityLogs', id(), {
             entityId: lMatch.id, entityType: 'lead', text: `Contact details synced from Customer update (${form.name}).`,
             userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
           }));
         }
 
         if (changes.length > 0) {
-          txs.push(db.tx.activityLogs[id()].update({
-            entityId: editData.id, entityType: 'customer', text: changes.join(' | '),
-            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
+          txs.push(dbOp.update('activityLogs', id(), {
+            entityId: editData.id, entityType: 'customer',
+            entityName: form.companyName || form.name, action: 'edited',
+            text: `Edited customer **${form.name}**: ${changes.join(' | ')}`,
+            userId: ownerId, actorId: user.id, userName: user.email,
+            teamMemberId: myMember?.id || null, createdAt: Date.now()
           }));
         }
-        await db.transact(txs);
+        await dbWrite(txs);
         toast('Customer updated!', 'success');
       } else {
         const newId = id();
-        txs.push(db.tx.customers[newId].update({ ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() }));
-        txs.push(db.tx.activityLogs[id()].update({
-          entityId: newId, entityType: 'customer', text: 'Customer created [Other Work]',
-          userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
+        txs.push(dbOp.update('customers', newId, { ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() }));
+        txs.push(dbOp.update('activityLogs', id(), {
+          entityId: newId, entityType: 'customer',
+          entityName: form.companyName || form.name, action: 'created',
+          text: `Created customer **${form.name}**`,
+          userId: ownerId, actorId: user.id, userName: user.email,
+          teamMemberId: myMember?.id || null, createdAt: Date.now()
         }));
-        await db.transact(txs);
+        await dbWrite(txs);
         toast(`Customer "${form.name}" created!`, 'success');
       }
       setModal(false);
+      refetch();
     } catch (e) { toast('Error saving customer', 'error'); }
   };
 
@@ -174,19 +209,20 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
     if (!canDelete) { toast('Permission denied: cannot delete customers', 'error'); return; }
     if (!confirm('Delete customer? All associated activity logs and records will be removed.')) return;
     try {
-      const res = await fetch('/api/data', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          module: 'customers',
-          ownerId,
-          actorId: user.id,
-          userName: user.email,
-          id: cId,
-          logText: 'Customer deleted from CRM'
-        })
-      });
-      if (!res.ok) throw new Error('Failed to delete customer');
+      if (USE_PG_DATA) {
+        await dbWrite(dbOp.delete('customers', cId)); // cascade-deletes activity logs
+        refetch();
+      } else {
+        const res = await fetch('/api/data', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            module: 'customers', ownerId, actorId: user.id,
+            userName: user.email, id: cId, logText: 'Customer deleted from CRM'
+          })
+        });
+        if (!res.ok) throw new Error('Failed to delete customer');
+      }
       toast('Customer deleted', 'error');
     } catch (e) {
       toast('Error deleting customer', 'error');
@@ -195,42 +231,18 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
 
   const syncWonLeads = async () => {
     const wonStage = data?.userProfiles?.[0]?.wonStage || 'Won';
-    const wonLeads = leads.filter(l => l.stage === wonStage);
-    if (wonLeads.length === 0) return;
-
-    const txs = [];
-    let count = 0;
-
-    wonLeads.forEach(l => {
-      // Check if already a customer
-      const exists = customers.find(c => 
-        (l.email && c.email === l.email) || 
-        (l.phone && c.phone === l.phone) ||
-        (c.name.trim().toLowerCase() === l.name.trim().toLowerCase())
-      );
-      if (!exists) {
-        const newId = id();
-        txs.push(db.tx.customers[newId].update({
-          name: l.name,
-          companyName: l.companyName || '',
-          email: l.email || '',
-          phone: l.phone || '',
-          address: l.address || '',
-          userId: ownerId,
-          actorId: user.id,
-          createdAt: Date.now()
-        }));
-        txs.push(db.tx.activityLogs[id()].update({
-          entityId: newId, entityType: 'customer', text: `Customer created via Sync from Lead "${l.name}" [Other Work]`,
-          userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
-        }));
-        count++;
+    try {
+      const res = await fetch('/api/sync-won-leads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, wonStage, userId: user.id, userEmail: user.email }),
+      });
+      const result = await res.json();
+      if (result.synced > 0) {
+        toast(`Automatically synced ${result.synced} new customers from "Won" leads.`, 'success');
       }
-    });
-
-    if (txs.length > 0) {
-      await db.transact(txs);
-      toast(`Automatically synced ${count} new customers from "Won" leads.`, 'success');
+    } catch (e) {
+      console.warn('sync-won-leads failed:', e);
     }
   };
 
@@ -246,17 +258,14 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
     }
   }, [customers]);
 
-  // Auto-sync on load
+  // Auto-sync Won leads once on mount via server — no longer tied to the
+  // full leads subscription (which timed out at 11k leads).
   React.useEffect(() => {
-    if (data && leads.length > 0) {
-      syncWonLeads();
-    }
-  }, [data?.leads, data?.customers]);
+    if (data && ownerId) syncWonLeads();
+  }, [!!data, ownerId]);
 
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
   const cf = (k) => (e) => setForm(p => ({ ...p, custom: { ...(p.custom || {}), [k]: e.target.value } }));
-
-  const [viewCustomer, setViewCustomer] = useState(null);
 
   if (viewCustomer) {
     const c = viewCustomer;
@@ -275,22 +284,19 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
     const relAmc = amcList.filter(cReq);
     
     // Sort logs newest first
-    const cLogs = (activityLogs || []).filter(l => l.entityId === c.id).sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const cLogs = (drawerData?.activityLogs || []).sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0));
 
     const addNote = async () => {
     if (!canEdit) { toast('Permission denied: cannot add notes', 'error'); return; }
     if (!noteText.trim()) return;
-      await db.transact(db.tx.activityLogs[id()].update({
-        entityId: c.id,
-        entityType: 'customer',
-        text: noteText.trim(),
-        userId: ownerId,
-        actorId: user.id,
-        userName: user.email,
+      await dbWrite(dbOp.update('activityLogs', id(), {
+        entityId: c.id, entityType: 'customer', text: noteText.trim(),
+        userId: ownerId, actorId: user.id, userName: user.email,
         createdAt: Date.now()
       }));
       setNoteText('');
       toast('Note added', 'success');
+      refetch();
     };
     
     return (
@@ -633,8 +639,8 @@ export default function Customers({ user, perms, ownerId, planEnforcement }) {
           </table>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderTop: '1px solid var(--border)', background: '#f8fafc' }}>
             <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-              Show: {['25', '50', '100', 'all'].map(z => (
-                <button key={z} onClick={() => { setPageSize(z === 'all' ? 'all' : Number(z)); setCurrentPage(1); }} style={{ margin: '0 4px', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: pageSize === (z === 'all' ? 'all' : Number(z)) ? 'var(--accent)' : '#fff', color: pageSize === (z === 'all' ? 'all' : Number(z)) ? '#fff' : 'var(--text)', cursor: 'pointer' }}>{z}</button>
+              Show: {['25', '50', '100', '500'].map(z => (
+                <button key={z} onClick={() => { setPageSize(Number(z)); setCurrentPage(1); }} style={{ margin: '0 4px', padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: pageSize === Number(z) ? 'var(--accent)' : '#fff', color: pageSize === Number(z) ? '#fff' : 'var(--text)', cursor: 'pointer' }}>{z}</button>
               ))}
             </div>
             <div style={{ display: 'flex', gap: 10 }}>

@@ -39,7 +39,7 @@ const VIEW_TO_MODULE = {
 };
 
 // Always-allowed views (never blocked by plan)
-const ALWAYS_ALLOWED = ['dashboard', 'userprofile', 'settings', 'admin', 'apidocs', 'manual', 'appointment-settings'];
+const ALWAYS_ALLOWED = ['dashboard', 'userprofile', 'settings', 'admin', 'apidocs', 'manual', 'appointment-settings', 'wa-guide'];
 
 export function usePlanEnforcement(profile, settings) {
   return useMemo(() => {
@@ -71,8 +71,14 @@ export function usePlanEnforcement(profile, settings) {
      * @returns {boolean}
      */
     const isModuleEnabled = (moduleKey) => {
-      if (!modules) return true; // Legacy plan without modules = all enabled
-      return modules[moduleKey] !== false;
+      if (!modules) return true; // Legacy plan without modules field at all = all enabled (e.g. fallback plans)
+      // Plan's module list is authoritative: a module is enabled only if the
+      // plan explicitly sets it to `true`. Missing keys are treated as
+      // disabled — this is what the admin expects when they assign a plan
+      // with only 9 modules ticked. Previously we used `!== false`, which
+      // meant any module added after the plan was created (so absent from the
+      // saved object) appeared enabled, leaking features across plans.
+      return modules[moduleKey] === true;
     };
 
     /**
@@ -82,8 +88,11 @@ export function usePlanEnforcement(profile, settings) {
      */
     const getLimit = (limitKey) => {
       const val = limits[limitKey];
-      if (val === undefined || val === null) return -1; // No limit = unlimited
-      return +val;
+      if (val !== undefined && val !== null) return +val;
+      // Fallback: legacy/fallback plans store limits at top level (e.g. plan.maxLeads)
+      const topVal = activePlan[limitKey];
+      if (topVal !== undefined && topVal !== null) return +topVal;
+      return -1; // No limit = unlimited
     };
 
     /**

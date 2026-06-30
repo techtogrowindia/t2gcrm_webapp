@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { dbWrite, dbOp, dbQueryOnce } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
 import { renderTemplate, sendEmailMock, sendEmail, sendWhatsApp, AUTO_TRIGGER_EVENTS } from '../../utils/messaging';
-import { fmtD, INDIAN_STATES, COUNTRIES, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, SYSTEM_STAGES, DEFAULT_UNITS } from '../../utils/helpers';
+import { fmtD, INDIAN_STATES, COUNTRIES, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, SYSTEM_STAGES, DEFAULT_UNITS, SUPPORTED_CURRENCIES } from '../../utils/helpers';
 import DocumentTemplate from '../Finance/DocumentTemplate';
 
 const SETTINGS_GROUPS = [
@@ -45,7 +46,6 @@ const DEFAULT_TAX_OPTIONS = [
 
 export default function Settings({ user, profile, isExpired, initialTab, ownerId, perms, teamInfo, memberProfile, settings }) {
   const groups = SETTINGS_GROUPS;
-
   const [active, setActive] = useState(initialTab || 'Business');
   
   React.useEffect(() => {
@@ -66,6 +66,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     logo: profile?.logo || null,
     bizExtraEmails: profile?.bizExtraEmails || '',
     slug: profile?.slug || '',
+    defaultCurrency: profile?.defaultCurrency || 'INR',
+    waNotifPhone: profile?.waNotifPhone || '',
   });
   const [fin, setFin] = useState({
     qPrefix: profile?.qPrefix || 'QUO-',
@@ -122,6 +124,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         logo: profile.logo || null,
         bizExtraEmails: profile.bizExtraEmails || '',
         slug: profile.slug || '',
+        defaultCurrency: profile.defaultCurrency || 'INR',
+        waNotifPhone: profile.waNotifPhone || '',
       });
       setFin({
         qPrefix: profile.qPrefix || 'QUO-',
@@ -159,13 +163,29 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const [editingCFIndex, setEditingCFIndex] = useState(null);
   const [editingWA, setEditingWA] = useState(null);
+  const [waFormTrigger, setWaFormTrigger] = useState('');
+  const [waFormBody, setWaFormBody] = useState(''); // tracks textarea for live curl preview
+  const [waFormRecipients, setWaFormRecipients] = useState(['client']); // multi-select recipients
+
+  // Sample template bodies — shown when user selects a trigger on Add New
+  const WA_SAMPLE_BODIES = {
+    lead_created:        `Hi #client#, thank you for your enquiry!\nWe received your lead (Requirement: #requirement#) from #source# and our team will contact you shortly.\n— #bizName#`,
+    lead_stage_changed:  `Hi #client#, your enquiry status has been updated.\nStage: #fromstage# → #tostage#\nAssigned to: #assignee#\n— #bizName#`,
+    lead_assigned:       `Hi #assignee#, a new lead has been assigned to you:\nName: #lead# | Stage: #stage#\nPhone: #leadphoneno# | Requirement: #requirement#`,
+    customer_created:    `Congratulations #client#! 🎉\nWelcome to the #bizName# family. We look forward to serving you!`,
+    lead_followup:       `Hi #client#, this is a reminder that your follow-up is scheduled on #followupdate# (#daysLeft# day(s) away).\nOur team member #assignee# will connect with you.\n— #bizName#`,
+    quotation_created:   `Hi #client#, your quotation #quoteno# for ₹#amount# is ready.\nValid until: #validuntil#\nReply to confirm — #bizName#`,
+    invoice_created:     `Hi #client#, Invoice #invoiceno# for ₹#amount# has been generated on #date#.\nPlease make payment at your earliest convenience.\n— #bizName#`,
+    payment_received:    `Hi #client#, we have received ₹#amount# for Invoice #invoiceno#.\nThank you for your payment! — #bizName#`,
+    appointment_booked:  `Hi #client#, your appointment for #service# is confirmed!\nDate: #apptDate# at #apptTime#\nSee you soon — #bizName#`,
+    task_assigned:       `Hi #assignee#, you have a new task assigned:\n📋 #task#\nClient: #client# | Due: #duedate# | Priority: #priority#`,
+    amc_expiry:          `Hi #client#, your AMC contract #contractNo# (#plan#) expires on #endDate# — only #daysLeft# days left.\nPlease renew to avoid service interruption. — #bizName#`,
+    order_placed:        `Hi #client#, your order #orderId# for ₹#orderAmount# has been placed!\nStatus: #orderStatus#\nThank you — #bizName#`,
+  };
   const toast = useToast();
 
-  const { data } = db.useQuery({ 
+  const { data } = db.useQuery({
      userProfiles: { $: { where: { userId: ownerId } } },
-     allProfiles: { userProfiles: {} },
-     leads: { $: { where: { userId: ownerId } } },
-     customers: { $: { where: { userId: ownerId } } },
      quotes: { $: { where: { userId: ownerId } } },
      invoices: { $: { where: { userId: ownerId } } },
      ecomSettings: { $: { where: { userId: ownerId } } },
@@ -207,14 +227,14 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         updated = true;
         // Also update leads currently in this stage
         (data?.leads || []).filter(l => l.stage === m.old).forEach(l => {
-          txs.push(db.tx.leads[l.id].update({ stage: m.new }));
+          txs.push(dbOp.update('leads', l.id, { stage: m.new }));
         });
       }
     });
 
     if (updated) {
-      txs.push(db.tx.userProfiles[profileId].update({ stages: nl }));
-      db.transact(txs).then(() => {
+      txs.push(dbOp.update('userProfiles', profileId, { stages: nl }));
+      dbWrite(txs).then(() => {
          console.log("✅ Stages migrated successfully (Drafted -> Created)");
       }).catch(e => console.error("❌ Stage migration failed:", e));
     }
@@ -228,20 +248,20 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
     const rawProfile = data?.userProfiles?.[0];
     if (rawProfile && rawProfile.labels && !rawProfile.requirements) {
-      txs.push(db.tx.userProfiles[profileId].update({ requirements: rawProfile.labels }));
+      txs.push(dbOp.update('userProfiles', profileId, { requirements: rawProfile.labels }));
       updated = true;
     }
 
     (data?.leads || []).forEach(l => {
       // If legacy label exists but requirement is empty, migrate it
       if (l.label && !l.requirement) {
-        txs.push(db.tx.leads[l.id].update({ requirement: l.label }));
+        txs.push(dbOp.update('leads', l.id, { requirement: l.label }));
         updated = true;
       }
     });
 
     if (updated && txs.length > 0) {
-      db.transact(txs).then(() => {
+      dbWrite(txs).then(() => {
          console.log("✅ Labels migrated to Requirements successfully");
       }).catch(e => console.error("❌ Label migration failed:", e));
     }
@@ -259,18 +279,18 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     const newName = 'Service Type';
     const updatedCFs = [...cfs];
     updatedCFs[conflictIdx] = { ...updatedCFs[conflictIdx], name: newName };
-    txs.push(db.tx.userProfiles[profileId].update({ customFields: updatedCFs }));
+    txs.push(dbOp.update('userProfiles', profileId, { customFields: updatedCFs }));
 
     // Migrate lead custom data: move custom.requirement -> custom["Service Type"]
     (data?.leads || []).forEach(l => {
       if (l.custom?.requirement) {
         const newCustom = { ...l.custom, [newName]: l.custom.requirement };
         delete newCustom.requirement;
-        txs.push(db.tx.leads[l.id].update({ custom: newCustom }));
+        txs.push(dbOp.update('leads', l.id, { custom: newCustom }));
       }
     });
 
-    db.transact(txs).then(() => {
+    dbWrite(txs).then(() => {
       console.log('✅ Custom field "requirement" renamed to "Service Type"');
     }).catch(e => console.error('❌ Custom field rename failed:', e));
   }, [profileId, data?.userProfiles, data?.leads]);
@@ -287,7 +307,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
       // Auto-save if fieldName is provided
       if (fieldName && profileId) {
         try {
-          await db.transact(db.tx.userProfiles[profileId].update({ [fieldName]: result }));
+          await dbWrite(dbOp.update('userProfiles', profileId, { [fieldName]: result }));
           toast(`${fieldName === 'logo' ? 'Logo' : 'QR Code'} auto-saved!`, 'success');
         } catch (err) {
           console.error(`Auto-save failed for ${fieldName}:`, err);
@@ -301,11 +321,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
   const saveBiz = async () => {
     // Normalize slug: lowercase, trim, replace non-alphanumeric with hyphens
     const cleanSlug = (biz.slug || '').toLowerCase().trim().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '');
-    
-    // Uniqueness check
-    const isTaken = data?.allProfiles?.userProfiles?.some(p => p.slug === cleanSlug && p.userId !== ownerId);
-    if (cleanSlug && isTaken) {
-      return toast('This brand URL slug is already taken! Please choose another one.', 'error');
+
+    // Uniqueness check — one-time point query at save time (not a live subscription)
+    if (cleanSlug) {
+      const slugCheck = await dbQueryOnce({ userProfiles: { $: { where: { slug: cleanSlug } } } });
+      const isTaken = (slugCheck?.userProfiles || []).some(p => p.userId !== ownerId);
+      if (isTaken) return toast('This brand URL slug is already taken! Please choose another one.', 'error');
     }
 
     const payload = { 
@@ -322,21 +343,21 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     };
 
     const txs = [];
-    if (profileId) txs.push(db.tx.userProfiles[profileId].update(payload));
+    if (profileId) txs.push(dbOp.update('userProfiles', profileId, payload));
 
     // Global Slug Sync: Force update linked modules to the new slug
     const ecomId = data?.ecomSettings?.[0]?.id;
     if (ecomId) {
-      txs.push(db.tx.ecomSettings[ecomId].update({ ecomName: cleanSlug }));
+      txs.push(dbOp.update('ecomSettings', ecomId, { ecomName: cleanSlug }));
     }
     
     const apptId = data?.appointmentSettings?.[0]?.id;
     if (apptId) {
-      txs.push(db.tx.appointmentSettings[apptId].update({ slug: cleanSlug }));
+      txs.push(dbOp.update('appointmentSettings', apptId, { slug: cleanSlug }));
     }
 
     try {
-      if (txs.length > 0) await db.transact(txs);
+      if (txs.length > 0) await dbWrite(txs);
       setBiz(b => ({ ...b, slug: cleanSlug })); // Update local state with cleaned slug
       toast('Business Profile & URLs synced successfully! 🚀', 'success');
     } catch (err) {
@@ -346,14 +367,14 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const saveFin = async () => {
     const payload = { ...fin, userId: ownerId };
-    if (profileId) await db.transact(db.tx.userProfiles[profileId].update(payload));
+    if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, payload));
     toast('Finance settings saved!', 'success');
   };
 
   const saveList = async (key, list, extra = {}) => {
     const payload = { [key]: list, userId: ownerId, ...extra };
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update(payload)); }
-    else { await db.transact(db.tx.userProfiles[id()].update({ ...payload, userId: ownerId })); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, payload)); }
+    else { await dbWrite(dbOp.update('userProfiles', id(), { ...payload, userId: ownerId })); }
     toast('Saved!', 'success');
   };
 
@@ -421,12 +442,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
       }
 
       if (updated) {
-        txs.push(db.tx.leads[l.id].update(updates));
+        txs.push(dbOp.update('leads', l.id, updates));
       }
     });
 
     if (txs.length > 0) {
-      await db.transact(txs);
+      await dbWrite(txs);
       toast(`Synced details for ${count} leads and updated stages for ${stageCount} leads!`, 'success');
     } else {
       toast('All lead data is already in sync', 'info');
@@ -468,7 +489,23 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     setNewCF({ name: '', type: 'text', options: '' });
   };
 
-  const removeItem = (key, list, idx) => saveList(key, list.filter((_, i) => i !== idx));
+  // Friendly labels per list type for the confirmation prompt.
+  const ITEM_LABELS = {
+    taxRates: 'tax rate', customFields: 'custom field', sources: 'source',
+    stages: 'stage', requirements: 'requirement', productCats: 'product category',
+    productUnits: 'unit', expCats: 'expense category', taskStatuses: 'task status',
+    orderStatuses: 'order status',
+  };
+
+  const removeItem = (key, list, idx) => {
+    const item = list[idx];
+    const name = typeof item === 'string'
+      ? item
+      : (item?.name || item?.label || (item?.rate != null ? `${item.rate}%` : '') || 'this item');
+    const typeLabel = ITEM_LABELS[key] || 'item';
+    if (!window.confirm(`Remove ${typeLabel} "${name}"? This cannot be undone.`)) return;
+    saveList(key, list.filter((_, i) => i !== idx));
+  };
 
   const editItem = (key, list, idx, currentVal) => {
     const newVal = prompt('Edit value:', currentVal);
@@ -480,7 +517,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         const currentVisible = data?.userProfiles?.[0]?.partnerVisibleRequirements || [];
         const updatedVisible = currentVisible.map(r => r === currentVal ? newVal.trim() : r);
         const payload = { requirements: newList, partnerVisibleRequirements: updatedVisible, userId: ownerId };
-        db.transact(db.tx.userProfiles[profileId].update(payload))
+        dbWrite(dbOp.update('userProfiles', profileId, payload))
           .then(() => toast('Saved!', 'success'))
           .catch(e => toast('Save failed: ' + e.message, 'error'));
       } else {
@@ -497,7 +534,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const saveSMTP = async () => {
     const payload = { smtpHost, smtpPort, smtpUser, smtpPass, smtpSender: smtpUser, userId: ownerId };
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update(payload)); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, payload)); }
     toast('SMTP settings saved!', 'success');
   };
 
@@ -527,7 +564,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
 
   const saveWA = async () => {
     const payload = { waApiToken, waPhoneId, whatsappTemplates, userId: ownerId };
-    if (profileId) { await db.transact(db.tx.userProfiles[profileId].update(payload)); }
+    if (profileId) { await dbWrite(dbOp.update('userProfiles', profileId, payload)); }
     
     if (!waApiToken.trim() || !waPhoneId.trim()) {
       toast('Templates saved! (Note: WhatsApp API info is still missing)', 'warning');
@@ -664,9 +701,27 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                     </select>
                   </div>
                   <div className="fg"><label>Pincode</label><input value={biz.pincode} onChange={e => setBiz(b => ({ ...b, pincode: e.target.value }))} placeholder="Postal Code" /></div>
+                  <div className="fg">
+                    <label>Default Currency</label>
+                    <select value={biz.defaultCurrency} onChange={e => setBiz(b => ({ ...b, defaultCurrency: e.target.value }))}>
+                      {SUPPORTED_CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.name}</option>)}
+                    </select>
+                    <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>Used as default for new invoices & quotations (can be overridden per record).</div>
+                  </div>
                   <div className="fg"><label>GSTIN</label><input value={biz.gstin} onChange={e => setBiz(b => ({ ...b, gstin: e.target.value }))} placeholder="22AAAAA0000A1Z5" /></div>
                   <div className="fg"><label>PAN</label><input value={biz.pan} onChange={e => setBiz(b => ({ ...b, pan: e.target.value }))} placeholder="AAAPZ1234C" /></div>
                   <div className="fg span2"><label>Website</label><input value={biz.website} onChange={e => setBiz(b => ({ ...b, website: e.target.value }))} /></div>
+                  <div className="fg span2">
+                    <label>WhatsApp Notification Number</label>
+                    <input
+                      value={biz.waNotifPhone}
+                      onChange={e => setBiz(b => ({ ...b, waNotifPhone: e.target.value }))}
+                      placeholder="e.g. 919876543210 (with country code, no +)"
+                    />
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                      WhatsApp template messages set to <strong>"Business Owner"</strong> will be sent to this number. Include country code (e.g. 91 for India).
+                    </div>
+                  </div>
                   <div className="fg span2">
                     <label>Additional Notification Emails (comma-separated)</label>
                     <input 
@@ -732,8 +787,9 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>Recommended: Square PNG/JPG, Max 500KB.</div>
                       </div>
                       {biz.logo && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={async () => {
+                        if (!window.confirm('Remove the brand logo? This cannot be undone.')) return;
                         setBiz(b => ({ ...b, logo: null }));
-                        if (profileId) await db.transact(db.tx.userProfiles[profileId].update({ logo: null }));
+                        if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, { logo: null }));
                       }}>Remove</button>}
                     </div>
                   </div>
@@ -784,7 +840,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         checked={profile?.teamCanSeeAllLeads !== false}
                         onChange={async (e) => {
                           if (profileId) {
-                            await db.transact(db.tx.userProfiles[profileId].update({ teamCanSeeAllLeads: e.target.checked }));
+                            await dbWrite(dbOp.update('userProfiles', profileId, { teamCanSeeAllLeads: e.target.checked }));
                             toast(e.target.checked ? 'Team members can now see all leads' : 'Team members can only see their assigned leads', 'success');
                           }
                         }}
@@ -807,6 +863,44 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         {profile?.teamCanSeeAllLeads !== false
                           ? 'Enabled: Team members can view all leads in the system'
                           : 'Disabled: Team members can only see leads assigned to them'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Second toggle: only relevant when the main "see all leads" toggle is OFF */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 16, marginTop: 12, background: 'var(--bg-soft)', borderRadius: 10, border: '1px solid var(--border)', opacity: profile?.teamCanSeeAllLeads !== false ? 0.5 : 1 }}>
+                    <label style={{ position: 'relative', display: 'inline-block', width: 44, height: 24, flexShrink: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={profile?.teamCanSeeUnassignedLeads !== false}
+                        disabled={profile?.teamCanSeeAllLeads !== false}
+                        onChange={async (e) => {
+                          if (profileId) {
+                            await dbWrite(dbOp.update('userProfiles', profileId, { teamCanSeeUnassignedLeads: e.target.checked }));
+                            toast(e.target.checked ? 'Team members can now see unassigned leads' : 'Team members can no longer see unassigned leads', 'success');
+                          }
+                        }}
+                        style={{ opacity: 0, width: 0, height: 0 }}
+                      />
+                      <span style={{
+                        position: 'absolute', cursor: profile?.teamCanSeeAllLeads !== false ? 'not-allowed' : 'pointer', top: 0, left: 0, right: 0, bottom: 0,
+                        background: profile?.teamCanSeeUnassignedLeads !== false ? 'var(--accent)' : '#cbd5e1',
+                        borderRadius: 24, transition: '.3s',
+                      }}>
+                        <span style={{
+                          position: 'absolute', height: 18, width: 18, left: profile?.teamCanSeeUnassignedLeads !== false ? 22 : 3, bottom: 3,
+                          background: '#fff', borderRadius: '50%', transition: '.3s',
+                        }} />
+                      </span>
+                    </label>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>Team members can see unassigned leads</div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                        {profile?.teamCanSeeAllLeads !== false
+                          ? 'Not applicable when "see all leads" is enabled'
+                          : (profile?.teamCanSeeUnassignedLeads !== false
+                              ? 'Enabled: Team members see assigned + unassigned leads'
+                              : 'Disabled: Team members see ONLY leads assigned to them')}
                       </div>
                     </div>
                   </div>
@@ -1025,12 +1119,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   if (s === wonStage) extra.wonStage = newVal;
                                   if (s === lostStage) extra.lostStage = newVal;
                                   
-                                  const txs = [db.tx.userProfiles[profileId].update({ stages: nl, ...extra })];
+                                  const txs = [dbOp.update('userProfiles', profileId, { stages: nl, ...extra })];
                                   // Update leads
                                   (data?.leads || []).filter(l => l.stage === s).forEach(l => {
-                                     txs.push(db.tx.leads[l.id].update({ stage: newVal }));
+                                     txs.push(dbOp.update('leads', l.id, { stage: newVal }));
                                   });
-                                  db.transact(txs).then(() => toast('Stage updated!', 'success'));
+                                  dbWrite(txs).then(() => toast('Stage updated!', 'success'));
                                }
                                setEditingStageIdx(null); 
                             }
@@ -1044,11 +1138,11 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                 const extra = {};
                                 if (s === wonStage) extra.wonStage = newVal;
                                 
-                                const txs = [db.tx.userProfiles[profileId].update({ stages: nl, ...extra })];
+                                const txs = [dbOp.update('userProfiles', profileId, { stages: nl, ...extra })];
                                 (data?.leads || []).filter(l => l.stage === s).forEach(l => {
-                                   txs.push(db.tx.leads[l.id].update({ stage: newVal }));
+                                   txs.push(dbOp.update('leads', l.id, { stage: newVal }));
                                 });
-                                db.transact(txs).then(() => toast('Stage updated!', 'success'));
+                                dbWrite(txs).then(() => toast('Stage updated!', 'success'));
                              }
                              setEditingStageIdx(null); 
                           }}
@@ -1331,8 +1425,9 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
           {active === 'WhatsApp Templates' && (() => {
             // Helper: extract #variable# placeholders from template body
             const extractVars = (body) => {
-              const matches = body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
-              return matches.map((m, i) => ({ index: i + 1, name: m.replace(/#/g, ''), raw: m }));
+              const normal = body?.match(/#([a-zA-Z_][a-zA-Z0-9_]*)#/g) || [];
+              const dateTokens = body?.match(/#(\+\d+day)#/gi) || [];
+              return [...normal, ...dateTokens].map((m, i) => ({ index: i + 1, name: m.replace(/#/g, ''), raw: m }));
             };
 
             const hasWACredentials = !!(waApiToken?.trim() && waPhoneId?.trim());
@@ -1344,8 +1439,8 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
               const lines = [
                 `curl -X POST \\`,
                 `https://portal.waprochat.in/api/v1/whatsapp/send/template \\`,
-                `-d "apiToken=${waApiToken || '{YOUR_API_TOKEN}'}" \\`,
-                `-d "phone_number_id=${waPhoneId || '{YOUR_PHONE_NUMBER_ID}'}" \\`,
+                `-d "apiToken=${waApiToken ? '••••••••••••••••••••' : '{YOUR_API_TOKEN}'}" \\`,
+                `-d "phone_number_id=${waPhoneId ? '••••••••••••' : '{YOUR_PHONE_NUMBER_ID}'}" \\`,
                 `-d "template_id=${t.templateId || '{template-id}'}" \\`,
               ];
               vars.forEach(v => {
@@ -1359,7 +1454,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
             const saveTemplatesNow = async (newTemplates) => {
               setWhatsappTemplates(newTemplates);
               const payload = { waApiToken, waPhoneId, whatsappTemplates: newTemplates, userId: ownerId };
-              if (profileId) await db.transact(db.tx.userProfiles[profileId].update(payload));
+              if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, payload));
             };
 
             return (
@@ -1404,6 +1499,16 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                   <div style={{ marginTop: 6, color: '#1e40af', fontWeight: 600 }}>
                     Example: <code>Hello #client#, Invoice #invoiceno# for Rs.#amt#/-</code> → <code>client=1, invoiceno=2, amt=3</code>
                   </div>
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      onClick={() => window.open('/wa-guide', '_blank')}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                      📖 Open Variable Guide — all variables with examples (module-wise)
+                    </button>
+                    <div style={{ fontSize: 11, color: '#0369a1', marginTop: 4 }}>
+                      Confused about <code>#validuntil#</code>, <code>#endDate#</code>, <code>#requirement#</code> etc.? See every variable explained with examples for each module.
+                    </div>
+                  </div>
                 </div>
 
                 {/* ── Add / Edit Template Form ── */}
@@ -1416,10 +1521,12 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                     <div className="fg"><label>Waprochat Template ID *</label><input placeholder="e.g. invoice_notify_01" id="new_wa_id" /></div>
                     <div className="fg span2">
                       <label>Template Message (use <code>#variable#</code> for dynamic values)</label>
-                      <textarea 
-                        placeholder="Hello #client#, this is a reminder for your upcoming #service# on #date#. Thank you!" 
-                        id="new_wa_body" 
-                        style={{ minHeight: 80, lineHeight: 1.6 }} 
+                      <textarea
+                        placeholder="Hello #client#, this is a reminder for your upcoming #service# on #date#. Thank you!"
+                        id="new_wa_body"
+                        value={waFormBody}
+                        onChange={e => setWaFormBody(e.target.value)}
+                        style={{ minHeight: 80, lineHeight: 1.6 }}
                       />
                       <div style={{ marginTop: 8 }}>
                         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', marginBottom: 5, textTransform: 'uppercase' }}>Insert Variable</div>
@@ -1443,10 +1550,35 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { var: '#orderStatus#', label: 'Order Status' },
                             { var: '#orderAmount#', label: 'Order Total' },
                             { var: '#invoiceno#', label: 'Invoice No' },
+                            { var: '#lead#', label: 'Lead Name' },
+                            { var: '#leadphoneno#', label: 'Lead Phone No' },
+                            { var: '#clientphoneno#', label: 'Client Phone No' },
+                            { var: '#assignee#', label: 'Assignee' },
+                            { var: '#stage#', label: 'Lead Stage' },
+                            { var: '#requirement#', label: 'Lead Requirement' },
+                            { var: '#fromstage#', label: 'From Stage' },
+                            { var: '#tostage#', label: 'To Stage' },
+                            { var: '#quoteno#', label: 'Quote No' },
+                            { var: '#validuntil#', label: 'Quote Valid Until' },
+                            { var: '#task#', label: 'Task Title' },
+                            { var: '#duedate#', label: 'Due Date' },
+                            { var: '#priority#', label: 'Task Priority' },
+                            { var: '#followupdate#', label: 'Follow-up Date' },
+                            { var: '#daysLeft#', label: 'Days Left' },
+                            { var: '#contractNo#', label: 'AMC Contract No' },
+                            { var: '#endDate#', label: 'AMC End Date' },
+                            { var: '#plan#', label: 'AMC Plan' },
+                            { var: '#today#', label: "Today's Date" },
+                            { var: '#tomorrow#', label: "Tomorrow's Date" },
+                            { var: '#+1day#', label: '+1 Day' },
+                            { var: '#+2day#', label: '+2 Days' },
+                            { var: '#+3day#', label: '+3 Days' },
+                            { var: '#+7day#', label: '+7 Days' },
+                            { var: '#+15day#', label: '+15 Days' },
+                            { var: '#+30day#', label: '+30 Days' },
                           ].map(v => (
                             <button key={v.var} onClick={() => {
-                              const el = document.getElementById('new_wa_body');
-                              if (el) { el.value += v.var; el.focus(); }
+                              setWaFormBody(prev => prev + v.var);
                             }}
                               className="btn btn-sm"
                               style={{ fontSize: 11, padding: '2px 8px', background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: 20, cursor: 'pointer' }}>
@@ -1454,27 +1586,41 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             </button>
                           ))}
                         </div>
+                        <div style={{ marginTop: 8 }}>
+                          <button className="btn btn-sm" style={{ fontSize: 11, padding: '3px 10px', background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 6 }}
+                            onClick={() => window.open('/wa-guide', '_blank')}>
+                            📖 Variable Guide — what each variable means with examples
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* ── Curl Preview (only when editing) ── */}
-                  {editingWA && (() => {
-                    // Find the current template from state to get latest customCurl
-                    const currentTpl = whatsappTemplates.find(tpl => tpl.id === editingWA.id) || editingWA;
-                    const editCurl = buildCurl(currentTpl);
-                    const isCustomCurl = !!currentTpl.customCurl;
+                  {/* ── Curl Preview — shown for both Add New and Edit, updates live as body changes ── */}
+                  {(() => {
+                    const isCustomCurl = !!(editingWA && whatsappTemplates.find(tpl => tpl.id === editingWA.id)?.customCurl);
+                    // For Add New: build curl from current form state (waFormBody + id field)
+                    // For Edit: build from the saved template (with custom curl support)
+                    let previewCurl;
+                    if (editingWA) {
+                      const currentTpl = whatsappTemplates.find(tpl => tpl.id === editingWA.id) || editingWA;
+                      previewCurl = buildCurl(currentTpl);
+                    } else {
+                      // Live preview from the form fields
+                      const liveTemplateId = document.getElementById('new_wa_id')?.value || '{template-id}';
+                      const liveTpl = { templateId: liveTemplateId, body: waFormBody };
+                      previewCurl = buildCurl(liveTpl);
+                    }
+                    const hasContent = waFormBody.trim().length > 0 || editingWA;
+                    if (!hasContent) return null;
                     return (
                       <div style={{ marginTop: 16 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>⚡ Curl Command</div>
-                            {isCustomCurl && (
-                              <span style={{ fontSize: 9, padding: '2px 6px', background: '#fef3c7', color: '#92400e', borderRadius: 8, fontWeight: 600, border: '1px solid #fde68a' }}>CUSTOM EDIT</span>
-                            )}
-                            {!isCustomCurl && hasWACredentials && (
-                              <span style={{ fontSize: 9, padding: '2px 6px', background: '#f0fdf4', color: '#166534', borderRadius: 8, fontWeight: 600, border: '1px solid #bbf7d0' }}>AUTO-GENERATED</span>
-                            )}
+                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>⚡ Curl Command Preview</div>
+                            {isCustomCurl && <span style={{ fontSize: 9, padding: '2px 6px', background: '#fef3c7', color: '#92400e', borderRadius: 8, fontWeight: 600, border: '1px solid #fde68a' }}>CUSTOM EDIT</span>}
+                            {!isCustomCurl && hasWACredentials && <span style={{ fontSize: 9, padding: '2px 6px', background: '#f0fdf4', color: '#166534', borderRadius: 8, fontWeight: 600, border: '1px solid #bbf7d0' }}>AUTO-GENERATED</span>}
+                            {!editingWA && <span style={{ fontSize: 9, padding: '2px 6px', background: '#eff6ff', color: '#1d4ed8', borderRadius: 8, fontWeight: 600, border: '1px solid #bfdbfe' }}>LIVE PREVIEW</span>}
                           </div>
                           <div style={{ display: 'flex', gap: 6 }}>
                             {isCustomCurl && (
@@ -1487,39 +1633,43 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                               }}>↺ Reset</button>
                             )}
                             <button className="btn btn-sm" style={{ fontSize: 10, padding: '2px 8px', background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' }} onClick={() => {
-                              navigator.clipboard.writeText(editCurl);
+                              navigator.clipboard.writeText(previewCurl);
                               toast('Curl command copied!', 'success');
                             }}>📋 Copy</button>
                           </div>
                         </div>
                         <textarea
-                          value={editCurl}
-                          onChange={e => {
+                          value={previewCurl}
+                          readOnly={!editingWA}
+                          onChange={editingWA ? e => {
                             const newCurl = e.target.value;
                             setEditingWA({ ...editingWA, customCurl: newCurl });
                             setWhatsappTemplates(whatsappTemplates.map(tpl =>
                               tpl.id === editingWA.id ? { ...tpl, customCurl: newCurl } : tpl
                             ));
-                          }}
+                          } : undefined}
                           spellCheck={false}
-                          style={{ 
+                          style={{
                             width: '100%',
-                            minHeight: 120,
-                            padding: '12px 14px', 
-                            background: '#1e293b', 
-                            color: '#e2e8f0', 
-                            borderRadius: 10, 
-                            fontSize: 11, 
-                            lineHeight: 1.7, 
+                            minHeight: 140,
+                            padding: '12px 14px',
+                            background: '#1e293b',
+                            color: '#e2e8f0',
+                            borderRadius: 10,
+                            fontSize: 11,
+                            lineHeight: 1.7,
                             whiteSpace: 'pre',
                             fontFamily: "'Fira Code', 'SF Mono', 'Consolas', monospace",
                             border: isCustomCurl ? '2px solid #fbbf24' : '1px solid #334155',
                             resize: 'vertical',
                             boxSizing: 'border-box',
+                            cursor: editingWA ? 'text' : 'default',
                           }}
                         />
                         <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
-                          💡 Edit the curl command directly. API Token & Phone Number ID are loaded from your <strong>WhatsApp settings</strong>.
+                          {editingWA
+                            ? '💡 Edit the curl command directly to customise. API Token & Phone Number ID are loaded from your WhatsApp settings.'
+                            : '💡 Live preview — updates as you type the template body. Fill in the Waprochat Template ID above to see it here.'}
                         </div>
                       </div>
                     );
@@ -1529,7 +1679,15 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                   <div style={{ marginTop: 16, padding: 14, background: '#f0fdf4', borderRadius: 10, border: '1px solid #bbf7d0' }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: '#166534', textTransform: 'uppercase', marginBottom: 8 }}>⚡ Auto-Notification Trigger</div>
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <select id="new_wa_trigger" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}>
+                      <select id="new_wa_trigger" style={{ padding: '8px 12px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setWaFormTrigger(val);
+                          // Auto-fill sample body only when adding new (not editing)
+                          if (!editingWA && val && WA_SAMPLE_BODIES[val]) {
+                            setWaFormBody(WA_SAMPLE_BODIES[val]);
+                          }
+                        }}>
                         {AUTO_TRIGGER_EVENTS.map(e => <option key={e.value} value={e.value}>{e.label}</option>)}
                       </select>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: '#166534', cursor: 'pointer' }}>
@@ -1538,46 +1696,109 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       </label>
                     </div>
                     <div style={{ fontSize: 11, color: '#15803d', marginTop: 6 }}>When enabled, this template is sent automatically when the selected event occurs — no automation setup needed.</div>
+                    {/* ── Days-before field — shown for amc_expiry and lead_followup ── */}
+                    {(waFormTrigger === 'amc_expiry' || waFormTrigger === 'lead_followup') && (
+                      <>
+                        <div style={{ marginTop: 12, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: '#166534' }}>⏰ Send this alert:</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <input type="number" id="new_wa_days" min="1" max="365" defaultValue={waFormTrigger === 'lead_followup' ? '1' : '7'}
+                              style={{ width: 70, padding: '6px 8px', border: '1.5px solid #86efac', borderRadius: 8, fontSize: 13, fontFamily: 'inherit', background: '#fff' }} />
+                            <span style={{ fontSize: 13, color: '#166534', fontWeight: 600 }}>
+                              {waFormTrigger === 'lead_followup' ? 'day(s) before follow-up date' : 'days before AMC expiry'}
+                            </span>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>
+                          {waFormTrigger === 'lead_followup'
+                            ? <>Set to <strong>1</strong> for a day-before reminder, <strong>0</strong> sends on the follow-up day itself. Create separate templates for different timings.</>
+                            : <>Set to <strong>7</strong> for a week-before warning, <strong>1</strong> for a final day reminder. Create separate templates for each milestone.</>
+                          }
+                        </div>
+                      </>
+                    )}
+                    {/* ── Recipients (multi-select checkboxes) ── */}
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#166534', marginBottom: 8 }}>📱 Send message to: <span style={{ fontSize: 10, fontWeight: 400 }}>(select one or more — separate message per recipient)</span></div>
+                      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                        {[
+                          { value: 'client',   label: 'Client / Lead',           hint: "lead/customer's phone" },
+                          { value: 'owner',    label: 'Business Owner',          hint: 'WhatsApp Notification Number' },
+                          { value: 'assignee', label: 'Assigned Staff Member',   hint: "staff member's phone in Teams" },
+                        ].map(opt => (
+                          <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#166534', background: waFormRecipients.includes(opt.value) ? '#dcfce7' : '#f0fdf4', border: `1.5px solid ${waFormRecipients.includes(opt.value) ? '#86efac' : '#d1fae5'}`, borderRadius: 8, padding: '6px 12px' }}>
+                            <input type="checkbox"
+                              checked={waFormRecipients.includes(opt.value)}
+                              onChange={e => setWaFormRecipients(prev =>
+                                e.target.checked ? [...prev, opt.value] : prev.filter(r => r !== opt.value)
+                              )}
+                              style={{ width: 14, height: 14, accentColor: '#16a34a' }}
+                            />
+                            {opt.label}
+                            <span style={{ fontSize: 10, fontWeight: 400, color: '#4ade80' }}>({opt.hint})</span>
+                          </label>
+                        ))}
+                      </div>
+                      {waFormRecipients.length > 1 && (
+                        <div style={{ fontSize: 11, color: '#0369a1', background: '#e0f2fe', border: '1px solid #bae6fd', borderRadius: 6, padding: '5px 10px', marginTop: 8 }}>
+                          ℹ️ {waFormRecipients.length} recipients selected — the API will be called {waFormRecipients.length} times with different phone numbers.
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
                     <button className="btn btn-primary" onClick={async () => {
                       const name = document.getElementById('new_wa_name').value;
                       const templateId = document.getElementById('new_wa_id').value;
-                      const body = document.getElementById('new_wa_body').value;
+                      const body = waFormBody;
                       const autoTrigger = document.getElementById('new_wa_trigger').value;
                       const autoEnabled = document.getElementById('new_wa_autoEnabled').checked;
+                      const recipientTypes = waFormRecipients.length > 0 ? waFormRecipients : ['client'];
+                      const daysVal = parseInt(document.getElementById('new_wa_days')?.value || '7', 10) || 7;
+                      const daysBeforeExpiry  = autoTrigger === 'amc_expiry'    ? daysVal : undefined;
+                      const daysBeforeFollowup = autoTrigger === 'lead_followup' ? daysVal : undefined;
                       if (!name || !templateId) return toast('Name and Template ID required', 'error');
                       if (!body.trim()) return toast('Template message body is required', 'error');
 
                       const vars = extractVars(body);
+                      const tplObj = { name, templateId, body, variables: vars, autoTrigger, autoEnabled, recipientTypes,
+                        ...(daysBeforeExpiry  != null ? { daysBeforeExpiry }  : {}),
+                        ...(daysBeforeFollowup != null ? { daysBeforeFollowup } : {}),
+                      };
 
                       if (editingWA) {
-                        const updated = whatsappTemplates.map(t => 
-                          t.id === editingWA.id ? { ...t, name, templateId, body, variables: vars, customCurl: editingWA.customCurl, autoTrigger, autoEnabled } : t
+                        const updated = whatsappTemplates.map(t =>
+                          t.id === editingWA.id ? { ...t, ...tplObj, customCurl: editingWA.customCurl } : t
                         );
                         await saveTemplatesNow(updated);
                         setEditingWA(null);
                         toast('Template updated & saved!', 'success');
                       } else {
-                        const updated = [...whatsappTemplates, { id: id(), name, templateId, body, variables: vars, autoTrigger, autoEnabled }];
+                        const updated = [...whatsappTemplates, { id: id(), ...tplObj }];
                         await saveTemplatesNow(updated);
                         toast('Template added & saved!', 'success');
                       }
-                      
+
                       document.getElementById('new_wa_name').value = '';
                       document.getElementById('new_wa_id').value = '';
-                      document.getElementById('new_wa_body').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
+                      setWaFormRecipients(['client']);
+                      if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
+                      setWaFormTrigger('');
+                      setWaFormBody('');
                     }}>{editingWA ? 'Update Template' : 'Add Template'}</button>
                     {editingWA && <button className="btn btn-secondary" onClick={() => {
                       setEditingWA(null);
                       document.getElementById('new_wa_name').value = '';
                       document.getElementById('new_wa_id').value = '';
-                      document.getElementById('new_wa_body').value = '';
                       document.getElementById('new_wa_trigger').value = '';
                       document.getElementById('new_wa_autoEnabled').checked = false;
+                      setWaFormRecipients(['client']);
+                      if (document.getElementById('new_wa_days')) document.getElementById('new_wa_days').value = '7';
+                      setWaFormTrigger('');
+                      setWaFormBody('');
                     }}>Cancel Edit</button>}
                   </div>
                 </div>
@@ -1602,7 +1823,30 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                               <span style={{ fontSize: 18 }}>💬</span>
                               <div>
                                 <div style={{ fontWeight: 700, fontSize: 14 }}>{t.name} {isBeingEdited && <span style={{ fontSize: 10, color: '#b45309', fontWeight: 400 }}>(Editing)</span>}</div>
-                                <div style={{ fontSize: 11, color: 'var(--muted)' }}>Template ID: <code style={{ background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: 4 }}>{t.templateId}</code></div>
+                                <div style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  Template ID: <code style={{ background: '#e0f2fe', color: '#0369a1', padding: '1px 6px', borderRadius: 4 }}>{t.templateId}</code>
+                                  {(() => {
+                                    const rTypes = t.recipientTypes
+                                      ? (Array.isArray(t.recipientTypes) ? t.recipientTypes : [t.recipientTypes])
+                                      : [t.recipientType || 'client'];
+                                    const labels = { client: 'Client', owner: 'Owner', assignee: 'Assignee' };
+                                    return rTypes.map(r => (
+                                      <span key={r} style={{ background: r === 'owner' ? '#fef9c3' : r === 'assignee' ? '#eff6ff' : '#f0fdf4', color: r === 'owner' ? '#854d0e' : r === 'assignee' ? '#1d4ed8' : '#166534', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid', borderColor: r === 'owner' ? '#fde68a' : r === 'assignee' ? '#bfdbfe' : '#86efac' }}>
+                                        📱 {labels[r] || r}
+                                      </span>
+                                    ));
+                                  })()}
+                                  {t.autoTrigger === 'amc_expiry' && (
+                                    <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid #bfdbfe' }}>
+                                      ⏰ {t.daysBeforeExpiry || 7}d before expiry
+                                    </span>
+                                  )}
+                                  {t.autoTrigger === 'lead_followup' && (
+                                    <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '1px 7px', borderRadius: 10, fontWeight: 600, fontSize: 10, border: '1px solid #bfdbfe' }}>
+                                      ⏰ {t.daysBeforeFollowup ?? 1}d before follow-up
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
                             <div style={{ display: 'flex', gap: 6 }}>
@@ -1616,9 +1860,20 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                                   const enabledEl = document.getElementById('new_wa_autoEnabled');
                                   if (nameEl) nameEl.value = t.name;
                                   if (idEl) idEl.value = t.templateId;
-                                  if (bodyEl) bodyEl.value = t.body;
                                   if (triggerEl) triggerEl.value = t.autoTrigger || '';
                                   if (enabledEl) enabledEl.checked = !!t.autoEnabled;
+                                  // backward compat: old templates use recipientType (string)
+                                  const saved = t.recipientTypes
+                                    ? (Array.isArray(t.recipientTypes) ? t.recipientTypes : [t.recipientTypes])
+                                    : [t.recipientType || 'client'];
+                                  setWaFormRecipients(saved);
+                                  setWaFormTrigger(t.autoTrigger || '');
+                                  setWaFormBody(t.body || '');
+                                  const daysEl = document.getElementById('new_wa_days');
+                                  if (daysEl) {
+                                    if (t.autoTrigger === 'lead_followup') daysEl.value = t.daysBeforeFollowup ?? 1;
+                                    else daysEl.value = t.daysBeforeExpiry ?? 7;
+                                  }
                                 }, 0);
                                 window.scrollTo({ top: 0, behavior: 'smooth' });
                               }}>✏️ Edit</button>

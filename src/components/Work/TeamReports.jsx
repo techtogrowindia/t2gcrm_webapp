@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import db from '../../instant';
 import { fmt, fmtD, fmtDT } from '../../utils/helpers';
@@ -6,7 +6,16 @@ import { useToast } from '../../context/ToastContext';
 
 const DATE_FILTERS = ['Today', 'Yesterday', 'This Month', 'This Year', 'Custom'];
 
-export default function TeamReports({ user, ownerId, perms }) {
+export default function TeamReports({ user, ownerId, perms, planEnforcement }) {
+  const mod = (key) => planEnforcement ? planEnforcement.isModuleEnabled(key) !== false : true;
+  const showLeads = mod('leads');
+  const showCustomers = mod('customers');
+  const showQuotes = mod('quotations');
+  const showInvoices = mod('invoices');
+  const showAmc = mod('amc');
+  const showAppointments = mod('appointments');
+  const showCalls = mod('callLogs');
+  const showTasks = mod('tasks');
   const { setActiveView } = useApp();
   const [filter, setFilter] = useState('This Month');
   const [customRange, setCustomRange] = useState({ start: '', end: '' });
@@ -18,21 +27,38 @@ export default function TeamReports({ user, ownerId, perms }) {
   const { data, isLoading } = db.useQuery({
     teamMembers: { $: { where: { userId: ownerId } } },
     tasks: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
     projects: { $: { where: { userId: ownerId } } },
     customers: { $: { where: { userId: ownerId } } },
-    userProfiles: { $: { where: { userId: ownerId } } }
+    userProfiles: { $: { where: { userId: ownerId } } },
+    // callLogs removed — the Calls metric comes from /api/team-stats (full
+    // dataset via server cache). The limit:5000 subscription returned arbitrary
+    // rows, would undercount on busy workspaces, and allCallLogs was unused.
   });
 
-  // Fetch activity logs for all team members at once
-  const { data: logData } = db.useQuery({
-    activityLogs: { $: { where: { userId: ownerId }, limit: 5000 } }
-  });
-
-  const logs = logData?.activityLogs || [];
+  // Activity logs are now server-driven (filtered by date range server-side).
+  // The previous db.useQuery with limit:2000 returned arbitrary rows (no
+  // ordering guarantee) and at scale also hit the InstantDB WebSocket timeout,
+  // which is why every metric in this page was rendering as 0.
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const team = data?.teamMembers || [];
   const allTasks = data?.tasks || [];
-  const allLeads = data?.leads || [];
+  // Leads fetched via server (full set) — used for the leadMap (id→name) in
+  // the activity-log drilldown drawer. mode:'list' + large pageSize ensures
+  // all leads are covered; mode:'kanban' (old) capped at 1000 so log entries
+  // for leads outside the top-1000 showed blank names in the drawer.
+  const [allLeads, setAllLeads] = useState([]);
+  useEffect(() => {
+    if (!ownerId) return;
+    fetch('/api/leads-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, mode: 'list', tab: 'all', page: 1, pageSize: 100000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+    })
+      .then(r => r.json())
+      .then(json => setAllLeads(json.items || []))
+      .catch(() => {});
+  }, [ownerId]);
   const allProjects = data?.projects || [];
   const allCustomers = data?.customers || [];
   const profile = data?.userProfiles?.[0] || {};
@@ -106,10 +132,69 @@ export default function TeamReports({ user, ownerId, perms }) {
     return { start: start.getTime(), end: end.getTime() };
   }, [filter, customRange]);
 
-  // Helper: check if a log belongs to a given member (by actorId OR userName/email)
+  // Pre-aggregated per-member stats via /api/team-stats — the heavy
+  // aggregation that used to run client-side over 50k+ activity logs now
+  // happens server-side once per (ownerId, date-range) and is cached for 15s.
+  const [serverStats, setServerStats] = useState(null);
+  useEffect(() => {
+    if (!ownerId) return;
+    setLogsLoading(true);
+    fetch('/api/team-stats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, startMs: dateRange.start, endMs: dateRange.end }),
+    })
+      .then(r => r.json())
+      .then(json => setServerStats(json))
+      .catch(() => setServerStats(null))
+      .finally(() => setLogsLoading(false));
+  }, [ownerId, dateRange.start, dateRange.end]);
+
+  // Raw activity logs — fetched lazily ONLY when a member is selected, so
+  // the page doesn't pull 50k rows just to render the summary table.
+  useEffect(() => {
+    if (!ownerId || !selectedId) { setLogs([]); return; }
+    fetch('/api/team-activity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, startMs: dateRange.start, endMs: dateRange.end }),
+    })
+      .then(r => r.json())
+      .then(json => setLogs(json.logs || []))
+      .catch(() => setLogs([]));
+  }, [ownerId, selectedId, dateRange.start, dateRange.end]);
+
+  // Set of team-member emails to distinguish owner's logs from team members'
+  const teamEmails = useMemo(() => new Set(team.map(t => (t.email || '').toLowerCase()).filter(Boolean)), [team]);
+
+  // Helper: check if a log belongs to a given member.
+  // Match priority: 1) explicit teamMemberId field (most reliable), 2) email fallback, 3) owner catches any unattributed log
   const isLogByMember = (log, member) => {
-    if (log.actorId === member.id) return true;
-    if (member.email && log.userName && log.userName.toLowerCase() === member.email.toLowerCase()) return true;
+    if (member.id === ownerId) {
+      // Owner row: claim logs that are NOT attributed to any team member
+      if (log.teamMemberId) return false;
+      const uname = (log.userName || '').toLowerCase();
+      // If userName matches a team member's email, it belongs to that member, not owner
+      if (uname && teamEmails.has(uname)) return false;
+      return true;
+    }
+    // Team member: prefer teamMemberId match, fallback to email
+    if (log.teamMemberId && log.teamMemberId === member.id) return true;
+    if (!log.teamMemberId && member.email && log.userName && log.userName.toLowerCase() === member.email.toLowerCase()) return true;
+    return false;
+  };
+
+  // Helper: attribute a call log to a member by staffEmail (team) or actorId/ownerId (owner)
+  const isCallByMember = (cl, member) => {
+    const staff = (cl.staffEmail || '').toLowerCase();
+    if (member.id === ownerId) {
+      if (staff && teamEmails.has(staff)) return false;
+      if (staff && member.email && staff === member.email.toLowerCase()) return true;
+      if (!staff && cl.actorId && cl.actorId === ownerId) return true;
+      if (!staff) return true; // unattributed → owner
+      return false;
+    }
+    if (member.email && staff === member.email.toLowerCase()) return true;
     return false;
   };
 
@@ -119,48 +204,16 @@ export default function TeamReports({ user, ownerId, perms }) {
            !(log.text || '').includes('🤖');
   };
 
+  // Server returns the pre-aggregated array. Also enrich each row with
+  // `tasksAssigned` which is cheap to compute client-side from the small
+  // tasks subscription.
   const performanceData = useMemo(() => {
-    return members.map(m => {
-      const leadsAssigned = allLeads.filter(l => l.assign === m.name).length;
-      const tasksAssigned = allTasks.filter(t => t.assignTo === m.name).length;
-
-      // Filter logs for this member using email fallback
-      const userLogs = logs.filter(l => 
-        isLogByMember(l, m) && 
-        l.createdAt >= dateRange.start && 
-        l.createdAt <= dateRange.end &&
-        isHumanLog(l)
-      );
-
-      const totalActivities = userLogs.length;
-
-      // Derive all metrics from activity logs (single source of truth)
-      // Accept both 'task'/'tasks' and 'lead'/'leads' for backward compat with old log formats
-      const isTaskLog = (l) => l.entityType === 'task' || l.entityType === 'tasks';
-      const isLeadLog = (l) => l.entityType === 'lead' || l.entityType === 'leads';
-      const tasksWorked = userLogs.filter(isTaskLog).length;
-      const tasksCompleted = userLogs.filter(l => 
-        isTaskLog(l) && (l.text || '').toLowerCase().includes('completed')
-      ).length;
-      const leadsWorked = userLogs.filter(isLeadLog).length;
-      const leadsWon = userLogs.filter(l => 
-        isLeadLog(l) && ((l.text || '').toLowerCase().includes('won') || (l.text || '').toLowerCase().includes('converted'))
-      ).length;
-      const otherWorks = userLogs.filter(l => !isTaskLog(l) && !isLeadLog(l)).length;
-
-      return {
-        ...m,
-        leadsAssigned,
-        tasksAssigned,
-        tasksCompleted,
-        tasksWorked,
-        leadsWorked,
-        leadsWon,
-        otherWorks,
-        totalActivities
-      };
-    }).sort((a, b) => b.totalActivities - a.totalActivities);
-  }, [members, logs, dateRange, allLeads, allTasks]);
+    const fromServer = serverStats?.members || [];
+    return fromServer.map(m => ({
+      ...m,
+      tasksAssigned: allTasks.filter(t => t.assignTo === m.name).length,
+    }));
+  }, [serverStats, allTasks]);
 
   const selectedMember = useMemo(() => performanceData.find(m => m.id === selectedId), [performanceData, selectedId]);
 
@@ -281,7 +334,39 @@ export default function TeamReports({ user, ownerId, perms }) {
   if (isLoading) return <div className="p-xl">Loading Performance Data...</div>;
 
   return (
-    <div className="reports-container">
+    <div className="reports-container" style={{ position: 'relative' }}>
+      {logsLoading && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255, 255, 255, 0.6)',
+            backdropFilter: 'blur(1px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            zIndex: 10,
+            pointerEvents: 'all',
+          }}
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              border: '3px solid #e2e8f0',
+              borderTopColor: 'var(--accent, #16a34a)',
+              borderRadius: '50%',
+              animation: 'tr-spin 0.7s linear infinite',
+            }}
+          />
+          <div style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>Loading metrics…</div>
+        </div>
+      )}
+      <style>{`@keyframes tr-spin { to { transform: rotate(360deg); } }`}</style>
       <div className="sh" style={{ marginBottom: 20 }}>
         <div>
           <h2 style={{ fontSize: 24, margin: 0, fontWeight: 700 }}>Team Performance</h2>
@@ -293,9 +378,9 @@ export default function TeamReports({ user, ownerId, perms }) {
           </button>
           <div className="tabs" style={{ marginBottom: 0, border: 'none' }}>
             {DATE_FILTERS.map(f => (
-              <div 
-                key={f} 
-                className={`tab ${filter === f ? 'active' : ''}`} 
+              <div
+                key={f}
+                className={`tab ${filter === f ? 'active' : ''}`}
                 onClick={() => setFilter(f)}
                 style={{ padding: '6px 12px', fontSize: 12 }}
               >
@@ -325,18 +410,24 @@ export default function TeamReports({ user, ownerId, perms }) {
           <div className="lbl">Total Activities</div>
           <div className="val">{performanceData.reduce((s, m) => s + m.totalActivities, 0)}</div>
         </div>
-        <div className="stat-card sc-green">
-          <div className="lbl">Tasks Worked</div>
-          <div className="val">{performanceData.reduce((s, m) => s + m.tasksWorked, 0)}</div>
-        </div>
-        <div className="stat-card sc-teal">
-          <div className="lbl">Leads Worked</div>
-          <div className="val">{performanceData.reduce((s, m) => s + m.leadsWorked, 0)}</div>
-        </div>
-        <div className="stat-card sc-yellow">
-          <div className="lbl">Leads Won</div>
-          <div className="val">{performanceData.reduce((s, m) => s + m.leadsWon, 0)}</div>
-        </div>
+        {showTasks && (
+          <div className="stat-card sc-green">
+            <div className="lbl">Tasks Worked</div>
+            <div className="val">{performanceData.reduce((s, m) => s + m.tasksWorked, 0)}</div>
+          </div>
+        )}
+        {showLeads && (
+          <div className="stat-card sc-teal">
+            <div className="lbl">Leads Worked</div>
+            <div className="val">{performanceData.reduce((s, m) => s + m.leadsWorked, 0)}</div>
+          </div>
+        )}
+        {showLeads && (
+          <div className="stat-card sc-yellow">
+            <div className="lbl">Leads Won</div>
+            <div className="val">{performanceData.reduce((s, m) => s + m.leadsWon, 0)}</div>
+          </div>
+        )}
         <div className="stat-card sc-blue" style={{ borderLeftColor: '#8b5cf6' }}>
           <div className="lbl">Other Activities</div>
           <div className="val">{performanceData.reduce((s, m) => s + m.otherWorks, 0)}</div>
@@ -354,13 +445,19 @@ export default function TeamReports({ user, ownerId, perms }) {
                 <tr>
                   <th style={{ textAlign: 'left' }}>Team Member</th>
                   <th>Activity</th>
-                  <th>Leads Assg.</th>
-                  <th>Leads Work.</th>
-                  <th>Leads Won</th>
-                  <th>Tasks Assg.</th>
-                  <th>Tasks Work.</th>
-                  <th>Tasks Comp.</th>
-                  <th>Other Work</th>
+                  {showLeads && <th title="Leads assigned within the selected date range">Leads Assg.</th>}
+                  {showLeads && <th title="Leads currently assigned to this member (all-time, ignores the date filter)">Currently Assigned</th>}
+                  {showLeads && <th>Leads Work.</th>}
+                  {showLeads && <th>Leads Won</th>}
+                  {showLeads && <th>Stage Δ</th>}
+                  {showCustomers && <th>Customers</th>}
+                  {showQuotes && <th>Quotes</th>}
+                  {showInvoices && <th>Invoices</th>}
+                  {showAmc && <th>AMC</th>}
+                  {showAppointments && <th>Appts.</th>}
+                  {showCalls && <th>Calls</th>}
+                  {showTasks && <th>Tasks Work.</th>}
+                  <th title="Other tracked modules: Expenses, Purchase Orders, Products, Vendors, Campaigns">Misc</th>
                 </tr>
               </thead>
               <tbody>
@@ -383,24 +480,66 @@ export default function TeamReports({ user, ownerId, perms }) {
                       <td style={{ textAlign: 'center' }}>
                         <strong style={{ fontSize: 13 }}>{m.totalActivities}</strong>
                       </td>
-                      <td style={{ textAlign: 'center' }}>
-                        <span className="badge bg-gray" style={{ fontSize: 11 }}>{m.leadsAssigned}</span>
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        <span className="badge bg-teal" style={{ fontSize: 11 }}>{m.leadsWorked}</span>
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        <span className="badge bg-green" style={{ fontSize: 11 }}>{m.leadsWon}</span>
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        <span className="badge bg-gray" style={{ fontSize: 11 }}>{m.tasksAssigned}</span>
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        <div className={`badge ${m.tasksWorked > 0 ? 'bg-blue' : 'bg-gray'}`}>{m.tasksWorked}</div>
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        <div className={`badge ${m.tasksCompleted > 0 ? 'bg-green' : 'bg-gray'}`}>{m.tasksCompleted}</div>
-                      </td>
+                      {showLeads && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className="badge bg-gray" style={{ fontSize: 11 }}>{m.leadsAssigned}</span>
+                        </td>
+                      )}
+                      {showLeads && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className="badge bg-gray" style={{ fontSize: 11 }}>{m.leadsAssignedTotal ?? 0}</span>
+                        </td>
+                      )}
+                      {showLeads && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className="badge bg-teal" style={{ fontSize: 11 }}>{m.leadsWorked}</span>
+                        </td>
+                      )}
+                      {showLeads && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className="badge bg-green" style={{ fontSize: 11 }}>{m.leadsWon}</span>
+                        </td>
+                      )}
+                      {showLeads && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${m.stageChanges > 0 ? 'bg-yellow' : 'bg-gray'}`} style={{ fontSize: 11 }}>{m.stageChanges}</span>
+                        </td>
+                      )}
+                      {showCustomers && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${m.customersWorked > 0 ? 'bg-teal' : 'bg-gray'}`} style={{ fontSize: 11 }}>{m.customersWorked}</span>
+                        </td>
+                      )}
+                      {showQuotes && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${m.quotesWorked > 0 ? 'bg-blue' : 'bg-gray'}`} style={{ fontSize: 11 }}>{m.quotesWorked}</span>
+                        </td>
+                      )}
+                      {showInvoices && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${m.invoicesWorked > 0 ? 'bg-green' : 'bg-gray'}`} style={{ fontSize: 11 }}>{m.invoicesWorked}</span>
+                        </td>
+                      )}
+                      {showAmc && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${m.amcWorked > 0 ? 'bg-yellow' : 'bg-gray'}`} style={{ fontSize: 11 }}>{m.amcWorked}</span>
+                        </td>
+                      )}
+                      {showAppointments && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${m.appointmentsWorked > 0 ? 'bg-teal' : 'bg-gray'}`} style={{ fontSize: 11 }}>{m.appointmentsWorked}</span>
+                        </td>
+                      )}
+                      {showCalls && (
+                        <td style={{ textAlign: 'center' }}>
+                          <span className={`badge ${m.callsMade > 0 ? 'bg-blue' : 'bg-gray'}`} style={{ fontSize: 11 }}>{m.callsMade}</span>
+                        </td>
+                      )}
+                      {showTasks && (
+                        <td style={{ textAlign: 'center' }}>
+                          <div className={`badge ${m.tasksWorked > 0 ? 'bg-blue' : 'bg-gray'}`}>{m.tasksWorked}</div>
+                        </td>
+                      )}
                       <td style={{ textAlign: 'center' }}>
                         <div className={`badge ${m.otherWorks > 0 ? 'bg-teal' : 'bg-gray'}`}>{m.otherWorks}</div>
                       </td>

@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id as genId } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
 import SheetIntegration from './SheetIntegration';
 import IndiamartIntegration from './IndiamartIntegration';
 import JustdialIntegration from './JustdialIntegration';
+import TradeindiaIntegration from './TradeindiaIntegration';
 
 const COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -14,34 +16,42 @@ export default function Integrations({ user, ownerId }) {
   const [syncResults, setSyncResults] = useState(null);
   const [showConfig, setShowConfig] = useState(null);
   const [activeTab, setActiveTab] = useState('all');
-  const [cooldownEnd, setCooldownEnd] = useState(() => {
-    const stored = localStorage.getItem('tc_sync_cooldown');
-    return stored ? parseInt(stored, 10) : 0;
+
+  // Cooldowns are scoped per integration config (key = `${type}-${idx}`)
+  // so syncing TradeIndia doesn't block IndiaMART / JustDial / GSheets.
+  const [cooldowns, setCooldowns] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('tc_sync_cooldowns') || '{}'); }
+    catch { return {}; }
   });
-  const [cooldownLeft, setCooldownLeft] = useState(0);
+  const [, setNowTick] = useState(0);
 
   useEffect(() => {
-    const tick = () => {
-      const remaining = Math.max(0, cooldownEnd - Date.now());
-      setCooldownLeft(remaining);
-    };
-    tick();
-    const interval = setInterval(tick, 1000);
+    const interval = setInterval(() => setNowTick(t => t + 1), 1000);
     return () => clearInterval(interval);
-  }, [cooldownEnd]);
+  }, []);
 
-  const isCoolingDown = cooldownLeft > 0;
-  const cooldownMinutes = Math.ceil(cooldownLeft / 60000);
+  const cooldownLeftFor = (key) => Math.max(0, (cooldowns[key] || 0) - Date.now());
+  const isCoolingDownFor = (key) => cooldownLeftFor(key) > 0;
+  const cooldownMinutesFor = (key) => Math.ceil(cooldownLeftFor(key) / 60000);
+
+  const startCooldown = (key) => {
+    const end = Date.now() + COOLDOWN_MS;
+    setCooldowns(prev => {
+      const next = { ...prev, [key]: end };
+      localStorage.setItem('tc_sync_cooldowns', JSON.stringify(next));
+      return next;
+    });
+  };
 
   const { data } = db.useQuery({ 
     userProfiles: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } }
   });
   const profile = data?.userProfiles?.[0];
   const gsheets = profile?.gsheets || [];
   const indiamartConfigs = profile?.indiamart || [];
   const justdialConfigs = profile?.justdial || [];
-  const existingLeads = data?.leads || [];
+  const tradeindiaConfigs = profile?.tradeindia || [];
+  // leads fetched on-demand during sync via /api/lead-check-duplicate (avoids 11k+ subscription)
 
   const integrations = [
     {
@@ -67,12 +77,21 @@ export default function Integrations({ user, ownerId }) {
       icon: '📞',
       connected: justdialConfigs.length > 0,
       count: justdialConfigs.length
+    },
+    {
+      id: 'tradeindia',
+      name: 'TradeIndia',
+      desc: 'Receive leads from TradeIndia enquiries automatically via webhook or manual sync.',
+      icon: '🏢',
+      connected: tradeindiaConfigs.length > 0,
+      count: tradeindiaConfigs.length
     }
   ];
 
   const syncGoogleSheet = async (configIndex) => {
-    if (isCoolingDown) {
-      return toast(`Please wait ${cooldownMinutes} min before syncing again.`, 'warning');
+    const cdKey = `gsheets-${configIndex}`;
+    if (isCoolingDownFor(cdKey)) {
+      return toast(`Please wait ${cooldownMinutesFor(cdKey)} min before syncing this sheet again.`, 'warning');
     }
     const config = gsheets[configIndex];
     if (config?.disabled || profile?.gsheetsDisabled) {
@@ -108,6 +127,18 @@ export default function Integrations({ user, ownerId }) {
         setSyncing(null);
         return toast('Sheet has no data rows.', 'error');
       }
+
+      // Fetch latest leads from server for dedup (replaces removed subscription)
+      let existingLeads = [];
+      try {
+        const leadsRes = await fetch('/api/leads-page', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerId, mode: 'kanban', tab: 'all', page: 1, pageSize: 50000, isOwner: true, teamCanSeeAllLeads: true, boundaries: {} }),
+        });
+        const leadsJson = await leadsRes.json();
+        existingLeads = leadsJson.items || [];
+      } catch (e) { console.warn('Failed to fetch leads for dedup:', e); }
 
       // Build dedup Sets for O(1) lookups
       const emailSet = new Set(existingLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
@@ -167,12 +198,12 @@ export default function Integrations({ user, ownerId }) {
           if (lead.email) emailSet.add(lead.email.toLowerCase());
           if (lead.phone) phoneSet.add(lead.phone);
 
-          batch.push(db.tx.leads[genId()].update(lead));
+          batch.push(dbOp.update('leads', genId(), lead));
           added++;
 
           // Flush batch every 50 leads
           if (batch.length >= 50) {
-            await db.transact(batch);
+            await dbWrite(batch);
             batch = [];
           }
         } catch {
@@ -181,14 +212,12 @@ export default function Integrations({ user, ownerId }) {
       }
 
       // Flush remaining batch
-      if (batch.length > 0) await db.transact(batch);
+      if (batch.length > 0) await dbWrite(batch);
 
-      // Start cooldown
-      const end = Date.now() + COOLDOWN_MS;
-      setCooldownEnd(end);
-      localStorage.setItem('tc_sync_cooldown', String(end));
+      // Start cooldown for this specific sheet
+      startCooldown(cdKey);
 
-      setSyncResults({ total: dataRows.length, added, skipped, errors, configName: config.configName });
+      setSyncResults({ type: 'gsheets', total: dataRows.length, added, skipped, errors, configName: config.configName });
       toast(`Synced! ${added} new lead(s) added, ${skipped} skipped.`, 'success');
     } catch (e) {
       console.error('Sync Error:', e);
@@ -201,13 +230,13 @@ export default function Integrations({ user, ownerId }) {
   const handleDeleteSheet = async (index) => {
     if (!confirm('Are you sure you want to delete this sheet integration?')) return;
     const updated = gsheets.filter((_, i) => i !== index);
-    await db.transact(db.tx.userProfiles[profile.id].update({ gsheets: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { gsheets: updated }));
     toast('Integration deleted', 'error');
   };
 
   const handleToggleSheet = async (index) => {
     const updated = gsheets.map((gs, i) => i === index ? { ...gs, disabled: !gs.disabled } : gs);
-    await db.transact(db.tx.userProfiles[profile.id].update({ gsheets: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { gsheets: updated }));
     toast(updated[index].disabled ? 'Integration disabled' : 'Integration enabled', 'info');
   };
 
@@ -216,15 +245,15 @@ export default function Integrations({ user, ownerId }) {
     const profileId = profile.id;
 
     // Handle array-based integrations (gsheets, indiamart, justdial)
-    if (pid === 'indiamart' || pid === 'justdial') {
+    if (pid === 'indiamart' || pid === 'justdial' || pid === 'tradeindia') {
       const configs = profile[pid] || [];
       if (action === 'delete') {
         if (!confirm(`Are you sure you want to disconnect all ${pid} integrations?`)) return;
-        await db.transact(db.tx.userProfiles[profileId].update({ [pid]: [] }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [pid]: [] }));
         toast('Disconnected', 'error');
       } else if (action === 'toggle') {
         const updated = configs.map(c => ({ ...c, disabled: !c.disabled }));
-        await db.transact(db.tx.userProfiles[profileId].update({ [pid]: updated }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [pid]: updated }));
         toast(configs[0]?.disabled ? 'Enabled' : 'Disabled', 'info');
       }
       return;
@@ -236,23 +265,23 @@ export default function Integrations({ user, ownerId }) {
     if (action === 'delete') {
       if (!confirm(`Are you sure you want to disconnect ${pid}?`)) return;
       if (pid === 'gsheets') {
-        await db.transact(db.tx.userProfiles[profileId].update({ gsheets: [], gsheetsDisabled: false }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { gsheets: [], gsheetsDisabled: false }));
       } else {
-        await db.transact(db.tx.userProfiles[profileId].update({ [field]: { connected: false, disabled: false } }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [field]: { connected: false, disabled: false } }));
       }
       toast('Disconnected', 'error');
     } else if (action === 'toggle') {
       if (pid === 'gsheets') {
-        await db.transact(db.tx.userProfiles[profileId].update({ gsheetsDisabled: !profile.gsheetsDisabled }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { gsheetsDisabled: !profile.gsheetsDisabled }));
         toast(profile.gsheetsDisabled ? 'Enabled' : 'Disabled', 'info');
       } else {
-        await db.transact(db.tx.userProfiles[profileId].update({ [field]: { ...current, disabled: !current.disabled } }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [field]: { ...current, disabled: !current.disabled } }));
         toast(current.disabled ? 'Enabled' : 'Disabled', 'info');
       }
     } else if (action === 'connect') {
       setSyncing(pid);
       setTimeout(async () => {
-        await db.transact(db.tx.userProfiles[profileId].update({ [field]: { connected: true, disabled: false } }));
+        await dbWrite(dbOp.update('userProfiles', profileId, { [field]: { connected: true, disabled: false } }));
         setSyncing(null);
         toast(`Connected!`, 'success');
       }, 1500);
@@ -264,17 +293,80 @@ export default function Integrations({ user, ownerId }) {
       syncGoogleSheet(0);
       return;
     }
-    if (item.id === 'indiamart' || item.id === 'justdial') {
+    if (item.id === 'indiamart' || item.id === 'justdial' || item.id === 'tradeindia') {
       setShowConfig({ type: item.id, index: null });
       return;
     }
     handlePlatformAction(item.id, 'connect');
   };
 
+  // Manual sync for IndiaMART / JustDial / TradeIndia configs.
+  // Calls the server webhook endpoint which:
+  //   1. Pulls from third-party API (using lastSyncAt to filter where supported)
+  //   2. Dedups by phone + email + sourceLeadId
+  //   3. Inserts only NEW leads (never updates existing — so stage changes are preserved)
+  //   4. Updates that config's lastSyncAt
+  const syncIntegration = async (type, configIndex) => {
+    const cdKey = `${type}-${configIndex}`;
+    if (isCoolingDownFor(cdKey)) {
+      return toast(`Please wait ${cooldownMinutesFor(cdKey)} min before syncing this integration again.`, 'warning');
+    }
+    const cfg = (profile?.[type] || [])[configIndex];
+    if (cfg?.disabled) {
+      return toast('Integration is disabled. Please enable it first.', 'warning');
+    }
+
+    setSyncing(cdKey);
+    setSyncResults(null);
+    try {
+      const url = `/api/webhook/${type}?action=sync&ownerId=${encodeURIComponent(ownerId)}&configIndex=${configIndex}`;
+      const r = await fetch(url, { method: 'GET' });
+      const json = await r.json();
+
+      // Start cooldown for this config only (other integrations stay unblocked)
+      startCooldown(cdKey);
+
+      setSyncResults({
+        type,
+        configName: cfg?.configName || type,
+        added: json.added || 0,
+        skipped: json.skipped || 0,
+        errors: json.errors || 0,
+        total: json.total || (json.added || 0) + (json.skipped || 0),
+        diagnostic: json.diagnostic || null,
+        raw: json,
+        failed: !json.success,
+        failMessage: json.success ? null : (json.message || `HTTP ${r.status}`),
+      });
+
+      if (!json.success) {
+        toast(`Sync failed: ${json.message || 'Unknown error'}`, 'error');
+      } else if ((json.added || 0) === 0 && (json.skipped || 0) === 0 && json.diagnostic) {
+        toast(`${type}: API returned no leads — see result below the card.`, 'warning');
+        console.warn(`[${type} sync] diagnostic:`, json.diagnostic);
+      } else {
+        toast(`Synced! ${json.added || 0} new lead(s), ${json.skipped || 0} skipped.`, 'success');
+      }
+    } catch (e) {
+      // Network-level failure — still show inline so it doesn't just vanish
+      setSyncResults({
+        type,
+        configName: cfg?.configName || type,
+        added: 0, skipped: 0, errors: 0, total: 0,
+        diagnostic: null, raw: null,
+        failed: true,
+        failMessage: e.message || 'Unknown error',
+      });
+      toast(`Sync failed: ${e.message}`, 'error');
+    } finally {
+      setSyncing(null);
+    }
+  };
+
   const handleToggleIntConfig = async (type, index) => {
     const configs = profile[type] || [];
     const updated = configs.map((c, i) => i === index ? { ...c, disabled: !c.disabled } : c);
-    await db.transact(db.tx.userProfiles[profile.id].update({ [type]: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { [type]: updated }));
     toast(updated[index].disabled ? 'Integration disabled' : 'Integration enabled', 'info');
   };
 
@@ -282,7 +374,7 @@ export default function Integrations({ user, ownerId }) {
     if (!confirm('Are you sure you want to delete this integration?')) return;
     const configs = profile[type] || [];
     const updated = configs.filter((_, i) => i !== index);
-    await db.transact(db.tx.userProfiles[profile.id].update({ [type]: updated }));
+    await dbWrite(dbOp.update('userProfiles', profile.id, { [type]: updated }));
     toast('Integration deleted', 'error');
   };
 
@@ -317,6 +409,18 @@ export default function Integrations({ user, ownerId }) {
         ownerId={ownerId}
         onBack={() => setShowConfig(null)}
         existingConfig={showConfig.index !== null ? justdialConfigs[showConfig.index] : null}
+        editIndex={showConfig.index}
+      />
+    );
+  }
+
+  if (showConfig?.type === 'tradeindia') {
+    return (
+      <TradeindiaIntegration
+        user={user}
+        ownerId={ownerId}
+        onBack={() => setShowConfig(null)}
+        existingConfig={showConfig.index !== null ? tradeindiaConfigs[showConfig.index] : null}
         editIndex={showConfig.index}
       />
     );
@@ -361,20 +465,20 @@ export default function Integrations({ user, ownerId }) {
                       >
                         {gs.disabled ? 'Enable' : 'Disable'}
                       </button>
-                      <button 
-                        className="btn btn-primary btn-sm" 
-                        style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }} 
-                        onClick={() => syncGoogleSheet(idx)} 
-                        disabled={syncing !== null || isCoolingDown || gs.disabled || profile?.gsheetsDisabled}
+                      <button
+                        className="btn btn-primary btn-sm"
+                        style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }}
+                        onClick={() => syncGoogleSheet(idx)}
+                        disabled={syncing !== null || isCoolingDownFor(`gsheets-${idx}`) || gs.disabled || profile?.gsheetsDisabled}
                       >
-                        {syncing === 'gsheets' ? '⟳ Syncing...' : isCoolingDown ? `⏳ ${cooldownMinutes}m` : '⟳ Sync'}
+                        {syncing === 'gsheets' ? '⟳ Syncing...' : isCoolingDownFor(`gsheets-${idx}`) ? `⏳ ${cooldownMinutesFor(`gsheets-${idx}`)}m` : '⟳ Sync'}
                       </button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setShowConfig({ type: 'gsheets', index: idx })}>Edit</button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10, color: '#ef4444' }} onClick={() => handleDeleteSheet(idx)}>Disconnect</button>
                     </div>
                   </div>
                 ))}
-                {syncResults && (
+                {syncResults && syncResults.type === 'gsheets' && (
                   <div style={{ background: '#ecfdf5', border: '1px solid #10b981', borderRadius: 8, padding: '10px 14px', marginTop: 10, fontSize: 11, color: '#065f46' }}>
                     <strong>Last Sync: {syncResults.configName}</strong>
                     <div style={{ marginTop: 4 }}>
@@ -385,12 +489,12 @@ export default function Integrations({ user, ownerId }) {
               </div>
             )}
             {/* IndiaMART / JustDial connected configs */}
-            {(item.id === 'indiamart' || item.id === 'justdial') && (profile?.[item.id] || []).length > 0 && (
+            {(item.id === 'indiamart' || item.id === 'justdial' || item.id === 'tradeindia') && (profile?.[item.id] || []).length > 0 && (
               <div style={{ marginTop: -10, marginBottom: 15 }}>
                 {(profile[item.id] || []).map((cfg, idx) => (
                   <div key={idx} style={{ padding: '10px 12px', background: 'var(--bg)', borderRadius: 8, marginBottom: 8, fontSize: 12, border: '1px solid var(--border)' }}>
                     <div style={{ fontWeight: 600, marginBottom: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: cfg.disabled ? 0.5 : 1 }}>
-                      {cfg.disabled ? '⏸ ' : item.id === 'indiamart' ? '🏭 ' : '📞 '}{cfg.configName || item.name}
+                      {cfg.disabled ? '⏸ ' : item.id === 'indiamart' ? '🏭 ' : item.id === 'tradeindia' ? '🏢 ' : '📞 '}{cfg.configName || item.name}
                     </div>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                       <button
@@ -400,11 +504,90 @@ export default function Integrations({ user, ownerId }) {
                       >
                         {cfg.disabled ? 'Enable' : 'Disable'}
                       </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        style={{ padding: '2px 10px', fontSize: 10, flex: 1.5, minWidth: 'fit-content' }}
+                        onClick={() => syncIntegration(item.id, idx)}
+                        disabled={syncing !== null || isCoolingDownFor(`${item.id}-${idx}`) || cfg.disabled}
+                        title={cfg.lastSyncAt ? `Last synced: ${new Date(cfg.lastSyncAt).toLocaleString()}` : 'Never synced'}
+                      >
+                        {syncing === `${item.id}-${idx}` ? '⟳ Syncing...' : isCoolingDownFor(`${item.id}-${idx}`) ? `⏳ ${cooldownMinutesFor(`${item.id}-${idx}`)}m` : '⟳ Sync'}
+                      </button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10 }} onClick={() => setShowConfig({ type: item.id, index: idx })}>Edit</button>
                       <button className="btn btn-secondary btn-sm" style={{ padding: '2px 8px', fontSize: 10, color: '#ef4444' }} onClick={() => handleDeleteIntConfig(item.id, idx)}>Disconnect</button>
                     </div>
+                    {cfg.lastSyncAt && (
+                      <div style={{ marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
+                        Last synced: {new Date(cfg.lastSyncAt).toLocaleString()}
+                      </div>
+                    )}
                   </div>
                 ))}
+                {/* Only show the sync result under the integration that was actually synced */}
+                {syncResults && syncResults.type === item.id && syncing === null && (
+                  <div style={{
+                    background: syncResults.failed ? '#fef2f2' : syncResults.diagnostic ? '#fef3c7' : '#ecfdf5',
+                    border: `1px solid ${syncResults.failed ? '#ef4444' : syncResults.diagnostic ? '#f59e0b' : '#10b981'}`,
+                    borderRadius: 8,
+                    padding: '10px 14px',
+                    marginTop: 6,
+                    fontSize: 11,
+                    color: syncResults.failed ? '#7f1d1d' : syncResults.diagnostic ? '#78350f' : '#065f46',
+                  }}>
+                    <strong>{syncResults.failed ? '❌ Sync Failed' : 'Sync Result'}: {syncResults.configName}</strong>
+
+                    {syncResults.failed ? (
+                      <div style={{ marginTop: 4 }}>{syncResults.failMessage}</div>
+                    ) : (
+                      <div style={{ marginTop: 4 }}>
+                        ✅ {syncResults.added} added · ⏭ {syncResults.skipped} skipped
+                        {syncResults.errors > 0 ? ` · ❌ ${syncResults.errors} errors` : ''}
+                        {' '}· 📊 {syncResults.total} total
+                      </div>
+                    )}
+
+                    {/* Compact view: just URL + Response */}
+                    {(syncResults.diagnostic?.requestUrl || syncResults.diagnostic?.responseSample || syncResults.diagnostic?.apiResponseSample) && (
+                      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {syncResults.diagnostic?.requestUrl && (
+                          <div>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>URL</div>
+                            <div style={{ background: '#1e293b', color: '#93c5fd', padding: 8, borderRadius: 6, fontSize: 10, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' }}>
+                              {syncResults.diagnostic.requestUrl}
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 2 }}>Response</div>
+                          <pre style={{
+                            margin: 0,
+                            background: '#1e293b',
+                            color: '#fca5a5',
+                            padding: 8,
+                            borderRadius: 6,
+                            fontSize: 10,
+                            fontFamily: 'ui-monospace, monospace',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            maxHeight: 200,
+                            overflow: 'auto',
+                          }}>
+{syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || '(empty)'}
+                          </pre>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => navigator.clipboard.writeText(
+                            `URL: ${syncResults.diagnostic.requestUrl || ''}\n\nResponse: ${syncResults.diagnostic.responseSample || syncResults.diagnostic.apiResponseSample || ''}`
+                          )}
+                          style={{ alignSelf: 'flex-start', padding: '3px 8px', background: '#475569', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}
+                        >
+                          📋 Copy
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             {item.id === 'gsheets' && gsheets.length > 0 ? (
@@ -421,7 +604,7 @@ export default function Integrations({ user, ownerId }) {
                   </button>
                 </div>
               </div>
-            ) : (item.id === 'indiamart' || item.id === 'justdial') && (profile?.[item.id] || []).length > 0 ? (
+            ) : (item.id === 'indiamart' || item.id === 'justdial' || item.id === 'tradeindia') && (profile?.[item.id] || []).length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <button className="btn btn-primary btn-sm" style={{ width: '100%' }} onClick={() => setShowConfig({ type: item.id, index: null })}>
                   + Add Another
@@ -448,7 +631,7 @@ export default function Integrations({ user, ownerId }) {
               <button 
                 className={`btn ${syncing === item.id ? 'btn-secondary' : 'btn-primary'} btn-sm`} 
                 style={{ width: '100%' }}
-                onClick={() => (item.id === 'gsheets' || item.id === 'indiamart' || item.id === 'justdial') ? setShowConfig({ type: item.id, index: null }) : handleSync(item)}
+                onClick={() => (item.id === 'gsheets' || item.id === 'indiamart' || item.id === 'justdial' || item.id === 'tradeindia') ? setShowConfig({ type: item.id, index: null }) : handleSync(item)}
                 disabled={syncing !== null}
               >
                 {syncing === item.id ? 'Connecting...' : 'Connect Now'}

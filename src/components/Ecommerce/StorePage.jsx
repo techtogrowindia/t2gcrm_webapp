@@ -171,12 +171,16 @@ function CheckoutModal({ cart, ownerId, ecomName, customerSession, onClose, onSu
           fireAutoNotifications('order_placed', {
             client: form.name,
             phone: form.phone,
+            clientphoneno: form.phone,
+            leadphoneno: form.phone,
             email: form.email || '',
             orderId: data.orderId || '',
             orderAmount: total,
             orderStatus: 'Placed',
             date: new Date().toISOString().split('T')[0],
             bizName: profile?.bizName || '',
+            ownerPhone: profile?.phone || '',
+            entityId: data.orderId || '',
           }, profile, ownerId).catch(() => {});
         }
       }

@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from 'react';
+import { logActivity } from '../../utils/activityLogger';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD } from '../../utils/helpers';
@@ -19,7 +21,7 @@ const STATUS_COLORS = {
   'No Show': { bg: '#f3f4f6', color: '#374151' },
 };
 
-export default function Appointments({ ownerId, perms, initialTab, settings }) {
+export default function Appointments({ user, ownerId, perms, initialTab, settings }) {
   const toast = useToast();
   const [tab, setTab] = useState(initialTab || 'list'); // list | settings
   const [dateFilter, setDateFilter] = useState('today');
@@ -44,17 +46,38 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
     ecomSettings: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     customers: { $: { where: { userId: ownerId } } },
-    leads: { $: { where: { userId: ownerId } } },
-    activityLogs: { $: { where: { userId: ownerId } } },
+    teamMembers: { $: { where: { userId: ownerId } } },
   });
   const profile = data?.userProfiles?.[0];
   const ecom = data?.ecomSettings?.[0];
   const appointments = data?.appointments || [];
   const customers = data?.customers || [];
-  const leads = data?.leads || [];
-  const activityLogs = data?.activityLogs || [];
+  // leads data fetched on-demand via /api/lead-lookup (avoids 11k+ subscription)
+  const [matchedLead, setMatchedLead] = useState(null);
+  const team = data?.teamMembers || [];
+  const myMember = useMemo(() => user ? team.find(t => t.email === user.email) : null, [team, user]);
   const settingsRecord = data?.appointmentSettings?.[0];
   const settingsId = settingsRecord?.id || id();
+  const settingsLogId = settingsRecord?.id || null;
+  const { data: settingsLogsData } = db.useQuery(settingsLogId ? {
+    activityLogs: { $: { where: { entityId: settingsLogId } } },
+  } : {});
+
+  // Fetch matching lead when edit modal opens (server-side lookup avoids 11k+ subscription)
+  React.useEffect(() => {
+    if (!editModal) { setMatchedLead(null); return; }
+    const phone = editModal.customerPhone;
+    const email = editModal.customerEmail;
+    if (!phone && !email) return;
+    fetch('/api/lead-lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerId, phone, email }),
+    })
+      .then(r => r.json())
+      .then(d => setMatchedLead(d.lead || null))
+      .catch(() => setMatchedLead(null));
+  }, [editModal?.id, ownerId]);
 
   const [settingsForm, setSettingsForm] = useState(null);
   React.useEffect(() => {
@@ -108,7 +131,7 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
 
   const saveConfig = async () => {
     if (profile) {
-      await db.transact(db.tx.userProfiles[profile.id].update({ apptConfig: tempConf }));
+      await dbWrite(dbOp.update('userProfiles', profile.id, { apptConfig: tempConf }));
       setDateFilter(tempConf.dateFilter);
       setStatusFilter(tempConf.statusFilter);
     }
@@ -119,7 +142,7 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
   const saveSettings = async () => {
     const cleanSlug = (settingsForm.slug || '').toLowerCase().trim().replace(/[^a-z0-9-]/g, '-');
     const txs = [
-      db.tx.appointmentSettings[settingsId].update({
+      dbOp.update('appointmentSettings', settingsId, {
         userId: ownerId,
         workingHours: JSON.stringify(settingsForm.workingHours),
         holidays: JSON.stringify(settingsForm.holidays),
@@ -133,10 +156,10 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
     ];
 
     if (profile?.id) {
-      txs.push(db.tx.userProfiles[profile.id].update({ slug: cleanSlug }));
+      txs.push(dbOp.update('userProfiles', profile.id, { slug: cleanSlug }));
     }
     if (ecom?.id) {
-      txs.push(db.tx.ecomSettings[ecom.id].update({ ecomName: cleanSlug }));
+      txs.push(dbOp.update('ecomSettings', ecom.id, { ecomName: cleanSlug }));
     }
 
     let logText = [];
@@ -166,7 +189,7 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
     }
 
     if (logText.length > 0) {
-      txs.push(db.tx.activityLogs[id()].update({
+      txs.push(dbOp.update('activityLogs', id(), {
         entityId: settingsId,
         entityType: 'appointmentSettings',
         text: logText.join(' | '),
@@ -175,7 +198,7 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
       }));
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
     toast('Availability settings saved!', 'success');
   };
 
@@ -192,13 +215,13 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
       return true; // No status change needed
     }
 
-    const txs = [db.tx.appointments[apptId].update({ status, updatedAt: Date.now() })];
+    const txs = [dbOp.update('appointments', apptId, { status, updatedAt: Date.now() })];
     
     if (status === 'Completed' && appt) {
       const existingCustomer = customers.find(c => c.phone === appt.customerPhone || (c.email && c.email === appt.customerEmail));
       if (!existingCustomer && appt.customerPhone) {
         const newCustomerId = id();
-        txs.push(db.tx.customers[newCustomerId].update({
+        txs.push(dbOp.update('customers', newCustomerId, {
           userId: ownerId,
           name: appt.customerName || 'Unknown',
           phone: appt.customerPhone || '',
@@ -206,26 +229,45 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
           createdAt: Date.now()
         }));
         
-        txs.push(db.tx.activityLogs[id()].update({
+        txs.push(dbOp.update('activityLogs', id(), {
           entityId: newCustomerId, entityType: 'customer', text: `Auto-converted from Appointment (${apptId.slice(0,8)}) upon completion.`,
           userId: ownerId, createdAt: Date.now()
         }));
       }
       
-      const existingLead = leads.find(l => l.phone === appt.customerPhone || (l.email && l.email === appt.customerEmail));
-      if (existingLead && existingLead.stage !== 'Converted') {
-        txs.push(db.tx.leads[existingLead.id].update({ stage: 'Converted', updatedAt: Date.now() }));
-      }
+      // Look up matching lead server-side (avoids 11k+ subscription)
+      try {
+        const lookupRes = await fetch('/api/lead-lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerId, phone: appt.customerPhone, email: appt.customerEmail }),
+        });
+        const lookupData = await lookupRes.json();
+        const existingLead = lookupData.lead;
+        if (existingLead && existingLead.stage !== 'Converted') {
+          txs.push(dbOp.update('leads', existingLead.id, { stage: 'Converted', updatedAt: Date.now() }));
+        }
+      } catch (e) { console.warn('Lead lookup failed:', e); }
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
+    if (appt && appt.status !== status) {
+      await logActivity({
+        entityType: 'appointment', entityId: apptId,
+        entityName: appt.customerName || '',
+        action: 'edited',
+        text: `Appointment status changed to **${status}** for ${appt.customerName || 'customer'}`,
+        userId: ownerId, user, teamMemberId: myMember?.id || null,
+        meta: { status },
+      });
+    }
     if (appt?.status !== status) toast(`Status updated to ${status}`, 'success');
     return true;
   };
 
   const reschedule = async () => {
     if (!rsForm.date || !rsForm.time) { toast('Date and time required', 'error'); return; }
-    await db.transact(db.tx.appointments[rescheduleModal.id].update({ date: rsForm.date, time: rsForm.time, updatedAt: Date.now() }));
+    await dbWrite(dbOp.update('appointments', rescheduleModal.id, { date: rsForm.date, time: rsForm.time, updatedAt: Date.now() }));
     toast('Appointment rescheduled', 'success');
     setRescheduleModal(null);
   };
@@ -235,11 +277,8 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
     const proceed = await updateStatus(editModal.id, editForm.status);
     if (!proceed) return;
     
-    // Find matching lead for master history update
-    const matchingLead = leads.find(l => 
-      (editModal.customerEmail && l.email === editModal.customerEmail) || 
-      (editModal.customerPhone && l.phone === editModal.customerPhone)
-    );
+    // Use pre-fetched lead data from edit modal (via /api/lead-lookup)
+    const matchingLead = matchedLead;
 
     let apptNotes = editModal.notes || '';
     let masterNotes = matchingLead?.notes || '';
@@ -252,19 +291,28 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
       masterNotes = masterNotes ? `${masterNotes}\n${entry}` : entry;
     }
 
-    const txs = [db.tx.appointments[editModal.id].update({ 
+    const txs = [dbOp.update('appointments', editModal.id, { 
       notes: apptNotes,
       updatedAt: Date.now() 
     })];
 
     if (matchingLead && newNote.trim()) {
-      txs.push(db.tx.leads[matchingLead.id].update({
+      txs.push(dbOp.update('leads', matchingLead.id, {
         notes: masterNotes,
         updatedAt: Date.now()
       }));
     }
 
-    await db.transact(txs);
+    await dbWrite(txs);
+    if (newNote.trim()) {
+      await logActivity({
+        entityType: 'appointment', entityId: editModal.id,
+        entityName: editModal.customerName || '',
+        action: 'note',
+        text: `Note added on appointment for ${editModal.customerName || 'customer'}: ${newNote.trim()}`,
+        userId: ownerId, user, teamMemberId: myMember?.id || null,
+      });
+    }
     toast('Appointment and Lead updated', 'success');
     setEditModal(null);
     setNewNote('');
@@ -286,7 +334,7 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
     let list = [...appointments].sort((a, b) => {
       const da = `${a.date}T${a.time}`;
       const db2 = `${b.date}T${b.time}`;
-      return da < db2 ? -1 : 1;
+      return da > db2 ? -1 : 1; // newest first
     });
     if (dateFilter === 'today') list = list.filter(a => a.date === todayStr);
     else if (dateFilter === 'tomorrow') list = list.filter(a => a.date === tomorrowStr);
@@ -575,8 +623,8 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
                     const newHolidays = [...settingsForm.holidays, val].sort();
                     setSettingsForm(p => ({ ...p, holidays: newHolidays }));
                     el.value = '';
-                    await db.tx.appointmentSettings[settingsId].update({ holidays: JSON.stringify(newHolidays) });
-                    await db.tx.activityLogs[id()].update({ entityId: settingsId, entityType: 'appointmentSettings', text: `Added holiday: ${val}`, userId: ownerId, createdAt: Date.now() });
+                    await dbOp.update('appointmentSettings', settingsId, { holidays: JSON.stringify(newHolidays) });
+                    await dbOp.update('activityLogs', id(), { entityId: settingsId, entityType: 'appointmentSettings', text: `Added holiday: ${val}`, userId: ownerId, createdAt: Date.now() });
                     toast('Holiday added & saved!', 'success');
                   }
                 }}>Add</button>
@@ -595,8 +643,8 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
                       <button onClick={async () => {
                         const newHolidays = settingsForm.holidays.filter(x => x !== h);
                         setSettingsForm(p => ({ ...p, holidays: newHolidays }));
-                        await db.tx.appointmentSettings[settingsId].update({ holidays: JSON.stringify(newHolidays) });
-                        await db.tx.activityLogs[id()].update({ entityId: settingsId, entityType: 'appointmentSettings', text: `Removed holiday: ${h}`, userId: ownerId, createdAt: Date.now() });
+                        await dbOp.update('appointmentSettings', settingsId, { holidays: JSON.stringify(newHolidays) });
+                        await dbOp.update('activityLogs', id(), { entityId: settingsId, entityType: 'appointmentSettings', text: `Removed holiday: ${h}`, userId: ownerId, createdAt: Date.now() });
                         toast('Holiday removed!', 'success');
                       }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#991b1b', fontWeight: 800, lineHeight: 1 }}>✕</button>
                     </span>
@@ -614,7 +662,7 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
             <h4 style={{ marginBottom: 14, fontSize: 14 }}>📜 Settings Change History</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 300, overflowY: 'auto', background: '#fff', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
               {(() => {
-                const logs = activityLogs.filter(l => l.entityId === settingsId && l.entityType === 'appointmentSettings').sort((a,b) => b.createdAt - a.createdAt);
+                const logs = (settingsLogsData?.activityLogs || []).filter(l => l.entityType === 'appointmentSettings').sort((a,b) => b.createdAt - a.createdAt);
                 if (logs.length === 0) return <div style={{ fontSize: 12, color: 'var(--muted)', fontStyle: 'italic' }}>No changes logged yet. Your changes will be recorded here.</div>;
                 return logs.map(l => (
                   <div key={l.id} style={{ fontSize: 13, borderBottom: '1px solid var(--bg-soft)', paddingBottom: 8, marginBottom: 8 }}>
@@ -704,13 +752,7 @@ export default function Appointments({ ownerId, perms, initialTab, settings }) {
                     border: '1px solid var(--border)',
                     color: 'var(--muted)'
                   }}>
-                    {(() => {
-                      const lead = leads.find(l => 
-                        (editModal.customerEmail && l.email === editModal.customerEmail) || 
-                        (editModal.customerPhone && l.phone === editModal.customerPhone)
-                      );
-                      return lead?.notes || editModal.notes || 'No history yet.';
-                    })()}
+                    {matchedLead?.notes || editModal.notes || 'No history yet.'}
                   </div>
                 </div>
               </div>

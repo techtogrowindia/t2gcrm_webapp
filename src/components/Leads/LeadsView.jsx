@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
-import { fmtD, fmtDT, stageBadgeClass, uid, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
+import { fmtD, fmtDT, stageBadgeClass, uid, normalizeName, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_LEAD } from '../../utils/constants';
 import { fireAutoNotifications } from '../../utils/messaging';
@@ -31,10 +32,18 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
   const [view, setView] = useState('list'); // 'list' | 'kanban'
   const [tab, setTab] = useState('all');
+  const [dateMode, setDateMode] = useState(() => localStorage.getItem('tc_leads_date_mode') || 'followup'); // 'followup' | 'created'
+  const [sortOrder, setSortOrder] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(`leadView_${user.email}`))?.sortOrder || 'newest'; }
+    catch { return 'newest'; }
+  }); // 'newest' | 'oldest' — sorts by the active dateMode dimension
+  const [customFrom, setCustomFrom] = useState(() => localStorage.getItem('tc_leads_custom_from') || '');
+  const [customTo, setCustomTo] = useState(() => localStorage.getItem('tc_leads_custom_to') || '');
   const [search, setSearch] = useState('');
   const [srcFilter, setSrcFilter] = useState('');
   const [stgFilter, setStgFilter] = useState('');
-  const [staffFilter, setStaffFilter] = useState('my');
+  // Owners see all leads by default; team members default to their own leads.
+  const [staffFilter, setStaffFilter] = useState(() => perms?.isOwner ? '' : 'my');
   const [modal, setModal] = useState(false);
   const [editData, setEditData] = useState(null);
   const [form, setForm] = useState(EMPTY_LEAD);
@@ -46,6 +55,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [tempCols, setTempCols] = useState([]);
   const [tempStages, setTempStages] = useState([]);
   const [tempPageSize, setTempPageSize] = useState(25);
+  const [tempSortOrder, setTempSortOrder] = useState('newest');
   const [viewLead, setViewLead] = useState(null);
   const [noteText, setNoteText] = useState('');
   const [dragOverStage, setDragOverStage] = useState(null);
@@ -54,30 +64,48 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [importHeaders, setImportHeaders] = useState([]);
   const [importData, setImportData] = useState([]); // Raw rows from CSV
   const [importSample, setImportSample] = useState(null); // First data row for preview
+  const [importing, setImporting] = useState(false); // true while performImport is validating/inserting
+  const [importProgress, setImportProgress] = useState({ phase: '', current: 0, total: 0 }); // live import progress
+  const [importSummary, setImportSummary] = useState(null); // { invalidFields, duplicates, toAdd } — shown as in-app confirm before commit
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const dragLeadId = useRef(null);
   const toast = useToast();
 
+  // SCALE NOTE: At 11k+ leads the leads subscription hits InstantDB's
+  // handle-receive timeout. We trade live table sync for correctness and fetch
+  // the current page + counts via /api/leads-page. Secondary collections stay
+  // on the live subscription — they're small enough to be safe.
   const { data, isLoading, error } = db.useQuery({
-    leads: { $: { where: { userId: ownerId } } },
-    customers: { $: { where: { userId: ownerId } } },
+    customers: { $: { where: { userId: ownerId }, limit: 500 } },
     teamMembers: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
-    activityLogs: { $: { where: { userId: ownerId }, limit: 100 } },
-    callLogs: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId, status: 'Approved' } } },
   });
+  // Drawer data: only loads when a lead detail is open — avoids fetching logs for the whole list
+  const drawerLeadId = viewLead?.id || editData?.id || null;
+  const { data: drawerData } = db.useQuery(drawerLeadId ? {
+    activityLogs: { $: { where: { entityId: drawerLeadId } } },
+    callLogs: { $: { where: { leadId: drawerLeadId } } },
+  } : {});
   const teamCanSeeAllLeads = data?.userProfiles?.[0]?.teamCanSeeAllLeads !== false;
-  const allLeads = (data?.leads || []).map(l => (l.source === 'Retailer' || l.source === 'Retailers') ? { ...l, source: 'Channel Partners' } : l);
-  const myTeamMember = (data?.teamMembers || []).find(t => t.email === user.email);
+  const teamCanSeeUnassignedLeads = data?.userProfiles?.[0]?.teamCanSeeUnassignedLeads !== false;
+  const myTeamMember = (data?.teamMembers || []).find(t => (t.email || '').toLowerCase() === (user.email || '').toLowerCase());
   const myName = myTeamMember?.name || user.name || '';
-  const leads = (!perms?.isOwner && !teamCanSeeAllLeads)
-    ? allLeads.filter(l => !l.assign || l.assign === user.email || l.assign === myName)
-    : allLeads;
+
+  // Server-driven page state — { items, counts, totalFiltered }
+  const [pageData, setPageData] = useState(null);
+  const [pageLoading, setPageLoading] = useState(true);
+  // `leads` is ONLY the current page after server filtering. Duplicate checks
+  // that used to scan a full in-memory list now go through /api/lead-check-duplicate.
+  const leads = pageData?.items || [];
   const customers = data?.customers || [];
-  const team = data?.teamMembers || [];
-  const activityLogs = data?.activityLogs || [];
+  const teamRaw = data?.teamMembers || [];
+  // Persist last known team list so the dropdown never flashes empty while the
+  // subscription reconnects (e.g. on tab-switch or brief network hiccup).
+  const teamCacheRef = useRef([]);
+  if (teamRaw.length > 0) teamCacheRef.current = teamRaw;
+  const team = teamCacheRef.current;
   const customFields = data?.userProfiles?.[0]?.customFields || [];
   const disabledStages = data?.userProfiles?.[0]?.disabledStages || [];
   const wonStage = data?.userProfiles?.[0]?.wonStage || 'Won';
@@ -90,14 +118,28 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   
   useEffect(() => {
     const openId = localStorage.getItem('tc_open_lead');
-    if (openId && leads.length > 0) {
-      const target = leads.find(l => l.id === openId);
-      if (target) {
-        setViewLead(target);
-        localStorage.removeItem('tc_open_lead');
-      }
+    if (!openId || !ownerId) return;
+    // Try current page first. If not there, fetch by id — necessary because
+    // the server-paginated table only holds ~25 rows.
+    const target = leads.find(l => l.id === openId);
+    if (target) {
+      setViewLead(target);
+      localStorage.removeItem('tc_open_lead');
+      return;
     }
-  }, [leads]);
+    (async () => {
+      try {
+        const r = await fetch(`/api/data/leads?id=${encodeURIComponent(openId)}`, { method: 'GET' });
+        if (!r.ok) return;
+        const json = await r.json();
+        const found = Array.isArray(json?.items) ? json.items.find(l => l.id === openId) : (json?.item || null);
+        if (found) {
+          setViewLead(found);
+          localStorage.removeItem('tc_open_lead');
+        }
+      } catch { /* ignore */ }
+    })();
+  }, [leads, ownerId]);
 
   // Fetch saved settings from localStorage (per user)
   const profile = data?.userProfiles?.[0];
@@ -138,84 +180,110 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     }
   }, [activeSources, activeStages, activeRequirements, form.source, editData]);
 
-  // Stage visibility filter (used for both tabs and list)
-  const visibleLeads = useMemo(() => {
-    if (!savedLeadStages || savedLeadStages.length === 0) return leads;
-    return leads.filter(l => savedLeadStages.includes(l.stage));
-  }, [leads, savedLeadStages]);
+  // Debounced search — avoids hammering /api/leads-page on every keystroke
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  // Base filtered: applies staff, source, stage filters (but NOT tab or search)
-  // Tab counts are derived from this so they reflect active dropdown filters
-  const baseFiltered = useMemo(() => {
-    return visibleLeads
-      .filter(l => !srcFilter || l.source === srcFilter)
-      .filter(l => !stgFilter || l.stage === stgFilter)
-      .filter(l => {
-        if (!staffFilter) return true;
-        if (staffFilter === 'unassigned') return !l.assign;
-        if (staffFilter === 'my') return l.assign === user.email || l.assign === myName;
-        return l.assign === staffFilter;
-      });
-  }, [visibleLeads, srcFilter, stgFilter, staffFilter, user.email, myName]);
+  const totalFiltered = pageData?.totalFiltered || 0;
+  const totalPages = pageSize === 'all' ? 1 : Math.max(1, Math.ceil(totalFiltered / (pageSize || 25)));
+  // Server has already sliced to current page — no client-side pagination.
+  const paginated = leads;
+  const filtered = leads; // kept for export/bulk-select; export now uses current page only
 
-  // Filtering: applies tab date filter and search on top of baseFiltered
-  const filtered = useMemo(() => {
+  useEffect(() => { setCurrentPage(1); }, [tab, debouncedSearch, srcFilter, stgFilter, staffFilter, pageSize]);
+
+  // Build the /api/leads-page request body. Extracted so mutations can re-use it.
+  const buildPageBody = () => {
     const now = new Date();
-    const todayStr = now.toDateString();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toDateString();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(now); todayEnd.setHours(23, 59, 59, 999);
+    const yStart = new Date(todayStart); yStart.setDate(yStart.getDate() - 1);
+    const yEnd = new Date(todayEnd); yEnd.setDate(yEnd.getDate() - 1);
+    const tStart = new Date(todayStart); tStart.setDate(tStart.getDate() + 1);
+    const tEnd = new Date(todayEnd); tEnd.setDate(tEnd.getDate() + 1);
+    const weekStart = new Date(todayStart); weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const next7End = new Date(todayStart); next7End.setDate(next7End.getDate() + 7); next7End.setHours(23,59,59,999);
+    const customFromMs = customFrom ? new Date(customFrom + 'T00:00:00').getTime() : null;
+    const customToMs = customTo ? new Date(customTo + 'T23:59:59.999').getTime() : null;
 
-    return baseFiltered.filter(l => {
-      if (tab === 'today') {
-        if (!l.followup) return false;
-        return new Date(l.followup).toDateString() === todayStr;
-      }
-      if (tab === 'tomorrow') {
-        if (!l.followup) return false;
-        return new Date(l.followup).toDateString() === tomorrowStr;
-      }
-      if (tab === 'next7days') {
-        if (!l.followup) return false;
-        const d = new Date(l.followup); d.setHours(0,0,0,0);
-        const n = new Date(now); n.setHours(0,0,0,0);
-        const diffDays = Math.round((d - n) / (1000 * 60 * 60 * 24));
-        return diffDays >= 0 && diffDays <= 7;
-      }
-      if (tab === 'overdue') return l.followup && new Date(l.followup) < now;
-      return true;
-    })
-      .filter(l => {
-        if (!search) return true;
-        const q = search.toLowerCase();
-        return [l.name, l.email, l.phone, l.source, l.stage, l.assign, l.label, l.notes].some(v => (v || '').toLowerCase().includes(q));
-      });
-  }, [baseFiltered, tab, search]);
+    return {
+      ownerId,
+      userEmail: user.email,
+      myName,
+      teamCanSeeAllLeads,
+      isOwner: !!perms?.isOwner,
+      teamCanSeeUnassignedLeads,
+      mode: view,
+      dateMode,
+      sortOrder,
+      tab,
+      customFromMs,
+      customToMs,
+      staffFilter,
+      srcFilter,
+      stgFilter,
+      search: debouncedSearch,
+      visibleStages: (savedLeadStages && savedLeadStages.length > 0) ? savedLeadStages : null,
+      disabledStages,
+      page: currentPage,
+      pageSize: pageSize === 'all' ? 10000 : pageSize,
+      boundaries: {
+        nowMs: now.getTime(),
+        todayStartMs: todayStart.getTime(), todayEndMs: todayEnd.getTime(),
+        yesterdayStartMs: yStart.getTime(), yesterdayEndMs: yEnd.getTime(),
+        tomorrowStartMs: tStart.getTime(), tomorrowEndMs: tEnd.getTime(),
+        weekStartMs: weekStart.getTime(),
+        monthStartMs: monthStart.getTime(),
+        next7EndMs: next7End.getTime(),
+      },
+    };
+  };
 
-  const totalPages = pageSize === 'all' ? 1 : Math.ceil(filtered.length / pageSize);
-  const paginated = useMemo(() => {
-    if (pageSize === 'all') return filtered;
-    const start = (currentPage - 1) * pageSize;
-    return filtered.slice(start, start + pageSize);
-  }, [filtered, currentPage, pageSize]);
+  // Re-fetch helper exposed to mutations (save/delete/bulk/import)
+  const [refetchCounter, setRefetchCounter] = useState(0);
+  const refetchPage = () => setRefetchCounter(c => c + 1);
 
-  useEffect(() => { setCurrentPage(1); }, [tab, search, srcFilter, stgFilter, staffFilter, pageSize]);
+  useEffect(() => {
+    if (!ownerId) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setPageLoading(true);
+    (async () => {
+      try {
+        const r = await fetch('/api/leads-page', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildPageBody()),
+          signal: controller.signal,
+        });
+        if (!r.ok) return;
+        const json = await r.json();
+        if (!cancelled) setPageData(json);
+      } catch { /* swallow — keep previous pageData so UI doesn't flash */ }
+      finally { if (!cancelled) setPageLoading(false); }
+    })();
+    return () => { cancelled = true; controller.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    ownerId, view, tab, dateMode, sortOrder, customFrom, customTo,
+    debouncedSearch, srcFilter, stgFilter, staffFilter,
+    currentPage, pageSize, myName, teamCanSeeAllLeads, perms?.isOwner,
+    // savedLeadStages is serialised to detect changes
+    JSON.stringify(savedLeadStages || []),
+    JSON.stringify(disabledStages),
+    refetchCounter,
+  ]);
 
-  const overdueCount = baseFiltered.filter(l => l.followup && new Date(l.followup) < new Date()).length;
-  const todayCount = baseFiltered.filter(l => l.followup && new Date(l.followup).toDateString() === new Date().toDateString()).length;
-  const tomorrowCount = baseFiltered.filter(l => {
-    if (!l.followup) return false;
-    const t = new Date();
-    t.setDate(t.getDate() + 1);
-    return new Date(l.followup).toDateString() === t.toDateString();
-  }).length;
-  const next7Count = baseFiltered.filter(l => {
-    if (!l.followup) return false;
-    const d = new Date(l.followup); d.setHours(0,0,0,0);
-    const n = new Date(); n.setHours(0,0,0,0);
-    const diff = Math.round((d - n) / (1000 * 60 * 60 * 24));
-    return diff >= 0 && diff <= 7;
-  }).length;
+  // Server-driven counts. Persist last counts in a ref so tabs keep showing
+  // numbers during a filter-change refetch instead of going blank.
+  const countsRef = useRef(null);
+  if (pageData?.counts) countsRef.current = pageData.counts;
+  const fullCounts = countsRef.current;
+  const customCount = fullCounts?.custom || 0;
 
   const openCreate = () => {
     setEditData(null);
@@ -224,7 +292,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       source: '',
       stage: '',
       requirement: '',
-      productCat: productCats[0] || ''
+      productCat: ''
     });
     setModal(true);
   };
@@ -240,36 +308,30 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     setModal(true); 
   };
 
-  const logActivity = async (leadId, text) => {
-    await db.transact(db.tx.activityLogs[id()].update({
-      entityId: leadId,
-      entityType: 'lead',
-      text,
-      userId: ownerId,
-      actorId: user.id, // Track who actually did it
-      userName: user.email,
-      createdAt: Date.now()
-    }));
+  const logActivity = async (leadId, text, extra = {}) => {
+    const lead = leads.find(l => l.id === leadId);
+    const logId = id();
+    const logData = {
+      entityId: leadId, entityType: 'lead',
+      entityName: lead?.companyName || lead?.name || '',
+      action: extra.action || 'edited',
+      text, userId: ownerId, actorId: user.id,
+      userName: user.email, teamMemberId: myTeamMember?.id || null,
+      createdAt: Date.now(), ...extra,
+    };
+    await dbWrite(dbOp.update('activityLogs', logId, logData));
   };
 
   const logCall = async (lead) => {
     if (!lead?.phone) return;
     const myMember = team.find(t => t.email === user.email);
-    await db.transact(db.tx.callLogs[id()].update({
-      phone: lead.phone,
-      contactName: lead.name || '',
-      direction: 'Outgoing',
-      outcome: 'Connected',
-      duration: 0,
-      notes: '',
-      leadId: lead.id,
-      leadName: lead.name || '',
-      staffEmail: user.email,
-      staffName: myMember?.name || user.email,
-      userId: ownerId,
-      actorId: user.id,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+    await dbWrite(dbOp.update('callLogs', id(), {
+      phone: lead.phone, contactName: lead.name || '',
+      direction: 'Outgoing', outcome: 'Connected', duration: 0, notes: '',
+      leadId: lead.id, leadName: lead.name || '',
+      staffEmail: user.email, staffName: myMember?.name || user.email,
+      userId: ownerId, actorId: user.id,
+      createdAt: Date.now(), updatedAt: Date.now(),
     }));
     await logActivity(lead.id, `📞 Outgoing call to ${lead.phone}`);
     window.location.href = `tel:${lead.phone}`;
@@ -278,25 +340,44 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const saveLead = async () => {
     if (editData && !canEdit) { toast('Permission denied: cannot edit leads', 'error'); return; }
     if (!editData && !canCreate) { toast('Permission denied: cannot create leads', 'error'); return; }
-    if (!editData && planEnforcement && !planEnforcement.isWithinLimit('maxLeads', leads.length)) { toast('Lead limit reached for your plan. Please upgrade to add more leads.', 'error'); return; }
+    // Plan-limit check uses planTotal — the raw business-wide count BEFORE
+    // any filters (stage, team, search). This prevents team members from
+    // bypassing the limit by only seeing their own assigned leads.
+    const currentLeadCount = pageData?.planTotal ?? pageData?.counts?.total ?? leads.length;
+    if (!editData && planEnforcement && !planEnforcement.isWithinLimit('maxLeads', currentLeadCount)) { toast('Lead limit reached for your plan. Please upgrade to add more leads.', 'error'); return; }
     if (!form.name.trim()) { toast('Name is required', 'error'); return; }
     if (!form.source) { toast('Please select a source', 'error'); return; }
     if (!form.stage) { toast('Please select a stage', 'error'); return; }
 
-    // Duplicate phone/email check across leads + customers
-    const checkPhone = (form.phone || '').trim().toLowerCase();
-    const checkEmail = (form.email || '').trim().toLowerCase();
+    // Duplicate phone/email check — table is server-paginated now, so we
+    // can't scan an in-memory list. Delegate to the server endpoint.
+    const checkPhone = (form.phone || '').trim();
+    const checkEmail = (form.email || '').trim();
     if (checkPhone || checkEmail) {
-      const allRecords = [...leads, ...customers];
-      const duplicate = allRecords.find(r => {
-        if (editData && r.id === editData.id) return false; // skip self when editing
-        const rPhone = (r.phone || '').trim().toLowerCase();
-        const rEmail = (r.email || '').trim().toLowerCase();
-        return (checkPhone && rPhone && rPhone === checkPhone) ||
-               (checkEmail && rEmail && rEmail === checkEmail);
-      });
-      if (duplicate) {
-        toast(`Duplicate! A record with this ${duplicate.phone?.toLowerCase() === checkPhone ? 'phone number' : 'email'} already exists (${duplicate.name}).`, 'error');
+      try {
+        const r = await fetch('/api/lead-check-duplicate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ownerId,
+            phone: checkPhone,
+            email: checkEmail,
+            excludeLeadId: editData?.id || null,
+          }),
+        });
+        if (!r.ok) {
+          // Block save if we can't verify — better to reject than allow a duplicate
+          toast('Could not verify duplicate — please try again.', 'error');
+          return;
+        }
+        const { duplicate } = await r.json();
+        if (duplicate) {
+          toast(`Duplicate! A record with this ${duplicate.matchedOn === 'phone' ? 'phone number' : 'email'} already exists (${duplicate.name}).`, 'error');
+          return;
+        }
+      } catch {
+        // Network error — block save to prevent duplicates
+        toast('Network error during duplicate check. Please try again.', 'error');
         return;
       }
     }
@@ -331,32 +412,108 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         if (editData.stage !== form.stage) {
           updates.stageChangedAt = Date.now();
         }
-        await db.transact(db.tx.leads[editData.id].update(updates));
-        
+        if (form.assign && form.assign !== editData.assign) {
+          updates.assignedAt = Date.now();
+        }
+        await dbWrite(dbOp.update('leads', editData.id, updates));
+
         if (isWon(form.stage) && editData.stage !== form.stage) {
           await convertToCustomer({ ...editData, ...form }, true);
         }
 
         if (changes.length > 0) {
-          await logActivity(editData.id, changes.join(' | '));
+          await logActivity(editData.id, changes.join(' | '), { action: 'edited' });
         }
-        
+
+        // Structured stage-change log for analytics (Stage Transition Report)
+        if (editData.stage !== form.stage && editData.stage && form.stage) {
+          await dbWrite(dbOp.update('activityLogs', id(), {
+            entityId: editData.id, entityType: 'lead',
+            entityName: form.companyName || form.name || '',
+            action: 'stage-change', fromStage: editData.stage, toStage: form.stage,
+            text: `Stage: ${editData.stage} → ${form.stage}`,
+            userId: ownerId, actorId: user.id, userName: user.email,
+            teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
+          }));
+        }
+
         toast('Lead updated!', 'success');
+        refetchPage();
+
+        // Fire WhatsApp notifications for lead updates
+        const profileForNotif = data?.userProfiles?.[0];
+        if (profileForNotif) {
+          // Resolve the assigned staff member's phone (assign stores name or email)
+          const assignedMember = team.find(t =>
+            t.name === form.assign || (t.email && t.email === form.assign)
+          );
+          const commonData = {
+            client: form.name, lead: form.name,
+            phone: form.phone, leadphoneno: form.phone, clientphoneno: form.phone,
+            email: form.email || '', stage: form.stage || '',
+            source: form.source || '', assignee: form.assign || '',
+            requirement: form.requirement || '',
+            assigneePhone: assignedMember?.phone || '',
+            date: new Date().toISOString().split('T')[0],
+            bizName: profileForNotif.bizName || profileForNotif.businessName || '',
+            ownerPhone: profileForNotif.waNotifPhone || profileForNotif.phone || '',
+            entityId: editData.id,
+          };
+          // Stage changed
+          if (editData.stage !== form.stage && form.stage) {
+            fireAutoNotifications('lead_stage_changed', {
+              ...commonData,
+              fromstage: editData.stage || '',
+              tostage: form.stage,
+            }, profileForNotif, ownerId).catch(() => {});
+          }
+          // Assigned / reassigned
+          if (form.assign && form.assign !== editData.assign) {
+            fireAutoNotifications('lead_assigned', {
+              ...commonData,
+              assignee: form.assign,
+            }, profileForNotif, ownerId).catch(() => {});
+          }
+          // Converted to customer
+          if (isWon(form.stage) && editData.stage !== form.stage) {
+            fireAutoNotifications('customer_created', commonData, profileForNotif, ownerId).catch(() => {});
+          }
+        }
       } else {
         const newId = id();
-        await db.transact(db.tx.leads[newId].update({ ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() }));
-        await logActivity(newId, `Lead created${form.followup ? ` | Follow Up set to ${fmtDT(form.followup)}` : ''}`);
+        const newLeadPayload = { ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() };
+        if (form.assign) newLeadPayload.assignedAt = newLeadPayload.createdAt;
+        await dbWrite([
+          dbOp.update('leads', newId, newLeadPayload),
+          dbOp.update('activityLogs', id(), {
+            entityId: newId, entityType: 'lead',
+            entityName: form.companyName || form.name || '',
+            action: 'created',
+            text: `Created lead **${form.name}**${form.followup ? ` | Follow Up set to ${fmtDT(form.followup)}` : ''}`,
+            userId: ownerId, actorId: user.id, userName: user.email,
+            teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
+          }),
+        ]);
         toast(`Lead "${form.name}" created!`, 'success');
+        refetchPage();
         
         // Fire WhatsApp auto-notification for new lead
         const profile = data?.userProfiles?.[0];
         if (profile && form.phone) {
           fireAutoNotifications('lead_created', {
             client: form.name,
+            lead: form.name,
             phone: form.phone,
+            leadphoneno: form.phone,
+            clientphoneno: form.phone,
             email: form.email || '',
+            stage: form.stage || '',
+            source: form.source || '',
+            requirement: form.requirement || '',
             date: new Date().toISOString().split('T')[0],
             bizName: profile.bizName || profile.businessName || '',
+            ownerPhone: profile.waNotifPhone || profile.phone || '',
+            entityId: form.phone || form.email || form.name,
           }, profile, ownerId).catch(() => {});
         }
       }
@@ -383,6 +540,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       });
       if (!res.ok) throw new Error('Failed to delete lead');
       toast('Lead deleted', 'error');
+      refetchPage();
     } catch (e) {
       toast('Error deleting lead', 'error');
     }
@@ -452,6 +610,9 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         }
       });
       setImportMapping(newMapping);
+      setImportSummary(null);
+      setImporting(false);
+      setImportProgress({ phase: '', current: 0, total: 0 });
       setImportMappingModal(true);
     };
     reader.readAsText(file);
@@ -459,16 +620,51 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   };
 
   const performImport = async () => {
+    if (importing) return; // guard against double-clicks
     if (!importMapping.name.value && importMapping.name.type === 'column') return toast('Please map the Name field', 'error');
-    
+
+    setImporting(true);
+    setImportProgress({ phase: 'validating', current: 0, total: importData.length });
+    // Yield a frame so the progress panel paints before the (synchronous) parse loop blocks the thread
+    await new Promise(r => setTimeout(r, 30));
     const toAdd = [];
     const duplicates = [];
     const invalidFields = [];
     let rowIndex = 2; // Data starts at row 2 assuming row 1 is headers
 
-    const allRecords = [...leads, ...customers];
+    // O(1) dedup lookups against the FULL database via server endpoint.
+    // Note: `leads` is only the current page (~25 rows) — scanning it would miss 99%+ of records.
+    // We build the index by calling /api/lead-check-duplicate for each candidate row below.
+    // Also include the current page + customers as a fast in-memory pre-filter to avoid
+    // unnecessary API calls for obviously clean rows.
+    const emailIndexLocal = new Map();
+    const phoneIndexLocal = new Map();
+    for (const r of leads) {
+      if (r.email) emailIndexLocal.set(String(r.email).toLowerCase().trim(), true);
+      if (r.phone) phoneIndexLocal.set(String(r.phone).replace(/\D/g, ''), true);
+    }
+    for (const r of customers) {
+      if (r.email) emailIndexLocal.set(String(r.email).toLowerCase().trim(), true);
+      if (r.phone) phoneIndexLocal.set(String(r.phone).replace(/\D/g, ''), true);
+    }
+    // Validation sets for O(1) membership checks
+    const stageSet = new Set(allStages);
+    const sourceSet = new Set(activeSources);
+    const reqSet = new Set(activeRequirements);
+    // Assignee must match a current team member. Map normalized (trim + collapse
+    // spaces + lowercase) name -> the member's exact stored name, so we can
+    // canonicalize case/space variants and reject unknown assignees.
+    const memberByNorm = new Map(
+      (team || []).filter(m => m.name).map(m => [normalizeName(m.name).toLowerCase(), m.name])
+    );
 
-    importData.forEach(vals => {
+    // PASS 1 — parse + validate + intra-file dedup (all synchronous, no network).
+    // Build a list of clean candidates; the expensive cross-database dedup runs
+    // ONCE as a batch after this loop (not per-row, which froze the browser at
+    // thousands of rows). `candidates[]` keeps the row index + keys for the
+    // batch result mapping.
+    const candidates = []; // { lead, rowIndex, phone, email }
+    for (const vals of importData) {
       const lead = {
         userId: ownerId,
         actorId: user.id,
@@ -494,79 +690,205 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
       if (!lead.name) {
         rowIndex++;
-        return;
+        continue;
       }
 
       let hasInvalidField = false;
 
       // Validate Stage
-      if (!lead.stage || !allStages.includes(lead.stage)) {
+      if (!lead.stage || !stageSet.has(lead.stage)) {
         invalidFields.push(`Row ${rowIndex}: ${lead.name} (Stage '${lead.stage || 'Empty'}' not found in business settings)`);
         hasInvalidField = true;
       }
-      
+
       // Validate Source
-      if (lead.source && !activeSources.includes(lead.source)) {
+      if (lead.source && !sourceSet.has(lead.source)) {
         invalidFields.push(`Row ${rowIndex}: ${lead.name} (Source '${lead.source}' not found in business settings)`);
         hasInvalidField = true;
       }
 
       // Validate Requirement
-      if (lead.requirement && !activeRequirements.includes(lead.requirement)) {
+      if (lead.requirement && !reqSet.has(lead.requirement)) {
         invalidFields.push(`Row ${rowIndex}: ${lead.name} (Requirement '${lead.requirement}' not found in business settings)`);
         hasInvalidField = true;
       }
 
+      // Validate Assignee — must be a current team member. Canonicalize case/space
+      // variants to the member's exact name; reject a non-empty unknown assignee
+      // so we never import a lead assigned to someone who isn't on the team.
+      if (lead.assign && String(lead.assign).trim()) {
+        const canonical = memberByNorm.get(normalizeName(lead.assign).toLowerCase());
+        if (canonical) lead.assign = canonical;
+        else {
+          invalidFields.push(`Row ${rowIndex}: ${lead.name} (Assignee '${lead.assign}' is not a team member)`);
+          hasInvalidField = true;
+        }
+      }
+
       if (hasInvalidField) {
         rowIndex++;
-        return;
+        continue;
       }
 
-      const matchEmail = lead.email ? allRecords.find(l => l.email === lead.email) || toAdd.find(l => l.email === lead.email) : null;
-      const matchPhone = lead.phone ? allRecords.find(l => l.phone === lead.phone) || toAdd.find(l => l.phone === lead.phone) : null;
+      const emailKey = lead.email ? String(lead.email).toLowerCase().trim() : '';
+      const phoneKey = lead.phone ? String(lead.phone).replace(/\D/g, '') : '';
 
-      if (matchEmail || matchPhone) { 
-        const matchedOn = matchEmail ? 'Email' : 'Phone';
-        const matchedVal = matchEmail ? lead.email : lead.phone;
+      // Fast local pre-check: current page + customers already in memory, plus
+      // keys already reserved by earlier rows in THIS file (intra-file dedup).
+      const dupEmailLocal = emailKey && emailIndexLocal.has(emailKey);
+      const dupPhoneLocal = phoneKey && phoneIndexLocal.has(phoneKey);
+
+      if (dupEmailLocal || dupPhoneLocal) {
+        const matchedOn = dupEmailLocal ? 'Email' : 'Phone';
+        const matchedVal = dupEmailLocal ? lead.email : lead.phone;
         duplicates.push(`Row ${rowIndex}: ${lead.name} (${matchedOn} '${matchedVal}' already exists)`);
         rowIndex++;
-        return;
+        continue;
       }
 
-      toAdd.push(lead);
+      // Reserve keys so later rows in the same file dedup against this one
+      if (emailKey) emailIndexLocal.set(emailKey, true);
+      if (phoneKey) phoneIndexLocal.set(phoneKey, true);
+
+      // Create-with-assignee (bulk import) → stamp assignedAt so dated "assigned" reports count it
+      if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+      candidates.push({ lead, rowIndex, phone: lead.phone || '', email: lead.email || '' });
       rowIndex++;
-    });
+    }
 
-    if (invalidFields.length > 0 || duplicates.length > 0) {
-      let msg = '';
-      if (invalidFields.length > 0) {
-        msg += `Found ${invalidFields.length} entries with invalid fields:\n${invalidFields.slice(0, 10).join('\n')}${invalidFields.length > 10 ? '\n...and more.' : ''}\n\n`;
-      }
-      if (duplicates.length > 0) {
-        msg += `Found ${duplicates.length} duplicate entries:\n${duplicates.slice(0, 10).join('\n')}${duplicates.length > 10 ? '\n...and more.' : ''}\n\n`;
-      }
-      msg += `Do you want to skip these and import the remaining ${toAdd.length} leads?`;
-      if (!window.confirm(msg)) {
-        return; // User cancelled
+    // PASS 2 — single batched cross-database dedup check (one request, one DB
+    // scan) for all candidates that have a phone or email. Rows flagged as
+    // duplicates are moved to `duplicates[]`; the rest go to `toAdd`.
+    const dupByIndex = {};
+    const checkable = candidates.filter(c => c.phone || c.email);
+    if (checkable.length > 0) {
+      setImportProgress({ phase: 'checking', current: 0, total: checkable.length });
+      await new Promise(r => setTimeout(r, 30));
+      try {
+        const dupRes = await fetch('/api/lead-check-duplicate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ownerId,
+            candidates: checkable.map(c => ({ phone: c.phone, email: c.email })),
+          }),
+        });
+        if (dupRes.ok) {
+          const { duplicates: dupMap } = await dupRes.json();
+          // dupMap is keyed by the index within `checkable`
+          Object.entries(dupMap || {}).forEach(([k, v]) => {
+            const cand = checkable[Number(k)];
+            if (cand) dupByIndex[cand.rowIndex] = v;
+          });
+        }
+      } catch { /* network hiccup — fall through, let the insert attempt the rows */ }
+    }
+
+    for (const c of candidates) {
+      const hit = dupByIndex[c.rowIndex];
+      if (hit) {
+        duplicates.push(`Row ${c.rowIndex}: ${c.lead.name} (${hit.matchedOn === 'phone' ? 'Phone' : 'Email'} already exists as "${hit.name}")`);
+      } else {
+        toAdd.push(c.lead);
       }
     }
 
+    // If anything was skipped, pause and show a single clean in-app summary
+    // (counts + a few examples) instead of a noisy native popup listing every
+    // row. The user reviews once and clicks "Import N" to commit.
+    if (invalidFields.length > 0 || duplicates.length > 0) {
+      setImporting(false);
+      setImportProgress({ phase: '', current: 0, total: 0 });
+      setImportSummary({ invalidFields, duplicates, toAdd });
+      return;
+    }
+
     if (toAdd.length === 0) {
+      setImporting(false);
       setImportMappingModal(false);
       return toast(`No new leads imported.`, 'warning');
     }
 
-    try {
-      const batchSize = 50;
-      for (let i = 0; i < toAdd.length; i += batchSize) {
-        const batch = toAdd.slice(i, i + batchSize);
-        await db.transact(batch.map(ld => db.tx.leads[id()].update(ld)));
+    await commitImport(toAdd, duplicates.length);
+  };
+
+  // Inserts the validated rows. Separated from performImport so the in-app
+  // summary panel can call it after the user confirms skipping invalid/dupes.
+  const commitImport = async (toAdd, duplicateCount = 0) => {
+    setImportSummary(null);
+    setImporting(true);
+
+    // Plan limit check — enforce maxLeads before committing any records
+    if (planEnforcement) {
+      const maxLeads = planEnforcement.getLimit('maxLeads');
+      if (maxLeads !== -1) {
+        const currentTotal = pageData?.planTotal ?? pageData?.counts?.total ?? 0;
+        const remaining = maxLeads - currentTotal;
+        if (remaining <= 0) {
+          setImporting(false);
+          return toast(`Lead limit reached (${maxLeads.toLocaleString()} max on your plan). Upgrade to import more leads.`, 'error');
+        }
+        if (toAdd.length > remaining) {
+          const skipped = toAdd.length - remaining;
+          if (!window.confirm(`Your plan allows ${maxLeads.toLocaleString()} leads. You have ${currentTotal.toLocaleString()} and are trying to import ${toAdd.length.toLocaleString()}.\n\nOnly ${remaining.toLocaleString()} slot${remaining === 1 ? '' : 's'} remaining — ${skipped.toLocaleString()} lead${skipped === 1 ? '' : 's'} will be skipped.\n\nImport first ${remaining.toLocaleString()} leads?`)) {
+            setImporting(false);
+            return;
+          }
+          toAdd.splice(remaining); // trim to fit within limit
+        }
       }
-      toast(`Imported ${toAdd.length} leads.`, 'success');
-      setImportMappingModal(false);
-    } catch (err) {
-      toast('Error importing leads', 'error');
     }
+
+    // Keep the modal open and show a live progress bar while inserting, so the
+    // user can see exactly how far the import has got.
+    setImportProgress({ phase: 'importing', current: 0, total: toAdd.length });
+
+    // Bigger batches + parallel chunks — at 9k leads, serial batches of 50 meant 180 round-trips
+    const BATCH_SIZE = 200;     // rows per transaction
+    const PARALLEL = 4;         // transactions in flight at once
+    const batches = [];
+    for (let i = 0; i < toAdd.length; i += BATCH_SIZE) {
+      batches.push(toAdd.slice(i, i + BATCH_SIZE));
+    }
+    let ok = 0;
+    let failed = 0;
+    let processed = 0;
+    for (let i = 0; i < batches.length; i += PARALLEL) {
+      const group = batches.slice(i, i + PARALLEL);
+      const results = await Promise.allSettled(
+        group.map(batch => dbWrite(batch.map(ld => dbOp.update('leads', id(), ld))))
+      );
+      results.forEach((r, idx) => {
+        if (r.status === 'fulfilled') ok += group[idx].length;
+        else failed += group[idx].length;
+      });
+      processed += group.reduce((s, b) => s + b.length, 0);
+      setImportProgress({ phase: 'importing', current: processed, total: toAdd.length });
+    }
+    // Done — show the completion state briefly so the user sees it, then close
+    setImportProgress({ phase: 'done', current: ok, total: toAdd.length });
+    await new Promise(r => setTimeout(r, 900));
+    setImportMappingModal(false);
+    // Single summary activity log for the entire import
+    // (one row per bulk import instead of one-per-lead — saves thousands of rows at CSV scale)
+    if (ok > 0) {
+      try {
+        await dbWrite(dbOp.update('activityLogs', id(), {
+          entityType: 'lead', entityId: 'bulk',
+          entityName: `Bulk import: ${ok} leads`, action: 'bulk-import',
+          text: `Imported ${ok} leads from CSV${failed > 0 ? ` (${failed} failed)` : ''}${duplicateCount > 0 ? ` (${duplicateCount} duplicates skipped)` : ''}`,
+          count: ok, failedCount: failed, duplicateCount,
+          userId: ownerId, actorId: user.id, userName: user.email,
+          teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
+        }));
+      } catch {}
+    }
+
+    if (failed === 0) toast(`Imported ${ok} leads.`, 'success');
+    else if (ok > 0) toast(`Imported ${ok} leads. ${failed} failed — please retry.`, 'warning');
+    else toast(`Import failed. No leads were saved.`, 'error');
+    setImporting(false);
+    refetchPage();
   };
 
   const getExcelCol = (idx) => {
@@ -658,6 +980,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       ));
       setSelectedIds(new Set());
       toast(`${selectedIds.size} leads deleted`, 'error');
+      refetchPage();
     } catch (e) {
       toast('Error during bulk deletion', 'error');
     }
@@ -665,35 +988,66 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
   const bulkApply = async () => {
     if (!selectedIds.size || (!pendingBulkAssign && !pendingBulkStage)) return;
-    const count = selectedIds.size;
+    const ids = [...selectedIds];
+    const count = ids.length;
     const msgs = [];
-    await Promise.all([...selectedIds].map(async lid => {
-      const updates = {};
-      const logMsgs = [];
-      if (pendingBulkAssign) {
-        updates.assign = pendingBulkAssign;
-        logMsgs.push(`Bulk assigned to ${pendingBulkAssign}`);
-      }
-      if (pendingBulkStage) {
-        updates.stage = pendingBulkStage;
-        updates.stageChangedAt = Date.now();
-        logMsgs.push(`Bulk status changed to ${pendingBulkStage}`);
-      }
-      await db.transact(db.tx.leads[lid].update(updates));
-      for (const msg of logMsgs) await logActivity(lid, msg);
-      if (pendingBulkStage) {
+
+    // Build the shared update payload once
+    const updates = {};
+    if (pendingBulkAssign) { updates.assign = pendingBulkAssign; updates.assignedAt = Date.now(); }
+    if (pendingBulkStage) { updates.stage = pendingBulkStage; updates.stageChangedAt = Date.now(); }
+
+    // Track leads that need Won-stage customer conversion (rare, only for subset)
+    const wonConversions = [];
+    if (pendingBulkStage && isWon(pendingBulkStage)) {
+      for (const lid of ids) {
         const lead = leads.find(l => l.id === lid);
-        if (isWon(pendingBulkStage) && lead && lead.stage !== pendingBulkStage) {
-          await convertToCustomer(lead, true);
-        }
+        if (lead && lead.stage !== pendingBulkStage) wonConversions.push(lead);
       }
+    }
+
+    // Chunk the lead updates — parallel batches of 200, 4 in flight
+    const BATCH_SIZE = 200;
+    const PARALLEL = 4;
+    const batches = [];
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) batches.push(ids.slice(i, i + BATCH_SIZE));
+    for (let i = 0; i < batches.length; i += PARALLEL) {
+      const group = batches.slice(i, i + PARALLEL);
+      await Promise.all(group.map(batch =>
+        dbWrite(batch.map(lid => dbOp.update('leads', lid, updates)))
+      ));
+    }
+
+    // Single summary activity log for the entire bulk operation
+    // (replaces the previous 2N per-lead log writes — at 1000 leads that's 2000 → 1 row)
+    const summaryParts = [];
+    if (pendingBulkAssign) summaryParts.push(`assigned to **${pendingBulkAssign}**`);
+    if (pendingBulkStage) summaryParts.push(`stage set to **${pendingBulkStage}**`);
+    await dbWrite(dbOp.update('activityLogs', id(), {
+      entityType: 'lead', entityId: 'bulk',
+      entityName: `Bulk: ${count} leads`, action: 'bulk-update',
+      text: `Bulk updated ${count} leads — ${summaryParts.join(', ')}`,
+      count,
+      bulkFields: {
+        ...(pendingBulkAssign ? { assign: pendingBulkAssign } : {}),
+        ...(pendingBulkStage ? { stage: pendingBulkStage } : {}),
+      },
+      userId: ownerId, actorId: user.id, userName: user.email,
+      teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
     }));
+
+    // Run Won-stage customer conversions (these still log individually because each creates a customer)
+    for (const lead of wonConversions) {
+      await convertToCustomer(lead, true);
+    }
+
     if (pendingBulkAssign) msgs.push(`Assigned to ${pendingBulkAssign}`);
     if (pendingBulkStage) msgs.push(`Stage → ${pendingBulkStage}`);
     setPendingBulkAssign('');
     setPendingBulkStage('');
     setSelectedIds(new Set());
     toast(`${count} leads: ${msgs.join(', ')}`, 'success');
+    refetchPage();
   };
 
   const convertToCustomer = async (l, skipConfirm = false) => {
@@ -716,6 +1070,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         email: l.email || '',
         phone: l.phone || '',
         userId: ownerId,
+        leadId: l.id, // link back to source lead for dedup/reporting
         createdAt: Date.now(),
         partnerId: l.partnerId || '',
         distributorId: l.distributorId || '',
@@ -723,32 +1078,49 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       };
       // Assuming 'lMatch' refers to 'l' from the function parameter, and 'data' is available in scope.
       // If 'data' is not available, this will cause a runtime error.
-      await db.transact([
-        db.tx.customers[id()].update(payload),
-        db.tx.leads[l.id].update({ 
-           stage: (data?.userProfiles?.[0]?.wonStage || 'Won'), // use wonStage from profile if possible, it's defined in the component
-           stageChangedAt: Date.now(),
-           email: l.email || '',
-           phone: l.phone || ''
+      const wonStageName = (data?.userProfiles?.[0]?.wonStage || 'Won');
+      const txs = [
+        dbOp.update('customers', id(), payload),
+        dbOp.update('leads', l.id, {
+          stage: wonStageName, stageChangedAt: Date.now(),
+          email: l.email || '', phone: l.phone || ''
         }),
-        db.tx.activityLogs[id()].update({
-           entityId: l.id, entityType: 'lead', text: `Manually converted to Customer. Stage changed to ${(data?.userProfiles?.[0]?.wonStage || 'Won')}.`,
-           userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
-        })
-      ]);
+        dbOp.update('activityLogs', id(), {
+          entityId: l.id, entityType: 'lead',
+          entityName: l.companyName || l.name || '',
+          action: 'converted',
+          text: `Manually converted **${l.name}** to Customer. Stage changed to ${wonStageName}.`,
+          userId: ownerId, actorId: user.id, userName: user.email,
+          teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
+        }),
+      ];
+      if (l.stage && l.stage !== wonStageName) {
+        txs.push(dbOp.update('activityLogs', id(), {
+          entityId: l.id, entityType: 'lead',
+          entityName: l.companyName || l.name || '',
+          action: 'stage-change', fromStage: l.stage, toStage: wonStageName,
+          text: `Stage: ${l.stage} → ${wonStageName}`,
+          userId: ownerId, actorId: user.id, userName: user.email,
+          teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
+        }));
+      }
+      await dbWrite(txs);
       toast(`${l.name} is now a Customer!`, 'success');
     } catch {
       toast('Error converting to customer', 'error');
     }
   };
 
-  const saveViewConfig = (colsToSave, stagesVisible, defaultSize) => {
+  const saveViewConfig = (colsToSave, stagesVisible, defaultSize, sortOrderToSave) => {
     localStorage.setItem(`leadView_${user.email}`, JSON.stringify({
       leadCols: colsToSave,
       leadStages: stagesVisible,
-      defaultPageSize: defaultSize
+      defaultPageSize: defaultSize,
+      sortOrder: sortOrderToSave,
     }));
     setPageSize(defaultSize);
+    setSortOrder(sortOrderToSave);
+    setCurrentPage(1);
     setColModal(false);
     toast('View configuration saved', 'success');
   };
@@ -756,6 +1128,8 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const resetViewConfig = () => {
     localStorage.removeItem(`leadView_${user.email}`);
     setPageSize(25);
+    setSortOrder('newest');
+    setCurrentPage(1);
     setColModal(false);
     toast('View reset to default', 'success');
   };
@@ -764,7 +1138,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const cf = (k) => (e) => setForm(p => ({ ...p, custom: { ...(p.custom || {}), [k]: e.target.value } }));
 
   if (error) return <div className="p-xl text-red-500">Error loading leads: {error.message}</div>;
-  if (isLoading) return (
+  if (isLoading || (pageLoading && !pageData)) return (
     <div style={{ padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
       <div className="spinner" style={{ margin: '0 auto 10px', borderColor: 'var(--muted)', borderTopColor: 'transparent' }} />
       Loading leads...
@@ -773,7 +1147,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
   if (viewLead) {
     const l = viewLead;
-    const lLogs = activityLogs.filter(log => log.entityId === l.id).sort((a,b) => b.createdAt - a.createdAt);
+    const lLogs = (drawerData?.activityLogs || []).sort((a,b) => b.createdAt - a.createdAt);
 
     const addNote = async () => {
       if (!noteText.trim()) return;
@@ -825,7 +1199,6 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
           <div className="stat-card sc-green"><div className="lbl">Assigned To</div><div className="val" style={{ fontSize: 16 }}>{l.assign || 'Unassigned'}</div></div>
           <div className="stat-card sc-yellow"><div className="lbl">Requirement</div><div className="val" style={{ fontSize: 16 }}>{l.requirement}</div></div>
           <div className="stat-card sc-purple"><div className="lbl">Follow Up</div><div className="val" style={{ fontSize: 13 }}>{l.followup ? fmtDT(l.followup) : 'None'}</div></div>
-          <div className="stat-card sc-teal"><div className="lbl">Product Category</div><div className="val" style={{ fontSize: 14 }}>{l.productCat || 'None'}</div></div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
@@ -883,7 +1256,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
         {/* Call History for this lead */}
         {(() => {
-          const leadCalls = (data?.callLogs || []).filter(c => c.leadId === l.id).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          const leadCalls = (drawerData?.callLogs || []).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
           return leadCalls.length > 0 && (
             <div className="tw" style={{ padding: 20, marginTop: 20 }}>
               <h3 style={{ marginBottom: 12 }}>📞 Call History ({leadCalls.length})</h3>
@@ -996,6 +1369,39 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   )}
                 </div>
               </div>
+              {editData && (
+                <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
+                  <h3 style={{ fontSize: 14, marginBottom: 12 }}>Activity Logs & Timeline</h3>
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+                    <input value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="Type a note or record an activity..." style={{ flex: 1, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 13 }} />
+                    <button className="btn btn-primary btn-sm" onClick={async () => { if (!noteText.trim()) return; await logActivity(editData.id, noteText.trim()); setNoteText(''); toast('Note added', 'success'); }}>Post</button>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 300, overflowY: 'auto' }}>
+                    {lLogs.length === 0 ? <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: 20 }}>No activity recorded yet in timeline.</div> :
+                      lLogs.map(log => (
+                        <div key={log.id} style={{ display: 'flex', gap: 12, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', marginTop: 6, flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                              <span style={{ fontSize: 12, fontWeight: 700 }}>{log.userName}</span>
+                              <span style={{ fontSize: 10, color: 'var(--muted)' }}>{new Date(log.createdAt).toLocaleString()}</span>
+                            </div>
+                            <div style={{ fontSize: 12, color: '#444' }}>
+                              {log.text?.split('\n').map((line, i) => (
+                                <div key={i} style={{ marginBottom: line ? 2 : 0 }}>
+                                  {line.split('**').map((part, j) =>
+                                    j % 2 === 1 ? <mark key={j} style={{ background: '#fef08a', color: '#854d0e', padding: '0 4px', borderRadius: 4, fontWeight: 600 }}>{part}</mark> : part
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                </div>
+              )}
               <div className="mo-foot">
                 <button className="btn btn-secondary btn-sm" onClick={() => setModal(false)}>Cancel</button>
                 <button className="btn btn-primary btn-sm" onClick={saveLead} disabled={saving}>
@@ -1010,7 +1416,42 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   }
 
   return (
-    <div>
+    <div style={{ position: 'relative' }}>
+      {/* Refetch overlay — only shown during subsequent fetches (filter/search/
+          pagination/date change). Initial load is handled by the page-spinner
+          guard above so users don't see two spinners stacked. */}
+      {pageLoading && pageData && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255, 255, 255, 0.6)',
+            backdropFilter: 'blur(1px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            zIndex: 10,
+            pointerEvents: 'all',
+          }}
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              border: '3px solid #e2e8f0',
+              borderTopColor: 'var(--accent, #16a34a)',
+              borderRadius: '50%',
+              animation: 'tr-spin 0.7s linear infinite',
+            }}
+          />
+          <div style={{ fontSize: 13, color: '#475569', fontWeight: 600 }}>Loading leads…</div>
+        </div>
+      )}
+      <style>{`@keyframes tr-spin { to { transform: rotate(360deg); } }`}</style>
       {/* Header */}
       <div className="sh">
         <div><h2>Leads</h2><div className="sub">Manage and track all leads</div></div>
@@ -1029,17 +1470,97 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         </div>
       </div>
 
+      {/* Date Mode Toggle: Filter by Follow-up vs Created Date */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>Filter by:</span>
+        <div style={{ display: 'inline-flex', background: 'var(--bg)', borderRadius: 6, padding: 2, border: '1px solid var(--border)' }}>
+          {[['followup', 'Follow-up Date'], ['created', 'Created Date'], ['assigned', 'Assigned Date']].map(([mode, label]) => (
+            <button
+              key={mode}
+              onClick={() => {
+                setDateMode(mode);
+                localStorage.setItem('tc_leads_date_mode', mode);
+                setTab('all');
+              }}
+              style={{
+                padding: '4px 12px',
+                fontSize: 12,
+                fontWeight: 600,
+                border: 'none',
+                borderRadius: 4,
+                cursor: 'pointer',
+                background: dateMode === mode ? 'var(--accent)' : 'transparent',
+                color: dateMode === mode ? '#fff' : 'var(--muted)',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="tabs">
-        {[
-          ['all', `All (${baseFiltered.length})`],
-          ['today', `Today (${todayCount})`],
-          ['tomorrow', `Tomorrow (${tomorrowCount})`],
-          ['next7days', `Next 7 Days (${next7Count})`],
-          ['overdue', `Overdue (${overdueCount})`]
-        ].map(([t, label]) => (
+        {(() => {
+          // Always show counts. Before first server response fullCounts is null
+          // (ref not yet populated) — show (0) as placeholder so tabs never
+          // look like bare text. Once counts arrive they update instantly.
+          const c = fullCounts;
+          const suffix = (key) => ` (${c?.[key] ?? 0})`;
+          if (dateMode === 'followup') {
+            return [
+              ['all', `All${suffix('total')}`],
+              ['today', `Today${suffix('today')}`],
+              ['tomorrow', `Tomorrow${suffix('tomorrow')}`],
+              ['next7days', `Next 7 Days${suffix('next7days')}`],
+              ['overdue', `Overdue${suffix('overdue')}`],
+              ['custom', `Custom${(customFrom || customTo) ? suffix('custom') : ''}`],
+            ];
+          }
+          // 'created' and 'assigned' share the same tab set
+          return [
+            ['all', `All${suffix('total')}`],
+            ['today', `Today${suffix('today')}`],
+            ['yesterday', `Yesterday${suffix('yesterday')}`],
+            ['thisweek', `This Week${suffix('thisweek')}`],
+            ['thismonth', `This Month${suffix('thismonth')}`],
+            ['custom', `Custom${(customFrom || customTo) ? suffix('custom') : ''}`],
+          ];
+        })().map(([t, label]) => (
           <div key={t} className={`tab${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>{label}</div>
         ))}
       </div>
+
+      {tab === 'custom' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, marginBottom: 8, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6 }}>
+          <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>
+            {dateMode === 'created' ? 'Created between:' : dateMode === 'assigned' ? 'Assigned between:' : 'Follow-up between:'}
+          </span>
+          <input
+            type="date"
+            value={customFrom}
+            onChange={e => { setCustomFrom(e.target.value); localStorage.setItem('tc_leads_custom_from', e.target.value); }}
+            style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', fontSize: 12 }}
+          />
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>to</span>
+          <input
+            type="date"
+            value={customTo}
+            onChange={e => { setCustomTo(e.target.value); localStorage.setItem('tc_leads_custom_to', e.target.value); }}
+            style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', fontSize: 12 }}
+          />
+          {(customFrom || customTo) && (
+            <button
+              onClick={() => { setCustomFrom(''); setCustomTo(''); localStorage.removeItem('tc_leads_custom_from'); localStorage.removeItem('tc_leads_custom_to'); }}
+              style={{ padding: '4px 10px', fontSize: 12, fontWeight: 600, border: '1px solid var(--border)', borderRadius: 4, background: 'transparent', color: 'var(--muted)', cursor: 'pointer' }}
+            >
+              Clear
+            </button>
+          )}
+          <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 'auto' }}>
+            {customFrom || customTo ? `${customCount} lead${customCount === 1 ? '' : 's'} match` : 'Pick a date range'}
+          </span>
+        </div>
+      )}
 
 
 
@@ -1091,15 +1612,16 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                       <>
                         <option value="">All</option>
                         <option value="my">My Leads</option>
-                        <option value="unassigned">Unassigned</option>
+                        {teamCanSeeUnassignedLeads && <option value="unassigned">Unassigned</option>}
                       </>
                     )}
                   </select>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { 
-                    setTempCols(activeCols); 
-                    setTempStages(savedLeadStages || allStages); 
+                  <button className="btn btn-secondary btn-sm" onClick={() => {
+                    setTempCols(activeCols);
+                    setTempStages(savedLeadStages || allStages);
                     setTempPageSize(pageSize);
-                    setColModal(true); 
+                    setTempSortOrder(sortOrder);
+                    setColModal(true);
                   }}>⚙ Configure View</button>
                </div>
             </div>
@@ -1116,7 +1638,6 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   <option value={50}>50</option>
                   <option value={100}>100</option>
                   <option value={500}>500</option>
-                  <option value="all">All Leads</option>
                 </select>
               </div>
 
@@ -1161,7 +1682,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               )}
             </div>
 
-            <div className="tw-scroll">
+            <div className="tw-scroll" style={{ maxHeight: 'calc(100vh - 330px)', overflowY: 'auto' }}>
               <table style={{ minWidth: 800 }}>
                 <thead>
                   <tr>
@@ -1190,7 +1711,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                     <td><input type="checkbox" checked={selectedIds.has(l.id)} onChange={e => { const s = new Set(selectedIds); e.target.checked ? s.add(l.id) : s.delete(l.id); setSelectedIds(s); }} style={{ width: 14, height: 14, accentColor: 'var(--accent)' }} /></td>
                     <td style={{ color: 'var(--muted)', fontSize: 11 }}>{(currentPage - 1) * (pageSize === 'all' ? 0 : pageSize) + i + 1}</td>
                     <td>
-                      <strong style={{ cursor: 'pointer', color: 'var(--accent2)', textDecoration: 'underline' }} onClick={() => setViewLead(l)}>{l.companyName || l.name}</strong>
+                      <strong style={{ cursor: canEdit ? 'pointer' : 'default', color: 'var(--accent2)', textDecoration: canEdit ? 'underline' : 'none' }} onClick={() => canEdit ? openEdit(l) : setViewLead(l)} title={canEdit ? 'Click to edit' : 'Click to view'}>{l.companyName || l.name}</strong>
                       {l.companyName && <div style={{ fontSize: 10, color: 'var(--muted)' }}>Contact: {l.name}</div>}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                         {l.phone && (
@@ -1256,7 +1777,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
             {pageSize !== 'all' && totalPages > 1 && (
               <div style={{ padding: '15px 25px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', background: 'var(--bg-soft)', flexWrap: 'wrap', gap: 15 }}>
                 <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-                  Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to <strong>{Math.min(currentPage * pageSize, filtered.length)}</strong> of <strong>{filtered.length}</strong> leads
+                  Showing <strong>{(currentPage - 1) * pageSize + 1}</strong> to <strong>{Math.min(currentPage * pageSize, totalFiltered)}</strong> of <strong>{totalFiltered}</strong> leads
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
                   <button 
@@ -1328,7 +1849,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   <>
                     <option value="">All</option>
                     <option value="my">My Leads</option>
-                    <option value="unassigned">Unassigned</option>
+                    {teamCanSeeUnassignedLeads && <option value="unassigned">Unassigned</option>}
                   </>
                 )}
               </select>
@@ -1351,8 +1872,16 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   if (!lid) return;
                   const lead = leads.find(l => l.id === lid);
                   if (!lead || lead.stage === stage) return;
-                  await db.transact(db.tx.leads[lid].update({ stage }));
-                  await logActivity(lid, `Stage changed from "${lead.stage}" to "${stage}" (drag & drop)`);
+                  await dbWrite(dbOp.update('leads', lid, { stage, stageChangedAt: Date.now() }));
+                  await logActivity(lid, `Stage changed from "${lead.stage}" to "${stage}" (drag & drop)`, { action: 'edited' });
+                  await dbWrite(dbOp.update('activityLogs', id(), {
+                    entityId: lid, entityType: 'lead',
+                    entityName: lead.companyName || lead.name || '',
+                    action: 'stage-change', fromStage: lead.stage, toStage: stage,
+                    text: `Stage: ${lead.stage} → ${stage} (drag)`,
+                    userId: ownerId, actorId: user.id, userName: user.email,
+                    teamMemberId: myTeamMember?.id || null, createdAt: Date.now()
+                  }));
                   if (isWon(stage)) {
                     await convertToCustomer(lead, true);
                   }
@@ -1506,6 +2035,48 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                 )}
               </div>
             </div>
+            {editData && (() => {
+              const eLogs = (drawerData?.activityLogs || []).slice().sort((a,b) => b.createdAt - a.createdAt);
+              const addEditNote = async () => {
+                if (!noteText.trim()) return;
+                await logActivity(editData.id, noteText.trim());
+                setNoteText('');
+                toast('Note added', 'success');
+              };
+              return (
+                <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
+                  <h3 style={{ fontSize: 14, marginBottom: 12 }}>Activity Logs & Timeline</h3>
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+                    <input value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="Type a note or record an activity..." style={{ flex: 1, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 13 }} />
+                    <button className="btn btn-primary btn-sm" onClick={addEditNote}>Post</button>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 300, overflowY: 'auto' }}>
+                    {eLogs.length === 0 ? <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 13, padding: 20 }}>No activity recorded yet in timeline.</div> :
+                      eLogs.map(log => (
+                        <div key={log.id} style={{ display: 'flex', gap: 12, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', marginTop: 6, flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                              <span style={{ fontSize: 12, fontWeight: 700 }}>{log.userName}</span>
+                              <span style={{ fontSize: 10, color: 'var(--muted)' }}>{new Date(log.createdAt).toLocaleString()}</span>
+                            </div>
+                            <div style={{ fontSize: 12, color: '#444' }}>
+                              {log.text?.split('\n').map((line, i) => (
+                                <div key={i} style={{ marginBottom: line ? 2 : 0 }}>
+                                  {line.split('**').map((part, j) =>
+                                    j % 2 === 1 ? <mark key={j} style={{ background: '#fef08a', color: '#854d0e', padding: '0 4px', borderRadius: 4, fontWeight: 600 }}>{part}</mark> : part
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                </div>
+              );
+            })()}
             <div className="mo-foot">
               <button className="btn btn-secondary btn-sm" onClick={() => setModal(false)}>Cancel</button>
               <button className="btn btn-primary btn-sm" onClick={saveLead} disabled={saving}>
@@ -1519,10 +2090,89 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       {/* BULK IMPORT MAPPING MODAL */}
       {importMappingModal && (
         <div className="mo open">
-          <div className="mo-box" style={{ width: 680 }}>
+          <div className="mo-box" style={{ width: 680, position: 'relative' }}>
+            {/* In-app review summary — replaces the noisy native confirm popup */}
+            {importSummary && !importing && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 6, background: '#fff',
+                display: 'flex', flexDirection: 'column', borderRadius: 12, padding: 24,
+              }}>
+                <h3 style={{ margin: '0 0 4px' }}>Review before import</h3>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>Some rows can't be imported. Review and continue with the rest.</div>
+
+                <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+                  <div style={{ flex: 1, background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#065f46' }}>{importSummary.toAdd.length.toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#047857', fontWeight: 600 }}>Will be imported</div>
+                  </div>
+                  <div style={{ flex: 1, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#92400e' }}>{importSummary.duplicates.length.toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#b45309', fontWeight: 600 }}>Duplicates (skipped)</div>
+                  </div>
+                  <div style={{ flex: 1, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#991b1b' }}>{importSummary.invalidFields.length.toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: '#b91c1c', fontWeight: 600 }}>Invalid (skipped)</div>
+                  </div>
+                </div>
+
+                <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', fontSize: 11, color: 'var(--muted)', minHeight: 0 }}>
+                  {importSummary.invalidFields.slice(0, 5).map((s, i) => <div key={`inv${i}`} style={{ marginBottom: 4 }}>⚠️ {s}</div>)}
+                  {importSummary.duplicates.slice(0, 5).map((s, i) => <div key={`dup${i}`} style={{ marginBottom: 4 }}>♻️ {s}</div>)}
+                  {(importSummary.invalidFields.length + importSummary.duplicates.length) > 10 && (
+                    <div style={{ fontStyle: 'italic', marginTop: 4 }}>…and {(importSummary.invalidFields.length + importSummary.duplicates.length - 10).toLocaleString()} more</div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setImportSummary(null); setImportMappingModal(false); }}>Cancel import</button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={importSummary.toAdd.length === 0}
+                    onClick={() => commitImport(importSummary.toAdd, importSummary.duplicates.length)}
+                  >
+                    {importSummary.toAdd.length > 0 ? `Skip & import ${importSummary.toAdd.length.toLocaleString()} leads` : 'Nothing to import'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {/* Live progress overlay — covers the mapping UI while the import runs */}
+            {importing && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 5, background: 'rgba(255,255,255,0.97)',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 12, padding: 30, textAlign: 'center',
+              }}>
+                <div style={{
+                  width: 48, height: 48, border: '4px solid var(--bg-soft)', borderTopColor: 'var(--accent)',
+                  borderRadius: '50%', animation: 'spin 0.8s linear infinite', marginBottom: 18,
+                }} />
+                <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
+                  {importProgress.phase === 'validating' && 'Validating rows…'}
+                  {importProgress.phase === 'checking' && 'Checking for duplicates…'}
+                  {importProgress.phase === 'importing' && `Importing ${importProgress.current.toLocaleString()} of ${importProgress.total.toLocaleString()} leads…`}
+                  {importProgress.phase === 'done' && '✓ Import complete'}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 16 }}>
+                  {importProgress.phase === 'validating' && `Checking ${importProgress.total.toLocaleString()} rows against your business settings`}
+                  {importProgress.phase === 'checking' && `Scanning the database for ${importProgress.total.toLocaleString()} possible duplicates`}
+                  {importProgress.phase === 'importing' && 'Please keep this window open until it finishes'}
+                  {importProgress.phase === 'done' && `${importProgress.current.toLocaleString()} leads added`}
+                </div>
+                {/* Progress bar — determinate during the importing phase */}
+                <div style={{ width: '70%', maxWidth: 360, height: 8, background: 'var(--bg-soft)', borderRadius: 99, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', borderRadius: 99, background: 'var(--accent)', transition: 'width 0.3s ease',
+                    width: importProgress.phase === 'importing' && importProgress.total > 0
+                      ? `${Math.round((importProgress.current / importProgress.total) * 100)}%`
+                      : (importProgress.phase === 'done' ? '100%' : '40%'),
+                  }} />
+                </div>
+              </div>
+            )}
             <div className="mo-head">
               <h3>Bulk Import Column Mapping</h3>
-              <button className="btn-icon" onClick={() => setImportMappingModal(false)}>✕</button>
+              <button className="btn-icon" onClick={() => setImportMappingModal(false)} disabled={importing}>✕</button>
             </div>
             <div className="mo-body" style={{ maxHeight: '70vh', overflowY: 'auto', padding: '0 25px' }}>
               <div style={{ padding: '15px 0', borderBottom: '1px solid var(--border)', display: 'flex', gap: 15, alignItems: 'center' }}>
@@ -1609,8 +2259,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               })}
             </div>
             <div className="mo-foot">
-              <button className="btn btn-secondary btn-sm" onClick={() => setImportMappingModal(false)}>Cancel</button>
-              <button className="btn btn-primary btn-sm" onClick={performImport}>Complete Import</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setImportMappingModal(false)} disabled={importing}>Cancel</button>
+              <button className="btn btn-primary btn-sm" onClick={performImport} disabled={importing} style={importing ? { opacity: 0.7, cursor: 'wait' } : undefined}>
+                {importing ? '⏳ Checking & importing…' : 'Complete Import'}
+              </button>
             </div>
           </div>
         </div>
@@ -1665,14 +2317,34 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
                 <strong style={{ fontSize: 13, color: 'var(--text)', marginBottom: 12, display: 'block' }}>Default Leads per Page</strong>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {[25, 50, 100, 500, 'all'].map(size => (
+                  {[15, 25, 50, 100].map(size => (
                     <button
                       key={size}
                       className={`btn btn-sm ${tempPageSize === size ? 'btn-primary' : 'btn-secondary'}`}
                       onClick={() => setTempPageSize(size)}
                       style={{ padding: '6px 12px' }}
                     >
-                      {size === 'all' ? 'All Leads' : size}
+                      {size}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Sort Order */}
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+                <strong style={{ fontSize: 13, color: 'var(--text)', marginBottom: 6, display: 'block' }}>Sort by date</strong>
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>
+                  Sorts by the active date tab ({dateMode === 'created' ? 'Created Date' : dateMode === 'assigned' ? 'Assigned Date' : 'Follow-up Date'}).
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {[['newest', 'Newest first'], ['oldest', 'Oldest first']].map(([val, label]) => (
+                    <button
+                      key={val}
+                      className={`btn btn-sm ${tempSortOrder === val ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setTempSortOrder(val)}
+                      style={{ padding: '6px 12px' }}
+                    >
+                      {label}
                     </button>
                   ))}
                 </div>
@@ -1683,7 +2355,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               <button className="btn btn-secondary btn-sm" onClick={resetViewConfig}>Reset to Default</button>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-secondary btn-sm" onClick={() => setColModal(false)}>Cancel</button>
-                <button className="btn btn-primary btn-sm" onClick={() => saveViewConfig(tempCols, tempStages, tempPageSize)}>Save View</button>
+                <button className="btn btn-primary btn-sm" onClick={() => saveViewConfig(tempCols, tempStages, tempPageSize, tempSortOrder)}>Save View</button>
               </div>
             </div>
           </div>

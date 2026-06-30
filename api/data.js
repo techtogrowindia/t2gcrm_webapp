@@ -1,13 +1,31 @@
 import { init, tx, id } from '@instantdb/admin';
+import { pgRunOps } from './data-pg.js';
+import { readData } from './_write-ops.js';
+import { getLeadsForOwner } from './_leads-cache.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
+const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
+
+// Plain-op builders so write blocks can run on either backend.
+const opU = (collection, _id, data) => ({ action: 'upsert', collection, id: _id, data });
+const opD = (collection, _id) => ({ action: 'delete', collection, id: _id });
+// Run an ops array on the active backend (Postgres or InstantDB).
+async function runOps(db, ownerId, ops) {
+  const clean = ops.filter(Boolean);
+  if (USE_PG_DATA) return pgRunOps(ownerId, clean);
+  const txs = clean.map(op => op.action === 'delete'
+    ? tx[op.collection][op.id].delete()
+    : tx[op.collection][op.id].update(op.data));
+  const B = 100;
+  for (let i = 0; i < txs.length; i += B) await db.transact(txs.slice(i, i + B));
+}
 
 // Mapping of module keys to InstantDB collection names
 const COLLECTION_MAP = {
   'leads': 'leads',
   'customers': 'customers',
-  'quotations': 'quotations',
+  'quotations': 'quotes',
   'invoices': 'invoices',
   'amc': 'amc',
   'expenses': 'expenses',
@@ -77,7 +95,7 @@ async function getStatsTx(db, ownerId, actorId, type) {
     [type]: (current[type] || 0) + 1, 
     updatedAt: Date.now() 
   };
-  return tx.memberStats[statsId].update({
+  return opU('memberStats', statsId, {
     ...updates,
     userId: ownerId,
     memberId: actorId,
@@ -103,7 +121,7 @@ export default async function handler(req, res) {
     
     // Merge query and body params to support both URL rewrites and JSON bodies
     const params = { ...req.query, ...(req.body || {}) };
-    const { module, ownerId, actorId, userName, projectId, logText, ...data } = params;
+    const { module, ownerId, actorId, userName, teamMemberId, projectId, logText, ...data } = params;
 
     if (!module || !COLLECTION_MAP[module]) {
       // If no module provided in GET request, return empty data instead of error
@@ -122,15 +140,247 @@ export default async function handler(req, res) {
 
     /* ──────────── READ (GET) ──────────── */
     if (method === 'GET') {
+      // Special handling for `leads`: apply staff visibility + assignee
+      // filtering. Previously this endpoint returned ALL leads to anyone
+      // who hit it (the mobile app showed every team member the full 11k
+      // dataset because it relies on this endpoint).
+      if (module === 'leads') {
+        // Visibility on the mobile API mirrors /api/leads-page, with one
+        // additional override: team members whose role has elevated Leads
+        // permissions (delete or viewAll) always see all leads, regardless
+        // of the teamCanSeeAllLeads toggle. The toggle is meant to restrict
+        // ordinary team members — admins/managers with full Leads access
+        // are expected to keep their full view.
+        //
+        // Rules (in priority order):
+        //   1. Owner (actorId === ownerId or absent)         → all leads
+        //   2. Team member with Leads:'delete' or 'viewAll'  → all leads
+        //   3. Team member + teamCanSeeAllLeads === true     → all leads
+        //   4. Team member + teamCanSeeAllLeads === false    → only assigned
+        //                                                      (or unassigned)
+        const [leadsRaw, supplemental] = await Promise.all([
+          getLeadsForOwner(ownerId),
+          readData(db, ownerId, {
+            teamMembers: { $: { where: { userId: ownerId } } },
+            userProfiles: { $: { where: { userId: ownerId } } },
+          }),
+        ]);
+        let result = leadsRaw || [];
+        const teamMembers = supplemental.teamMembers || [];
+        const profile = supplemental.userProfiles?.[0] || {};
+        const roleDefs = profile.roles || [];
+
+        // Source normalization — mirror /api/leads-page so web & mobile match
+        result = result.map(l => (l.source === 'Retailer' || l.source === 'Retailers')
+          ? { ...l, source: 'Channel Partners' }
+          : l);
+
+        // Stage visibility — apply the same savedLeadStages + disabledStages
+        // filter the web uses so disabled stages never leak into mobile.
+        const savedLeadStages = profile.leadStages || null;
+        const disabledStages = profile.disabledStages || [];
+        const disabledSet = new Set(disabledStages);
+        if (Array.isArray(savedLeadStages) && savedLeadStages.length > 0) {
+          const vs = new Set(savedLeadStages);
+          result = result.filter(l => vs.has(l.stage) && !disabledSet.has(l.stage));
+        } else if (disabledSet.size > 0) {
+          result = result.filter(l => !disabledSet.has(l.stage));
+        }
+
+        // Resolve caller identity + their role perms from actorId OR userEmail.
+        //
+        // Mobile apps following the old API doc only sent `ownerId` — that
+        // silently leaked every lead in the workspace because the server
+        // treated "no actorId" as "owner". We now also try to resolve the
+        // caller by email so a missing actorId can't escalate to owner unless
+        // the email truly belongs to the workspace owner.
+        let isOwner = false;
+        let userEmail = params.userEmail || '';
+        let myName = params.myName || '';
+        let rolePerms = null;
+        let resolvedTm = null;
+
+        // 1. Try actorId → teamMembers.id lookup
+        if (actorId && actorId !== ownerId) {
+          resolvedTm = teamMembers.find(t => t.id === actorId) || null;
+        }
+
+        // 2. Fall back to userEmail → teamMembers.email lookup
+        if (!resolvedTm && userEmail) {
+          const lookup = userEmail.toLowerCase();
+          resolvedTm = teamMembers.find(t => (t.email || '').toLowerCase() === lookup) || null;
+        }
+
+        if (resolvedTm) {
+          userEmail = resolvedTm.email || userEmail;
+          myName = resolvedTm.name || myName;
+          const roleDef = roleDefs.find(r => r.name === resolvedTm.role);
+          if (roleDef) {
+            if (Array.isArray(roleDef.perms)) {
+              rolePerms = Object.fromEntries(roleDef.perms.map(k => [k, ['list', 'view']]));
+            } else {
+              rolePerms = roleDef.perms || {};
+            }
+          }
+        } else if (!actorId || actorId === ownerId) {
+          // No team-member match — caller is (or claims to be) the owner.
+          isOwner = true;
+        } else if (params.isOwner === true || params.isOwner === 'true') {
+          isOwner = true;
+        }
+
+        const leadsPerms = (rolePerms && rolePerms.Leads) || [];
+        const hasElevatedLeads = Array.isArray(leadsPerms)
+          && (leadsPerms.includes('delete') || leadsPerms.includes('viewAll'));
+        const teamCanSeeAll = profile.teamCanSeeAllLeads !== false; // default true
+        const teamCanSeeUnassigned = profile.teamCanSeeUnassignedLeads !== false; // default true
+
+        const debugInfo = {
+          rawQuery: params,
+          actorId,
+          ownerId,
+          actorIdEqualsOwnerId: actorId === ownerId,
+          isOwner,
+          userEmail,
+          myName,
+          tmFound: !!teamMembers.find(t => t.id === actorId),
+          hasElevatedLeads,
+          teamCanSeeAll,
+          teamCanSeeUnassigned,
+          willFilter: !isOwner && !hasElevatedLeads && !teamCanSeeAll,
+          beforeFilterCount: result.length,
+        };
+        console.log('[leads-visibility-v2]', debugInfo);
+
+        // Restrict team members based on visibility toggles
+        if (!isOwner && !hasElevatedLeads && !teamCanSeeAll) {
+          if (teamCanSeeUnassigned) {
+            // Default: assigned-to-me + unassigned
+            result = result.filter(l => !l.assign || l.assign === userEmail || l.assign === myName);
+          } else {
+            // Strict: only leads assigned to me
+            result = result.filter(l => l.assign === userEmail || l.assign === myName);
+          }
+        }
+
+        // Optional explicit filters layered on top (mirrors /api/leads-page).
+        const { staffFilter = '', srcFilter = '', stgFilter = '' } = params;
+        result = result.filter(l => {
+          if (srcFilter && l.source !== srcFilter) return false;
+          if (stgFilter && l.stage !== stgFilter) return false;
+          if (staffFilter) {
+            if (staffFilter === 'unassigned') {
+              if (l.assign) return false;
+            } else if (staffFilter === 'my') {
+              if (l.assign !== userEmail && l.assign !== myName) return false;
+            } else if (l.assign !== staffFilter) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+        // Assigned date range filter (mobile "today assigned" feature)
+        const { assignedFrom = '', assignedTo = '' } = params;
+        if (assignedFrom || assignedTo) {
+          const aFromMs = assignedFrom ? new Date(assignedFrom + 'T00:00:00').getTime() : null;
+          const aToMs   = assignedTo   ? new Date(assignedTo   + 'T23:59:59.999').getTime() : null;
+          result = result.filter(l => {
+            const t = l.assignedAt || 0;
+            if (aFromMs !== null && t < aFromMs) return false;
+            if (aToMs   !== null && t > aToMs)   return false;
+            return true;
+          });
+        }
+
+        // Newest leads first
+        result.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+        // Followup-based counts (today / tomorrow / all) — computed server-side
+        // using IST (Asia/Kolkata, +05:30) so they match the user's local
+        // timezone. The mobile app can override with explicit boundaries:
+        //   ?todayStartMs=..&todayEndMs=..&tomorrowStartMs=..&tomorrowEndMs=..
+        const istOffsetMs = 5.5 * 60 * 60 * 1000;
+        const nowIst = new Date(Date.now() + istOffsetMs);
+        const istY = nowIst.getUTCFullYear();
+        const istM = nowIst.getUTCMonth();
+        const istD = nowIst.getUTCDate();
+        const defaultTodayStart = Date.UTC(istY, istM, istD) - istOffsetMs;
+        const defaultTodayEnd   = Date.UTC(istY, istM, istD + 1) - istOffsetMs - 1;
+        const defaultTmrStart   = Date.UTC(istY, istM, istD + 1) - istOffsetMs;
+        const defaultTmrEnd     = Date.UTC(istY, istM, istD + 2) - istOffsetMs - 1;
+
+        const toMs = (v) => {
+          if (v === undefined || v === null || v === '') return NaN;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : NaN;
+        };
+        const todayStartMs = Number.isFinite(toMs(params.todayStartMs)) ? toMs(params.todayStartMs) : defaultTodayStart;
+        const todayEndMs   = Number.isFinite(toMs(params.todayEndMs))   ? toMs(params.todayEndMs)   : defaultTodayEnd;
+        const tomorrowStartMs = Number.isFinite(toMs(params.tomorrowStartMs)) ? toMs(params.tomorrowStartMs) : defaultTmrStart;
+        const tomorrowEndMs   = Number.isFinite(toMs(params.tomorrowEndMs))   ? toMs(params.tomorrowEndMs)   : defaultTmrEnd;
+
+        const followupMs = (l) => {
+          const v = l.followup;
+          if (!v) return null;
+          if (typeof v === 'number') return v;
+          // Bare "YYYY-MM-DDTHH:MM" strings have no tz info — interpret as IST
+          // so server bucketing matches what the mobile/web client sees.
+          const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+          const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/.test(v);
+          if (m && !hasTz) {
+            return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - istOffsetMs;
+          }
+          const t = new Date(v).getTime();
+          return Number.isFinite(t) ? t : null;
+        };
+
+        let cToday = 0, cTomorrow = 0;
+        for (const l of result) {
+          const d = followupMs(l);
+          if (d === null) continue;
+          if (d >= todayStartMs && d <= todayEndMs) cToday++;
+          if (d >= tomorrowStartMs && d <= tomorrowEndMs) cTomorrow++;
+        }
+
+        const counts = { all: result.length, today: cToday, tomorrow: cTomorrow };
+
+        return res.status(200).json({
+          success: true,
+          data: result,
+          count: result.length,
+          counts,
+          _debug: debugInfo,
+        });
+      }
+
       const query = { [collection]: { $: { where: { userId: ownerId } } } };
-      const result = await db.query(query);
-      return res.status(200).json({ success: true, data: result[collection] || [] });
+      const result = await readData(db, ownerId, query);
+      let rows = result[collection] || [];
+
+      // Mobile sync cap: the call logs module only ever exposes the last 30
+      // days. Older rows stay in the DB but are hidden from sync clients to
+      // save bandwidth and keep the mobile list snappy.
+      if (module === 'callLogs') {
+        const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        rows = rows.filter(r => {
+          const t = Math.max(r.createdAt || 0, r.updatedAt || 0);
+          return t >= cutoff;
+        });
+      }
+
+      return res.status(200).json({ success: true, data: rows });
     }
 
     /* ──────────── CREATE (POST) ──────────── */
     if (method === 'POST') {
       const newId = id();
       let payload = { ...data, userId: ownerId, actorId: actorId || ownerId, createdAt: Date.now() };
+
+      // Record when a lead is first assigned
+      if (module === 'leads' && payload.assign) {
+        payload.assignedAt = payload.createdAt;
+      }
 
       // Handle Task Numbering
       if (module === 'tasks') {
@@ -140,15 +390,16 @@ export default async function handler(req, res) {
         payload.taskNumber = nextNum;
       }
       
-      const txs = [
-        tx[collection][newId].update(payload),
-        tx.activityLogs[id()].update({
+      const ops = [
+        opU(collection, newId, payload),
+        opU('activityLogs', id(), {
           entityId: newId,
           entityType: ENTITY_TYPE_MAP[module] || module,
           text: (module === 'tasks' && !logText) ? `Task T-${payload.taskNumber} created: "${payload.title}"` : (logText || `Created new ${module} via API.`),
           userId: ownerId,
           actorId: actorId || ownerId,
           userName: userName || 'API System',
+          teamMemberId: teamMemberId || null,
           projectId: projectId || null,
           createdAt: Date.now()
         })
@@ -161,8 +412,8 @@ export default async function handler(req, res) {
         const { leads } = await db.query({ leads: { $: { where: { userId: ownerId } } } });
         const lMatch = leads?.find(l => (l.name || '').trim().toLowerCase() === (data.client || '').trim().toLowerCase() && l.stage !== wonStage);
         if (lMatch) {
-          txs.push(tx.leads[lMatch.id].update({ stage: wonStage }));
-          txs.push(tx.activityLogs[id()].update({
+          ops.push(opU('leads', lMatch.id, { stage: wonStage }));
+          ops.push(opU('activityLogs', id(), {
             entityId: lMatch.id, entityType: 'lead', text: `Project "${data.name}" started. Lead automatically marked as Won.`,
             userId: ownerId, actorId: actorId || ownerId, userName: userName || 'API System', createdAt: Date.now()
           }));
@@ -170,9 +421,9 @@ export default async function handler(req, res) {
       }
 
       const statsType = module === 'tasks' ? 'tasksWorked' : (module === 'leads' ? 'leadsWorked' : 'otherWorks');
-      txs.push(await getStatsTx(db, ownerId, payload.actorId, statsType));
+      ops.push(await getStatsTx(db, ownerId, payload.actorId, statsType));
 
-      await db.transact(txs);
+      await runOps(db, ownerId, ops);
 
       return res.status(200).json({ success: true, id: newId, message: 'Record created successfully' });
     }
@@ -181,15 +432,22 @@ export default async function handler(req, res) {
       const { id: targetId, ...updates } = data;
       if (!targetId) return res.status(400).json({ error: 'Record ID is required for updates' });
 
-      const txs = [
-        tx[collection][targetId].update(updates),
-        tx.activityLogs[id()].update({
+      // Record when a lead's assignee changes. Only stamp when assigning to a
+      // real person — clearing the assignee (assign = '') must not set a date.
+      if (module === 'leads' && updates.assign) {
+        updates.assignedAt = Date.now();
+      }
+
+      const ops = [
+        opU(collection, targetId, updates),
+        opU('activityLogs', id(), {
           entityId: targetId,
           entityType: module,
           text: logText || `Updated ${module} via API.`,
           userId: ownerId,
           actorId: actorId || ownerId,
           userName: userName || 'API System',
+          teamMemberId: teamMemberId || null,
           projectId: projectId || null,
           createdAt: Date.now()
         })
@@ -197,13 +455,13 @@ export default async function handler(req, res) {
 
       // Update Stats for Completions/Wins
       if (module === 'tasks' && updates.status === 'Completed') {
-        txs.push(await getStatsTx(db, ownerId, actorId || ownerId, 'tasksCompleted'));
+        ops.push(await getStatsTx(db, ownerId, actorId || ownerId, 'tasksCompleted'));
       }
       if (module === 'leads' && (updates.stage === 'Won' || (updates.stage || '').toLowerCase().includes('won'))) {
-        txs.push(await getStatsTx(db, ownerId, actorId || ownerId, 'leadsWon'));
+        ops.push(await getStatsTx(db, ownerId, actorId || ownerId, 'leadsWon'));
       }
 
-      await db.transact(txs);
+      await runOps(db, ownerId, ops);
 
       return res.status(200).json({ success: true, message: 'Record updated successfully' });
     }
@@ -214,6 +472,12 @@ export default async function handler(req, res) {
     if (method === 'DELETE') {
       const { id: targetId } = data;
       if (!targetId) return res.status(400).json({ error: 'Record ID is required for deletion' });
+
+      // Postgres: cascade is handled by data-pg's CASCADE map (one transaction).
+      if (USE_PG_DATA) {
+        await pgRunOps(ownerId, [opD(collection, targetId)]);
+        return res.status(200).json({ success: true, message: 'Record deleted successfully' });
+      }
 
       const txs = [
         tx[collection][targetId].delete()

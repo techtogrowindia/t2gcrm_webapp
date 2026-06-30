@@ -1,4 +1,5 @@
 import { init } from '@instantdb/admin';
+import { opU, runOps, readData } from '../_write-ops.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -75,14 +76,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    const userId = req.query?.userId || req.body?.userId;
+    // Accept either userId (legacy) or ownerId (new). Caller picks one.
+    const userId = req.query?.userId || req.query?.ownerId || req.body?.userId || req.body?.ownerId;
+    // Which config index to sync. Default 0 for backward compat with old webhook senders.
+    const configIndex = req.query?.configIndex != null ? parseInt(req.query.configIndex, 10) : 0;
 
     if (!userId) {
-      return res.status(400).json({ success: false, message: 'Missing userId parameter' });
+      return res.status(400).json({ success: false, message: 'Missing userId / ownerId parameter' });
     }
 
     // Fetch user profile
-    const profileResponse = await db.query({
+    const profileResponse = await readData(db, userId, {
       userProfiles: { $: { where: { userId } } }
     });
     const profile = profileResponse.userProfiles?.[0];
@@ -95,8 +99,11 @@ export default async function handler(req, res) {
     if (indiamartConfigs.length === 0) {
       return res.status(400).json({ success: false, message: 'No IndiaMART integration configured for this user' });
     }
+    if (configIndex < 0 || configIndex >= indiamartConfigs.length) {
+      return res.status(400).json({ success: false, message: `configIndex ${configIndex} out of range (have ${indiamartConfigs.length} configs)` });
+    }
 
-    const activeConfig = indiamartConfigs[0];
+    const activeConfig = indiamartConfigs[configIndex];
     if (activeConfig.disabled) {
       return res.status(200).json({ success: true, message: 'Sync skipped: Integration is disabled' });
     }
@@ -113,10 +120,13 @@ export default async function handler(req, res) {
       if (!Array.isArray(leads)) leads = [leads];
 
       // Fetch existing leads for dedup
-      const leadsRes = await db.query({ leads: { $: { where: { userId } } } });
+      const leadsRes = await readData(db, userId, { leads: { $: { where: { userId } } } });
       const allLeads = leadsRes.leads || [];
       const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
       const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));
+      const sourceIdSet = new Set(
+        allLeads.filter(l => l.sourceLeadId).map(l => String(l.sourceLeadId))
+      );
 
       let added = 0, skipped = 0, errors = 0;
       const txs = [];
@@ -127,16 +137,21 @@ export default async function handler(req, res) {
           lead.userId = userId;
           lead.actorId = null;
           lead.createdAt = Date.now();
+          // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
+          if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+          const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
+          if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
           if (!lead.name || !lead.name.trim()) {
             lead.name = 'New Lead via IndiaMART';
           }
 
-          // Dedup check
+          // Triple-layer dedup: sourceLeadId (strongest) > email > phone
+          const dupSource = lead.sourceLeadId && sourceIdSet.has(lead.sourceLeadId);
           const dupEmail = lead.email && emailSet.has(lead.email.toLowerCase());
           const dupPhone = lead.phone && phoneSet.has(lead.phone);
 
-          if (dupEmail || dupPhone) {
+          if (dupSource || dupEmail || dupPhone) {
             // Find existing lead for activity log
             const existingLead = allLeads.find(l =>
               (lead.email && l.email && l.email.toLowerCase() === lead.email.toLowerCase()) ||
@@ -145,7 +160,7 @@ export default async function handler(req, res) {
             if (existingLead) {
               const logId = crypto.randomUUID();
               txs.push(
-                db.tx.activityLogs[logId].update({
+                opU('activityLogs', logId, {
                   entityId: existingLead.id,
                   entityType: 'lead',
                   text: `Lead submitted again from IndiaMART.\nOriginal creation: ${new Date(existingLead.createdAt || Date.now()).toLocaleString()}\n**Resubmitted on: ${new Date().toLocaleString()}**`,
@@ -154,7 +169,7 @@ export default async function handler(req, res) {
                   userName: 'System (IndiaMART Webhook)',
                   createdAt: Date.now()
                 }),
-                db.tx.leads[existingLead.id].update({ updatedAt: Date.now() })
+                opU('leads', existingLead.id, { updatedAt: Date.now() })
               );
             }
             skipped++;
@@ -164,22 +179,18 @@ export default async function handler(req, res) {
           // Add to dedup sets
           if (lead.email) emailSet.add(lead.email.toLowerCase());
           if (lead.phone) phoneSet.add(lead.phone);
+          if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
           const leadId = crypto.randomUUID();
-          txs.push(db.tx.leads[leadId].update(lead));
+          txs.push(opU('leads', leadId, lead));
           added++;
         } catch {
           errors++;
         }
       }
 
-      // Flush all transactions
-      if (txs.length > 0) {
-        // Batch in groups of 50
-        for (let i = 0; i < txs.length; i += 50) {
-          await db.transact(txs.slice(i, i + 50));
-        }
-      }
+      // Flush all writes (Postgres or InstantDB)
+      await runOps(db, userId, txs);
 
       return res.status(200).json({
         success: true,
@@ -195,24 +206,64 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, message: 'No API key configured for IndiaMART' });
       }
 
+      // Manual sync: caller passes from_date/to_date → don't update lastSyncAt
+      const isManualSync = !!(req.query.from_date && req.query.to_date);
+      const syncDateRange = isManualSync
+        ? { from: req.query.from_date, to: req.query.to_date }
+        : null;
+
       try {
         // IndiaMART CRM Lead API
         const apiUrl = `https://mapi.indiamart.com/wservce/enquiry/listing/JEESSION_ID/KEY/${apiKey}/`;
+        const maskedUrl = apiUrl.replace(apiKey, '***');
         const apiRes = await fetch(apiUrl);
-        const apiData = await apiRes.json();
+
+        // Read as text first so we can include it in the diagnostic response
+        // if IndiaMART returns HTML / error string instead of JSON
+        const rawText = await apiRes.text();
+        let apiData;
+        try {
+          apiData = JSON.parse(rawText);
+        } catch (parseErr) {
+          console.error('IndiaMART API returned non-JSON:', rawText.slice(0, 500));
+          return res.status(200).json({
+            success: false,
+            message: 'IndiaMART API returned a non-JSON response. Check your API Key.',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: { httpStatus: apiRes.status, responseSample: rawText.slice(0, 400), requestUrl: maskedUrl },
+          });
+        }
 
         let leads = apiData?.RESPONSE || apiData?.leads || [];
         if (!Array.isArray(leads)) leads = [];
 
         if (leads.length === 0) {
-          return res.status(200).json({ success: true, message: 'No new leads found', added: 0, skipped: 0, total: 0 });
+          const sample = JSON.stringify(apiData).slice(0, 400);
+          return res.status(200).json({
+            success: true,
+            message: 'No new leads found',
+            added: 0, skipped: 0, total: 0,
+            diagnostic: {
+              httpStatus: apiRes.status,
+              apiResponseKeys: Object.keys(apiData || {}),
+              apiResponseSample: sample,
+              requestUrl: maskedUrl,
+            },
+          });
         }
 
+        const successResponseSample = JSON.stringify(apiData).slice(0, 400);
+
         // Fetch existing leads for dedup
-        const leadsRes = await db.query({ leads: { $: { where: { userId } } } });
+        const leadsRes = await readData(db, userId, { leads: { $: { where: { userId } } } });
         const allLeads = leadsRes.leads || [];
         const emailSet = new Set(allLeads.filter(l => l.email).map(l => l.email.toLowerCase()));
         const phoneSet = new Set(allLeads.filter(l => l.phone).map(l => l.phone));
+        // sourceLeadId set — IndiaMART's UNIQUE_QUERY_ID. Bulletproof dedup:
+        // even if phone/email change, the same UNIQUE_QUERY_ID = same enquiry.
+        const sourceIdSet = new Set(
+          allLeads.filter(l => l.sourceLeadId).map(l => String(l.sourceLeadId))
+        );
 
         let added = 0, skipped = 0, errors = 0;
         const txs = [];
@@ -223,46 +274,59 @@ export default async function handler(req, res) {
             lead.userId = userId;
             lead.actorId = null;
             lead.createdAt = Date.now();
+            // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
+            if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+            // Record the source's unique ID for future syncs
+            const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
+            if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
             if (!lead.name || !lead.name.trim()) {
               lead.name = 'New Lead via IndiaMART';
             }
 
+            // Triple-layer dedup: sourceLeadId (strongest) > email > phone
+            const dupSource = lead.sourceLeadId && sourceIdSet.has(lead.sourceLeadId);
             const dupEmail = lead.email && emailSet.has(lead.email.toLowerCase());
             const dupPhone = lead.phone && phoneSet.has(lead.phone);
 
-            if (dupEmail || dupPhone) {
+            if (dupSource || dupEmail || dupPhone) {
               skipped++;
               continue;
             }
 
             if (lead.email) emailSet.add(lead.email.toLowerCase());
             if (lead.phone) phoneSet.add(lead.phone);
+            if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
             const leadId = crypto.randomUUID();
-            txs.push(db.tx.leads[leadId].update(lead));
+            txs.push(opU('leads', leadId, lead));
             added++;
           } catch {
             errors++;
           }
         }
 
-        if (txs.length > 0) {
-          for (let i = 0; i < txs.length; i += 50) {
-            await db.transact(txs.slice(i, i + 50));
-          }
-        }
+        await runOps(db, userId, txs);
 
-        // Update lastSyncAt
-        const updatedConfigs = indiamartConfigs.map((c, i) =>
-          i === 0 ? { ...c, lastSyncAt: Date.now() } : c
-        );
-        await db.transact(db.tx.userProfiles[profile.id].update({ indiamart: updatedConfigs }));
+        // Update lastSyncAt only for auto sync (not manual date-range pulls)
+        if (!isManualSync) {
+          const updatedConfigs = indiamartConfigs.map((c, i) =>
+            i === configIndex ? { ...c, lastSyncAt: Date.now() } : c
+          );
+          await runOps(db, userId, [opU('userProfiles', profile.id, { indiamart: updatedConfigs })]);
+        }
 
         return res.status(200).json({
           success: true,
           message: `Synced: ${added} added, ${skipped} skipped, ${errors} errors`,
-          added, skipped, errors, total: leads.length
+          added, skipped, errors, total: leads.length,
+          ...(syncDateRange ? { dateRange: syncDateRange, isManualSync: true } : {}),
+          diagnostic: {
+            httpStatus: apiRes.status,
+            requestUrl: maskedUrl,
+            responseSample: successResponseSample,
+            leadsReturned: leads.length,
+          },
         });
       } catch (e) {
         console.error('IndiaMART Sync Error:', e);

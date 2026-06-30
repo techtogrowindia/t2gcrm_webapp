@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import db from '../../instant';
 import { DEFAULT_PLANS } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
+import { pgAuthSetSession } from '../../hooks/useAuthPg';
+
+const USE_PG_AUTH = import.meta.env.VITE_USE_PG_AUTH === 'true';
 
 export default function AuthScreen({ settings }) {
   const activePlans = settings?.plans || DEFAULT_PLANS;
@@ -24,7 +27,7 @@ export default function AuthScreen({ settings }) {
   const handleMagicSendCode = async (e) => {
     e.preventDefault();
     if (!email.trim()) { toast('Enter your email address', 'error'); return; }
-    
+
     if (tab === 'register') {
       localStorage.setItem('tc_reg_data', JSON.stringify({
         bizName, fullName, phone, selectedPlan: selectedPlan || 'Trial'
@@ -33,11 +36,23 @@ export default function AuthScreen({ settings }) {
 
     setLoading(true);
     try {
-      await db.auth.sendMagicCode({ email: email.trim() });
-      setStep('code');
-      toast('Magic code sent! Check your email 📧', 'success');
+      if (USE_PG_AUTH) {
+        const res = await fetch('/api/auth-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'send-code', email: email.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to send code');
+        setStep('code');
+        toast('Magic code sent! Check your email 📧', 'success');
+      } else {
+        await db.auth.sendMagicCode({ email: email.trim() });
+        setStep('code');
+        toast('Magic code sent! Check your email 📧', 'success');
+      }
     } catch (err) {
-      toast(err?.body?.message || 'Failed to send code. Try again.', 'error');
+      toast(err?.message || err?.body?.message || 'Failed to send code. Try again.', 'error');
     } finally {
       setLoading(false);
     }
@@ -48,10 +63,23 @@ export default function AuthScreen({ settings }) {
     if (!code.trim()) { toast('Enter the code from your email', 'error'); return; }
     setLoading(true);
     try {
-      await db.auth.signInWithMagicCode({ email: email.trim(), code: code.trim() });
-      toast(`Welcome to ${settings?.brandName || 'T2GCRM'}! 👋`, 'success');
+      if (USE_PG_AUTH) {
+        const res = await fetch('/api/auth-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'verify-code', email: email.trim(), code: code.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Invalid code');
+        pgAuthSetSession(data);
+        toast(`Welcome to ${settings?.brandName || 'T2GCRM'}! 👋`, 'success');
+        window.location.reload(); // trigger useAuthPg to pick up the new token
+      } else {
+        await db.auth.signInWithMagicCode({ email: email.trim(), code: code.trim() });
+        toast(`Welcome to ${settings?.brandName || 'T2GCRM'}! 👋`, 'success');
+      }
     } catch (err) {
-      toast(err?.body?.message || 'Invalid code. Try again.', 'error');
+      toast(err?.message || err?.body?.message || 'Invalid code. Try again.', 'error');
       setCode('');
     } finally {
       setLoading(false);
@@ -64,14 +92,35 @@ export default function AuthScreen({ settings }) {
     setLoading(true);
 
     try {
-      const payload = {
-        email: email.trim(),
-        password,
-        fullName,
-        bizName,
-        phone,
-        selectedPlan
-      };
+      if (USE_PG_AUTH && tab === 'login') {
+        // Postgres password login
+        const res = await fetch('/api/auth-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'login', email: email.trim(), password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Authentication failed');
+        pgAuthSetSession(data);
+        if (data.isTeam) {
+          localStorage.setItem('tc_team_member', JSON.stringify({
+            isTeamMember: true,
+            ownerUserId: data.accountId,
+            teamMemberId: data.credentialId,
+          }));
+        } else { localStorage.removeItem('tc_team_member'); }
+        if (data.isPartner) {
+          localStorage.setItem('tc_channel_partner', JSON.stringify({
+            isPartner: true, ownerUserId: data.accountId, partnerId: data.credentialId,
+          }));
+        } else { localStorage.removeItem('tc_channel_partner'); }
+        toast('Welcome Back! 👋', 'success');
+        window.location.reload();
+        return;
+      }
+
+      // InstantDB path (prod, or register flow)
+      const payload = { email: email.trim(), password, fullName, bizName, phone, selectedPlan };
       const res = await fetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -79,41 +128,28 @@ export default function AuthScreen({ settings }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Authentication failed');
-      
+
       if (tab === 'register') {
-        // Registration returns OTP, not a token — go to OTP verification step
         localStorage.setItem('tc_reg_data', JSON.stringify({
           bizName, fullName, phone, selectedPlan: selectedPlan || 'Trial'
         }));
-        localStorage.setItem('tc_pending_otp', data.otp || ''); // Dev mode: store for easy testing
+        localStorage.setItem('tc_pending_otp', data.otp || '');
         console.log('REGISTRATION OTP (Dev Mode):', data.otp);
         setStep('otp-verify');
         toast('Account created! Enter the OTP to verify your email.', 'success');
       } else {
-        // Login returns a token — sign in immediately
         await db.auth.signInWithToken(data.token);
-        
         if (data.isTeamMember) {
           localStorage.setItem('tc_team_member', JSON.stringify({
-            isTeamMember: true,
-            ownerUserId: data.ownerUserId,
-            teamMemberId: data.teamMemberId
+            isTeamMember: true, ownerUserId: data.ownerUserId, teamMemberId: data.teamMemberId
           }));
-        } else {
-          localStorage.removeItem('tc_team_member');
-        }
-
+        } else { localStorage.removeItem('tc_team_member'); }
         if (data.isPartner) {
           localStorage.setItem('tc_channel_partner', JSON.stringify({
-            isPartner: true,
-            ownerUserId: data.ownerUserId,
-            partnerId: data.partnerId,
-            role: data.role
+            isPartner: true, ownerUserId: data.ownerUserId,
+            partnerId: data.partnerId, role: data.role
           }));
-        } else {
-          localStorage.removeItem('tc_channel_partner');
-        }
-
+        } else { localStorage.removeItem('tc_channel_partner'); }
         toast('Welcome Back! 👋', 'success');
       }
     } catch (err) {

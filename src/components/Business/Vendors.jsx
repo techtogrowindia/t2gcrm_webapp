@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmtD } from '../../utils/helpers';
@@ -24,7 +25,7 @@ export default function Vendors({ user, perms, ownerId }) {
     if (!search) return true;
     const q = search.toLowerCase();
     return [v.name, v.company, v.email, v.phone, v.gst, v.category].some(x => String(x || '').toLowerCase().includes(q));
-  });
+  }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); // newest first
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
@@ -33,15 +34,15 @@ export default function Vendors({ user, perms, ownerId }) {
     if (!editData && !canCreate) { toast('Permission denied', 'error'); return; }
     if (!form.name.trim()) { toast('Vendor name required', 'error'); return; }
     const payload = { ...form, userId: ownerId, actorId: user.id, createdAt: editData ? undefined : Date.now() };
-    if (editData) { await db.transact(db.tx.vendors[editData.id].update(payload)); toast('Vendor updated', 'success'); }
-    else { await db.transact(db.tx.vendors[id()].update(payload)); toast('Vendor added', 'success'); }
+    if (editData) { await dbWrite(dbOp.update('vendors', editData.id, payload)); toast('Vendor updated', 'success'); }
+    else { await dbWrite(dbOp.update('vendors', id(), payload)); toast('Vendor added', 'success'); }
     setModal(false);
   };
 
   const del = async (vid) => {
     if (!canDelete) { toast('Permission denied', 'error'); return; }
     if (!confirm('Delete vendor?')) return;
-    await db.transact(db.tx.vendors[vid].delete());
+    await dbWrite(dbOp.delete('vendors', vid));
     toast('Deleted', 'error');
   };
 

@@ -1,12 +1,19 @@
 import React from 'react';
-import { fmt, fmtD, numberToWords } from '../../utils/helpers';
+import { fmt, fmtD, numberToWords, currencySymbol } from '../../utils/helpers';
 
 export default function DocumentTemplate({ data, profile, type = 'Invoice', preview = false, settings }) {
   const profileTemplate = type === 'Invoice' ? profile?.invoiceTemplate : profile?.quotationTemplate;
   const t = profileTemplate || data.template || 'Classic';
-  const items = Array.isArray(data.items) 
-    ? data.items 
+  const items = Array.isArray(data.items)
+    ? data.items
     : (typeof data.items === 'string' ? JSON.parse(data.items) : []);
+
+  const docCurrency = data.currency || profile?.defaultCurrency || 'INR';
+  const docSymbol = currencySymbol(docCurrency);
+  // Format with currency symbol
+  const money = (n) => fmt(n, docCurrency);
+  // Format without currency symbol (number only, keeps locale formatting)
+  const moneyNo = (n) => fmt(n, docCurrency).replace(docSymbol, '').trim();
 
   const ptots = (() => {
     const sub = items.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0), 0);
@@ -18,8 +25,11 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
       acc[r] = (acc[r] || 0) + taxAmt;
       return acc;
     }, {});
-    const discAmt = data.discType === '₹' ? (parseFloat(data.disc) || 0) : (sub * (parseFloat(data.disc) || 0) / 100);
-    const total = Math.round(sub - discAmt + taxTotal + (parseFloat(data.adj) || 0));
+    const flatDiscTypes = ['₹', '$', '€', '£'];
+    const discAmt = flatDiscTypes.includes(data.discType) ? (parseFloat(data.disc) || 0) : (sub * (parseFloat(data.disc) || 0) / 100);
+    const deliveryAmt = parseFloat(data.deliveryCharge) || 0;
+    const deliveryTax = deliveryAmt * (parseFloat(data.deliveryTaxRate) || 0) / 100;
+    const total = Math.round(sub - discAmt + taxTotal + deliveryAmt + deliveryTax + (parseFloat(data.adj) || 0));
     
     let rawPayments = [];
     try { rawPayments = Array.isArray(data.payments) ? data.payments : JSON.parse(data.payments || '[]'); } catch(e) {}
@@ -222,25 +232,25 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                             {it.desc && <div style={{ fontSize: '11px', color: '#000', marginTop: '4px', whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>{it.desc}</div>}
                           </td>
                           <td style={{ textAlign: 'center' }}>{Number(it.qty)} {it.unit || ''}</td>
-                          <td style={{ textAlign: 'right' }}>{fmt(it.rate).replace('₹', '')}</td>
+                          <td style={{ textAlign: 'right' }}>{moneyNo(it.rate)}</td>
                           {isInterState ? (
                             <td style={{ textAlign: 'right', color: '#000' }}>
-                              <div>{itemTotal === 0 ? '-' : fmt(taxAmt).replace('₹', '')}</div>
+                              <div>{itemTotal === 0 ? '-' : moneyNo(taxAmt)}</div>
                               <div style={{ fontSize: '9px', opacity: 0.7 }}>({taxRate}%)</div>
                             </td>
                           ) : (
                             <>
                               <td style={{ textAlign: 'right', color: '#000' }}>
-                                <div>{itemTotal === 0 ? '-' : fmt(taxAmt / 2).replace('₹', '')}</div>
+                                <div>{itemTotal === 0 ? '-' : moneyNo(taxAmt / 2)}</div>
                                 <div style={{ fontSize: '9px', opacity: 0.7 }}>({taxRate / 2}%)</div>
                               </td>
                               <td style={{ textAlign: 'right', color: '#000' }}>
-                                <div>{itemTotal === 0 ? '-' : fmt(taxAmt / 2).replace('₹', '')}</div>
+                                <div>{itemTotal === 0 ? '-' : moneyNo(taxAmt / 2)}</div>
                                 <div style={{ fontSize: '9px', opacity: 0.7 }}>({taxRate / 2}%)</div>
                               </td>
                             </>
                           )}
-                          <td style={{ textAlign: 'right', fontWeight: '700' }}>{fmt(itemTotal).replace('₹', '')}</td>
+                          <td style={{ textAlign: 'right', fontWeight: '700' }}>{moneyNo(itemTotal)}</td>
                         </tr>
                       );
                     })}
@@ -297,38 +307,40 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                   <div style={{ width: '50%', padding: '20px' }}>
                     <table className="z-summary">
                       <tbody>
-                        <tr><td>Sub Total</td><td style={{ fontWeight: '600' }}>{fmt(ptots.sub).replace('₹', '')}</td></tr>
-                        {ptots.discAmt > 0 && <tr><td>Discount ({data.discType === '₹' ? 'Flat' : `${data.disc}%`})</td><td style={{ color: '#d97706', fontWeight: '600' }}>(-) {fmt(ptots.discAmt).replace('₹', '')}</td></tr>}
+                        <tr><td>Sub Total</td><td style={{ fontWeight: '600' }}>{moneyNo(ptots.sub)}</td></tr>
+                        {ptots.discAmt > 0 && <tr><td>Discount ({data.discType === '₹' ? 'Flat' : `${data.disc}%`})</td><td style={{ color: '#d97706', fontWeight: '600' }}>(-) {moneyNo(ptots.discAmt)}</td></tr>}
                         
                         {Object.entries(ptots.taxesByRate).map(([rateStr, tAmt]) => {
                           const rate = parseFloat(rateStr);
                           if (isInterState) {
-                            return <tr key={`igst-${rate}`}><td>IGST{rate} ({rate}%)</td><td style={{ fontWeight: '600' }}>{fmt(tAmt).replace('₹', '')}</td></tr>;
+                            return <tr key={`igst-${rate}`}><td>IGST{rate} ({rate}%)</td><td style={{ fontWeight: '600' }}>{moneyNo(tAmt)}</td></tr>;
                           } else {
                             const half = rate / 2;
                             return (
                               <React.Fragment key={`cgst-sgst-${rate}`}>
-                                <tr><td>CGST{half} ({half}%)</td><td style={{ fontWeight: '600' }}>{fmt(tAmt / 2).replace('₹', '')}</td></tr>
-                                <tr><td>SGST{half} ({half}%)</td><td style={{ fontWeight: '600' }}>{fmt(tAmt / 2).replace('₹', '')}</td></tr>
+                                <tr><td>CGST{half} ({half}%)</td><td style={{ fontWeight: '600' }}>{moneyNo(tAmt / 2)}</td></tr>
+                                <tr><td>SGST{half} ({half}%)</td><td style={{ fontWeight: '600' }}>{moneyNo(tAmt / 2)}</td></tr>
                               </React.Fragment>
                             );
                           }
                         })}
 
-                        {data.adj !== 0 && <tr><td>Adjustment</td><td style={{ fontWeight: '600' }}>{data.adj > 0 ? '(+) ' : '(-) '}{fmt(Math.abs(data.adj)).replace('₹', '')}</td></tr>}
-                        <tr className="z-total"><td>Total</td><td style={{ whiteSpace: 'nowrap' }}>{fmt(ptots.total)}</td></tr>
+                        {parseFloat(data.deliveryCharge) > 0 && <tr><td>Delivery Charges</td><td style={{ fontWeight: '600' }}>{moneyNo(parseFloat(data.deliveryCharge))}</td></tr>}
+                        {parseFloat(data.deliveryCharge) > 0 && parseFloat(data.deliveryTaxRate) > 0 && <tr><td>Delivery Tax ({data.deliveryTaxRate}%)</td><td style={{ fontWeight: '600' }}>{moneyNo((parseFloat(data.deliveryCharge) || 0) * (parseFloat(data.deliveryTaxRate) || 0) / 100)}</td></tr>}
+                        {data.adj !== 0 && <tr><td>Adjustment</td><td style={{ fontWeight: '600' }}>{data.adj > 0 ? '(+) ' : '(-) '}{moneyNo(Math.abs(data.adj))}</td></tr>}
+                        <tr className="z-total"><td>Total</td><td style={{ whiteSpace: 'nowrap' }}>{money(ptots.total)}</td></tr>
                         
                         {type === 'Invoice' && ptots.paymentsTotal > 0 && (
-                          <tr><td style={{ paddingTop: '10px', color: '#000' }}>Payment Made</td><td style={{ paddingTop: '10px', color: '#dc2626', fontWeight: '600' }}>(-) {fmt(ptots.paymentsTotal).replace('₹', '')}</td></tr>
+                          <tr><td style={{ paddingTop: '10px', color: '#000' }}>Payment Made</td><td style={{ paddingTop: '10px', color: '#dc2626', fontWeight: '600' }}>(-) {moneyNo(ptots.paymentsTotal)}</td></tr>
                         )}
                         {type === 'Invoice' && (
-                          <tr><td style={{ paddingTop: ptots.paymentsTotal > 0 ? '8px' : '15px', color: '#111', fontWeight: '800' }}>Balance Due</td><td style={{ paddingTop: ptots.paymentsTotal > 0 ? '8px' : '15px', color: '#111', fontWeight: '800', fontSize: '16px' }}>{fmt(ptots.balanceDue)}</td></tr>
+                          <tr><td style={{ paddingTop: ptots.paymentsTotal > 0 ? '8px' : '15px', color: '#111', fontWeight: '800' }}>Balance Due</td><td style={{ paddingTop: ptots.paymentsTotal > 0 ? '8px' : '15px', color: '#111', fontWeight: '800', fontSize: '16px' }}>{money(ptots.balanceDue)}</td></tr>
                         )}
                       </tbody>
                     </table>
                     <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ddd' }}>
                       <div style={{ fontSize: '9px', color: '#000', textTransform: 'uppercase', fontWeight: '700', marginBottom: '2px' }}>Total In Words</div>
-                      <div style={{ fontSize: '11px', fontWeight: '700', color: '#111', fontStyle: 'italic' }}>{numberToWords(ptots.total)}</div>
+                      <div style={{ fontSize: '11px', fontWeight: '700', color: '#111', fontStyle: 'italic' }}>{numberToWords(ptots.total, docCurrency)}</div>
                     </div>
                   </div>
                 </div>
@@ -439,9 +451,9 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                   {it.desc && <div style={{ fontSize: 11, color: '#000', marginTop: 2 }}>{it.desc}</div>}
                 </td>
                 <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'center' }}>{it.qty} {it.unit || ''}</td>
-                <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'right' }}>{fmt(it.rate)}</td>
+                <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'right' }}>{money(it.rate)}</td>
                 <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'right' }}>{it.taxRate}%</td>
-                <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'right', fontWeight: 600 }}>{fmt(it.qty * it.rate)}</td>
+                <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'right', fontWeight: 600 }}>{money(it.qty * it.rate)}</td>
               </tr>
             ))}
           </tbody>
@@ -455,38 +467,40 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
           </div>
           <div style={{ width: '40%', background: t === 'Modern' ? '#f8fafc' : 'transparent', padding: t === 'Modern' ? 20 : 0, borderRadius: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
-              <span style={{ color: '#000' }}>Subtotal</span><span>{fmt(ptots.sub)}</span>
+              <span style={{ color: '#000' }}>Subtotal</span><span>{money(ptots.sub)}</span>
             </div>
-            {ptots.discAmt > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: '#d97706' }}><span>Discount ({data.discType === '₹' ? 'Flat' : `${data.disc}%`})</span><span>(-) {fmt(ptots.discAmt)}</span></div>}
+            {ptots.discAmt > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: '#d97706' }}><span>Discount ({data.discType === '₹' ? 'Flat' : `${data.disc}%`})</span><span>(-) {money(ptots.discAmt)}</span></div>}
             
             {Object.entries(ptots.taxesByRate).map(([rateStr, tAmt]) => {
               const rate = parseFloat(rateStr);
               if (isInterState) {
-                return <div key={`igst-${rate}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>IGST{rate} ({rate}%)</span><span>{fmt(tAmt)}</span></div>;
+                return <div key={`igst-${rate}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>IGST{rate} ({rate}%)</span><span>{money(tAmt)}</span></div>;
               } else {
                 const half = rate / 2;
                 return (
                   <React.Fragment key={`cgst-sgst-${rate}`}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>CGST{half} ({half}%)</span><span>{fmt(tAmt / 2)}</span></div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>SGST{half} ({half}%)</span><span>{fmt(tAmt / 2)}</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>CGST{half} ({half}%)</span><span>{money(tAmt / 2)}</span></div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>SGST{half} ({half}%)</span><span>{money(tAmt / 2)}</span></div>
                   </React.Fragment>
                 );
               }
             })}
 
-            {data.adj !== 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>Adjustment</span><span>{data.adj > 0 ? '(+) ' : '(-) '}{fmt(Math.abs(data.adj))}</span></div>}
+            {parseFloat(data.deliveryCharge) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>Delivery Charges</span><span>{money(parseFloat(data.deliveryCharge))}</span></div>}
+            {parseFloat(data.deliveryCharge) > 0 && parseFloat(data.deliveryTaxRate) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>Delivery Tax ({data.deliveryTaxRate}%)</span><span>{money((parseFloat(data.deliveryCharge) || 0) * (parseFloat(data.deliveryTaxRate) || 0) / 100)}</span></div>}
+            {data.adj !== 0 && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}><span>Adjustment</span><span>{data.adj > 0 ? '(+) ' : '(-) '}{money(Math.abs(data.adj))}</span></div>}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '15px 0 0 0', fontSize: 16, fontWeight: 800, borderTop: t === 'Minimal' ? '1px solid #eee' : '2px solid #000', marginTop: 10 }}>
-              <span>Total</span><span style={{ color: '#000' }}>{fmt(ptots.total)}</span>
+              <span>Total</span><span style={{ color: '#000' }}>{money(ptots.total)}</span>
             </div>
             
             {type === 'Invoice' && ptots.paymentsTotal > 0 && (
                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0 0', fontSize: 13, color: '#dc2626', fontWeight: 600 }}>
-                 <span>Payment Made</span><span>(-) {fmt(ptots.paymentsTotal)}</span>
+                 <span>Payment Made</span><span>(-) {money(ptots.paymentsTotal)}</span>
                </div>
             )}
             {type === 'Invoice' && (
                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0 0', fontSize: 16, fontWeight: 800, color: '#111' }}>
-                 <span>Balance Due</span><span>{fmt(ptots.balanceDue)}</span>
+                 <span>Balance Due</span><span>{money(ptots.balanceDue)}</span>
                </div>
             )}
           </div>
