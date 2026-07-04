@@ -282,9 +282,20 @@ export default async function handler(req, res) {
 
         // Filter batch:
         // 1. Reject calls older than the 30-day retention window
-        // 2. Skip calls already covered by device sync state (fast path)
-        // 3. Compute stable ID; skip if it's already in the DB
-        // 4. Skip duplicates within this batch itself
+        // 2. Compute stable ID; skip only if that row actually exists in the DB
+        // 3. Skip duplicates within this batch itself
+        //
+        // We deliberately do NOT skip on `entryTs <= deviceLastSyncedAt` as a
+        // fast path. That optimisation assumed "older than the cursor ⇒ already
+        // stored", but the cursor (callLogSyncState.lastSyncedAt) advances in a
+        // SEPARATE transaction from the call write. If the write silently no-ops
+        // (InstantDB transaction failures are silent) while the cursor still
+        // advances, those calls are lost — and then permanently hidden, because
+        // the fast path skipped them before this authoritative existing-row
+        // check ever ran, so even a manual re-sync couldn't recover them.
+        // `existingIds` is built from the COMPLETE set of stored logs, so the
+        // stableCallLogId check below is the correct, self-healing dedup: it
+        // skips a call iff the row truly exists, and re-accepts anything missing.
         const seenInBatch = new Set();
         const accepted = [];
         let skipped = 0;
@@ -292,7 +303,6 @@ export default async function handler(req, res) {
         for (const entry of batch) {
           const entryTs = entry.createdAt || now;
           if (entryTs < retentionCutoff) { rejectedOld++; continue; }
-          if (deviceId && entryTs <= deviceLastSyncedAt) { skipped++; continue; }
           const stableId = stableCallLogId({ ...entry, createdAt: entryTs });
           if (existingIds.has(stableId) || seenInBatch.has(stableId)) { skipped++; continue; }
           seenInBatch.add(stableId);
