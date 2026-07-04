@@ -304,7 +304,11 @@ export default async function handler(req, res) {
           if (deviceId && syncStateRecord) {
             await runOps(db, ownerId, [opU('callLogSyncState', syncStateRecord.id, { lastSyncAt: now })]);
           }
-          return res.status(200).json({
+          // 201 (not 200): a sync where everything was already up to date is a
+          // SUCCESS. The mobile app only treats 201 as a successful sync and
+          // throws "Sync failed" on any other 2xx code, so we must return 201
+          // here too — same status as the "new calls created" path below.
+          return res.status(201).json({
             success: true, created: 0, skipped, rejectedOld,
             nextSyncFrom: deviceLastSyncedAt,
             message: buildSyncMessage(0, skipped, rejectedOld),
@@ -383,7 +387,9 @@ export default async function handler(req, res) {
       const RETENTION_MS_SINGLE = 30 * 24 * 60 * 60 * 1000;
       const incomingTs = Number(singleData.createdAt) || now;
       if (incomingTs < now - RETENTION_MS_SINGLE) {
-        return res.status(200).json({ success: true, skipped: 1, reason: 'older-than-retention', message: 'Call older than 30 days — skipped.' });
+        // 201, not 200: skipping an already-handled call is still a successful
+        // sync. The mobile app throws on any non-201 2xx (see batch path above).
+        return res.status(201).json({ success: true, skipped: 1, reason: 'older-than-retention', message: 'Call older than 30 days — skipped.' });
       }
       const [leads, existingLogs] = await Promise.all([
         getLeadsForOwner(ownerId),
@@ -394,7 +400,9 @@ export default async function handler(req, res) {
 
       const singleStableId = stableCallLogId({ ...singleData, createdAt: singleData.createdAt || now });
       if (existingLogs.some(l => l.id === singleStableId)) {
-        return res.status(200).json({ success: true, skipped: 1, reason: 'duplicate', message: 'Call already synced.' });
+        // 201, not 200: an already-synced call is a successful no-op, not a
+        // failure. The mobile app throws on any non-201 2xx (see batch path).
+        return res.status(201).json({ success: true, skipped: 1, reason: 'duplicate', message: 'Call already synced.' });
       }
 
       const newId = singleStableId;
