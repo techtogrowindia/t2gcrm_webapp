@@ -1,5 +1,6 @@
 import React from 'react';
 import { fmt, fmtD, numberToWords, currencySymbol } from '../../utils/helpers';
+import { computeDocTotals } from '../../utils/docTotals';
 
 export default function DocumentTemplate({ data, profile, type = 'Invoice', preview = false, settings }) {
   const profileTemplate = type === 'Invoice' ? profile?.invoiceTemplate : profile?.quotationTemplate;
@@ -15,29 +16,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
   // Format without currency symbol (number only, keeps locale formatting)
   const moneyNo = (n) => fmt(n, docCurrency).replace(docSymbol, '').trim();
 
-  const ptots = (() => {
-    const sub = items.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0), 0);
-    const taxTotal = items.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0) * (it.taxRate || 0) / 100, 0);
-    const taxesByRate = items.reduce((acc, it) => {
-      const r = it.taxRate || 0;
-      if (r === 0) return acc;
-      const taxAmt = (it.qty || 0) * (it.rate || 0) * r / 100;
-      acc[r] = (acc[r] || 0) + taxAmt;
-      return acc;
-    }, {});
-    const flatDiscTypes = ['₹', '$', '€', '£'];
-    const discAmt = flatDiscTypes.includes(data.discType) ? (parseFloat(data.disc) || 0) : (sub * (parseFloat(data.disc) || 0) / 100);
-    const deliveryAmt = parseFloat(data.deliveryCharge) || 0;
-    const deliveryTax = deliveryAmt * (parseFloat(data.deliveryTaxRate) || 0) / 100;
-    const total = Math.round(sub - discAmt + taxTotal + deliveryAmt + deliveryTax + (parseFloat(data.adj) || 0));
-    
-    let rawPayments = [];
-    try { rawPayments = Array.isArray(data.payments) ? data.payments : JSON.parse(data.payments || '[]'); } catch(e) {}
-    const paymentsTotal = rawPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
-    const balanceDue = Math.max(0, total - paymentsTotal);
-
-    return { sub, taxTotal, taxesByRate, discAmt, total, paymentsTotal, balanceDue };
-  })();
+  const ptots = computeDocTotals(items, data);
 
   const clientMatch = data.clientDetails || {}; 
   const isInterState = profile?.bizState && clientMatch?.state && profile.bizState !== clientMatch.state;
