@@ -547,29 +547,18 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         />
         <div className="no-print" style={{ marginTop: 40, textAlign: 'center', paddingBottom: 40, display: 'flex', justifyContent: 'center', gap: 10 }}>
           <button className="btn btn-primary" onClick={() => window.print()}>Print / Save PDF</button>
-          <button className="btn btn-secondary" onClick={() => window.print()}>Download PDF</button>
-          {/* BETA: real react-pdf file download. Auto-visible on dev/localhost
-              and hidden on production (crm.t2gcrm.in) so it can be tested
-              directly without any console flag. The localStorage flag
-              (t2g_pdf_beta=1) can also force-enable it anywhere. Only the
-              Classic template is supported; falls back to print otherwise. */}
-          {typeof window !== 'undefined' && (
-            window.location.hostname.startsWith('dev.') ||
-            window.location.hostname === 'localhost' ||
-            localStorage.getItem('t2g_pdf_beta') === '1'
-          ) && (
-            <button className="btn btn-secondary" onClick={async () => {
-              try {
-                // Dynamic import keeps the ~1MB react-pdf bundle out of the
-                // Invoices chunk — only fetched when a beta user clicks.
-                const { downloadDocumentPdf } = await import('./DocumentPdf');
-                await downloadDocumentPdf({ data: dataWithContext, profile, type: 'Invoice', settings });
-              } catch (e) {
-                console.error('PDF beta failed', e);
-                toast('PDF generation failed — use Print instead', 'error');
-              }
-            }}>Download PDF (beta)</button>
-          )}
+          {/* Real downloadable PDF file (named by invoice number). react-pdf is
+              dynamically imported so its ~1MB bundle only loads on click. Falls
+              back to the Print dialog if generation fails for any reason. */}
+          <button className="btn btn-secondary" onClick={async () => {
+            try {
+              const { downloadDocumentPdf } = await import('./DocumentPdf');
+              await downloadDocumentPdf({ data: dataWithContext, profile, type: 'Invoice', settings });
+            } catch (e) {
+              console.error('PDF download failed', e);
+              toast('PDF generation failed — use Print / Save PDF instead', 'error');
+            }
+          }}>Download PDF</button>
           <button className="btn btn-secondary" onClick={() => { 
             const inv = printing;
             setPrinting(null);

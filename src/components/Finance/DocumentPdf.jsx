@@ -1,9 +1,9 @@
 // ── React-PDF renderer for invoices/quotations (BETA) ──
 //
-// Additive, opt-in alternative to the HTML `DocumentTemplate.jsx` + window.print()
-// flow. Produces a real downloadable PDF file (named by document number, no
-// browser print dialog). Gated behind a beta flag in the caller; does NOT
-// replace the existing print path.
+// Produces a real downloadable PDF file (named by document number, no browser
+// print dialog). Wired as the "Download PDF" action in Invoices/Quotations; the
+// "Print / Save PDF" (window.print of the HTML `DocumentTemplate.jsx`) path
+// remains as a fallback.
 //
 // Templates supported: Classic, Modern, Minimal (shared body, different header)
 // and Spreadsheet (bordered GST layout, its own structure). The variant is
