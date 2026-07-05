@@ -1955,42 +1955,22 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                 <div className="sub" style={{ marginBottom: 25 }}>Select the default look and feel for your Invoices and Quotations.</div>
                 
                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 30 }}>
-                    {/* Invoice Template Selection */}
+                    {/* Document Template Selection — one template for BOTH invoices and quotations.
+                        Selecting a template sets invoiceTemplate and quotationTemplate together. */}
                     <div>
-                       <h4 style={{ marginBottom: 15 }}>Default Invoice Template</h4>
+                       <h4 style={{ marginBottom: 4 }}>Default Document Template</h4>
+                       <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 15 }}>Applies to both invoices and quotations.</div>
                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15 }}>
                           {[
                             { id: 'Classic', name: 'Classic' },
                             { id: 'Modern', name: 'Modern' },
                             { id: 'Minimal', name: 'Minimal' },
-                            { id: 'Spreadsheet', name: 'GST Format' },
+                            { id: 'Spreadsheet', name: 'Template 1' },
                           ].map(t => (
-                            <div key={t.id} onClick={() => setFin(f => ({ ...f, invoiceTemplate: t.id }))} style={{ border: fin.invoiceTemplate === t.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'center', backgroundColor: fin.invoiceTemplate === t.id ? 'rgba(var(--accent-rgb), 0.05)' : 'transparent', transition: '0.2s', minWidth: 0 }}>
+                            <div key={t.id} onClick={() => setFin(f => ({ ...f, invoiceTemplate: t.id, quotationTemplate: t.id }))} style={{ border: fin.invoiceTemplate === t.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'center', backgroundColor: fin.invoiceTemplate === t.id ? 'rgba(var(--accent-rgb), 0.05)' : 'transparent', transition: '0.2s', minWidth: 0 }}>
                                <div style={{ height: 160, background: '#f8fafc', borderRadius: 6, marginBottom: 8, overflow: 'hidden', border: '1px solid var(--border)', position: 'relative', display: 'flex', justifyContent: 'center' }}>
                                   <div style={{ transform: 'scale(0.18)', transformOrigin: 'top center', pointerEvents: 'none', width: '210mm', height: '297mm', flexShrink: 0 }}>
                                      <DocumentTemplate data={{ ...sampleInv, template: t.id }} profile={biz} preview={true} type="Invoice" />
-                                  </div>
-                               </div>
-                               <div style={{ fontSize: 12, fontWeight: 700 }}>{t.name}</div>
-                            </div>
-                          ))}
-                       </div>
-                    </div>
-
-                    {/* Quotation Template Selection */}
-                    <div>
-                       <h4 style={{ marginBottom: 15 }}>Default Quotation Template</h4>
-                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15 }}>
-                          {[
-                            { id: 'Classic', name: 'Classic' },
-                            { id: 'Modern', name: 'Modern' },
-                            { id: 'Minimal', name: 'Minimal' },
-                            { id: 'Spreadsheet', name: 'GST Format' },
-                          ].map(t => (
-                            <div key={t.id} onClick={() => setFin(f => ({ ...f, quotationTemplate: t.id }))} style={{ border: fin.quotationTemplate === t.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'center', backgroundColor: fin.quotationTemplate === t.id ? 'rgba(var(--accent-rgb), 0.05)' : 'transparent', transition: '0.2s', minWidth: 0 }}>
-                               <div style={{ height: 160, background: '#f8fafc', borderRadius: 6, marginBottom: 8, overflow: 'hidden', border: '1px solid var(--border)', position: 'relative', display: 'flex', justifyContent: 'center' }}>
-                                  <div style={{ transform: 'scale(0.18)', transformOrigin: 'top center', pointerEvents: 'none', width: '210mm', height: '297mm', flexShrink: 0 }}>
-                                     <DocumentTemplate data={{ ...sampleInv, template: t.id }} profile={biz} preview={true} type="Quotation" />
                                   </div>
                                </div>
                                <div style={{ fontSize: 12, fontWeight: 700 }}>{t.name}</div>
