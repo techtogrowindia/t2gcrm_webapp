@@ -402,12 +402,19 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
           );
         })}
 
-        {/* Notes / Terms — allowed to wrap so it fills the space right after the
-            items instead of jumping to the next page and leaving a gap. */}
-        {(data.notes || data.terms) ? (
-          <View style={{ paddingVertical: 12 }}>
-            {data.notes ? <><Text style={z.label}>Notes</Text><Text style={{ fontSize: 9, marginBottom: 8 }}>{data.notes}</Text></> : null}
-            {data.terms ? <><Text style={z.label}>Terms &amp; Conditions</Text><Text style={{ fontSize: 9 }}>{data.terms}</Text></> : null}
+        {/* Notes flow right after the items (can sit on page 1, filling the gap). */}
+        {data.notes ? (
+          <View style={{ paddingTop: 12 }}>
+            <Text style={z.label}>Notes</Text>
+            <Text style={{ fontSize: 9, marginBottom: 8 }}>{data.notes}</Text>
+          </View>
+        ) : null}
+        {/* Terms are kept together (wrap=false): if they don't fit on the current
+            page the whole block moves to the next page instead of splitting. */}
+        {data.terms ? (
+          <View style={{ paddingBottom: 12 }} wrap={false}>
+            <Text style={z.label}>Terms &amp; Conditions</Text>
+            <Text style={{ fontSize: 9 }}>{data.terms}</Text>
           </View>
         ) : null}
 
