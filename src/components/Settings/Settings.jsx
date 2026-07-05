@@ -1963,7 +1963,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { id: 'Classic', name: 'Classic' },
                             { id: 'Modern', name: 'Modern' },
                             { id: 'Minimal', name: 'Minimal' },
-                            { id: 'Spreadsheet', name: 'Tax Invoice (GST)' },
+                            { id: 'Spreadsheet', name: 'GST Format' },
                           ].map(t => (
                             <div key={t.id} onClick={() => setFin(f => ({ ...f, invoiceTemplate: t.id }))} style={{ border: fin.invoiceTemplate === t.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'center', backgroundColor: fin.invoiceTemplate === t.id ? 'rgba(var(--accent-rgb), 0.05)' : 'transparent', transition: '0.2s', minWidth: 0 }}>
                                <div style={{ height: 160, background: '#f8fafc', borderRadius: 6, marginBottom: 8, overflow: 'hidden', border: '1px solid var(--border)', position: 'relative', display: 'flex', justifyContent: 'center' }}>
@@ -1985,7 +1985,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { id: 'Classic', name: 'Classic' },
                             { id: 'Modern', name: 'Modern' },
                             { id: 'Minimal', name: 'Minimal' },
-                            { id: 'Spreadsheet', name: 'Spreadsheet' },
+                            { id: 'Spreadsheet', name: 'GST Format' },
                           ].map(t => (
                             <div key={t.id} onClick={() => setFin(f => ({ ...f, quotationTemplate: t.id }))} style={{ border: fin.quotationTemplate === t.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'center', backgroundColor: fin.quotationTemplate === t.id ? 'rgba(var(--accent-rgb), 0.05)' : 'transparent', transition: '0.2s', minWidth: 0 }}>
                                <div style={{ height: 160, background: '#f8fafc', borderRadius: 6, marginBottom: 8, overflow: 'hidden', border: '1px solid var(--border)', position: 'relative', display: 'flex', justifyContent: 'center' }}>
@@ -2003,7 +2003,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                 <div style={{ marginTop: 40, padding: 20, bgcolor: '#f8fafc', borderRadius: 12, border: '1px solid var(--border)' }}>
                    <div style={{ fontWeight: 700, marginBottom: 10 }}>💡 Pro Tip</div>
                    <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>
-                      The <strong>Tax Invoice (GST)</strong> template is optimized for Indian GST compliance and A4 printing. It automatically splits IGST into CGST/SGST based on your business and client states.
+                      The <strong>GST Format</strong> template is optimized for Indian GST compliance and A4 printing. It automatically splits IGST into CGST/SGST based on your business and client states.
                    </div>
                 </div>
               </div>
