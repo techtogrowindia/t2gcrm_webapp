@@ -451,7 +451,25 @@ export default function Quotations({ user, perms, ownerId, settings }) {
         <div className="no-print" style={{ marginTop: 40, textAlign: 'center', paddingBottom: 40, display: 'flex', justifyContent: 'center', gap: 10 }}>
           <button className="btn btn-primary" onClick={() => window.print()}>Print / Save PDF</button>
           <button className="btn btn-secondary" onClick={() => window.print()}>Download PDF</button>
-          <button className="btn btn-secondary" onClick={() => { 
+          {/* BETA: real react-pdf file download. Auto-visible on dev/localhost,
+              hidden on production (crm.t2gcrm.in). react-pdf is dynamically
+              imported on click so it stays out of the Quotations chunk. */}
+          {typeof window !== 'undefined' && (
+            window.location.hostname.startsWith('dev.') ||
+            window.location.hostname === 'localhost' ||
+            localStorage.getItem('t2g_pdf_beta') === '1'
+          ) && (
+            <button className="btn btn-secondary" onClick={async () => {
+              try {
+                const { downloadDocumentPdf } = await import('./DocumentPdf');
+                await downloadDocumentPdf({ data: dataWithContext, profile, type: 'Quotation', settings });
+              } catch (e) {
+                console.error('PDF beta failed', e);
+                toast('PDF generation failed — use Print instead', 'error');
+              }
+            }}>Download PDF (beta)</button>
+          )}
+          <button className="btn btn-secondary" onClick={() => {
             const q = printing;
             setPrinting(null);
             openEdit(q);
