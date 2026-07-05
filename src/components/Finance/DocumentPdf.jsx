@@ -286,7 +286,9 @@ const z = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 22 },
   bizName: { fontSize: 15, fontWeight: 'bold', textTransform: 'uppercase', marginBottom: 3 },
   bizLine: { fontSize: 10, color: '#000', lineHeight: 1.5 },
-  title: { fontSize: 26, fontWeight: 'normal', textTransform: 'uppercase', marginBottom: 10, textAlign: 'right' },
+  // lineHeight is required: without it react-pdf under-reserves the title's box
+  // and the metaBox top border draws up through the text as a strikethrough.
+  title: { fontSize: 26, fontWeight: 'normal', textTransform: 'uppercase', lineHeight: 1.1, marginBottom: 12, textAlign: 'right' },
   metaBox: { borderTopWidth: 2, borderColor: '#000', paddingTop: 8, minWidth: 200 },
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, borderBottomWidth: 1, borderColor: '#eee' },
   metaKey: { fontSize: 9, fontWeight: 'bold', textTransform: 'uppercase', color: '#000' },
@@ -402,19 +404,11 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
           );
         })}
 
-        {/* Notes flow right after the items (can sit on page 1, filling the gap). */}
-        {data.notes ? (
-          <View style={{ paddingTop: 12 }}>
-            <Text style={z.label}>Notes</Text>
-            <Text style={{ fontSize: 9, marginBottom: 8 }}>{data.notes}</Text>
-          </View>
-        ) : null}
-        {/* Terms are kept together (wrap=false): if they don't fit on the current
-            page the whole block moves to the next page instead of splitting. */}
-        {data.terms ? (
-          <View style={{ paddingBottom: 12 }} wrap={false}>
-            <Text style={z.label}>Terms &amp; Conditions</Text>
-            <Text style={{ fontSize: 9 }}>{data.terms}</Text>
+        {/* Notes / Terms */}
+        {(data.notes || data.terms) ? (
+          <View style={{ paddingVertical: 12 }} wrap={false}>
+            {data.notes ? <><Text style={z.label}>Notes</Text><Text style={{ fontSize: 9, marginBottom: 8 }}>{data.notes}</Text></> : null}
+            {data.terms ? <><Text style={z.label}>Terms &amp; Conditions</Text><Text style={{ fontSize: 9 }}>{data.terms}</Text></> : null}
           </View>
         ) : null}
 
