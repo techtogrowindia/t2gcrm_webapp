@@ -93,9 +93,13 @@ function ClassicDoc({ data, profile, type, settings }) {
       <Page size="A4" style={s.page}>
         {/* Header */}
         <View style={s.headerWrap}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', maxWidth: '58%' }}>
-            {profile?.logo ? <Image src={profile.logo} style={s.logo} /> : null}
-            <View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', width: '58%' }}>
+            {profile?.logo ? (
+              <View style={{ width: 54, marginRight: 14 }}>
+                <Image src={profile.logo} style={{ height: 54, width: 54, objectFit: 'contain' }} />
+              </View>
+            ) : null}
+            <View style={{ flex: 1 }}>
               <Text style={[s.docTitle, { color: accent }]}>{type.toUpperCase()}</Text>
               <Text style={s.docMeta}>No: {data.no}</Text>
               <Text style={s.docMeta}>Date: {fmtD(data.date)}</Text>
