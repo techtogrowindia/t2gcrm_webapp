@@ -45,8 +45,8 @@ const s = StyleSheet.create({
   // Header
   headerWrap: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 28 },
   logo: { height: 54, width: 54, objectFit: 'contain', marginRight: 14 },
-  docTitle: { fontSize: 26, fontWeight: 'bold' },
-  docMeta: { fontSize: 10, marginTop: 4 },
+  docTitle: { fontSize: 24, fontWeight: 'bold', lineHeight: 1.1, marginBottom: 8 },
+  docMeta: { fontSize: 10, marginTop: 3, lineHeight: 1.3 },
   bizName: { fontSize: 14, fontWeight: 'bold' },
   bizLine: { fontSize: 9, color: '#000', marginTop: 2 },
   // Client
