@@ -402,9 +402,10 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
           );
         })}
 
-        {/* Notes / Terms */}
+        {/* Notes / Terms — allowed to wrap so it fills the space right after the
+            items instead of jumping to the next page and leaving a gap. */}
         {(data.notes || data.terms) ? (
-          <View style={{ paddingVertical: 12 }} wrap={false}>
+          <View style={{ paddingVertical: 12 }}>
             {data.notes ? <><Text style={z.label}>Notes</Text><Text style={{ fontSize: 9, marginBottom: 8 }}>{data.notes}</Text></> : null}
             {data.terms ? <><Text style={z.label}>Terms &amp; Conditions</Text><Text style={{ fontSize: 9 }}>{data.terms}</Text></> : null}
           </View>
