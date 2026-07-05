@@ -16,6 +16,11 @@
 // Only the "Classic" template is implemented here for the first increment;
 // other variants still fall back to the HTML/print path in the caller.
 import React from 'react';
+// react-pdf's PDF engine (pdfkit) relies on Node's Buffer, which Vite does not
+// polyfill for the browser. This module is lazy-loaded, so the polyfill only
+// loads when a user actually generates a PDF.
+import { Buffer } from 'buffer';
+if (typeof window !== 'undefined' && !window.Buffer) window.Buffer = Buffer;
 import { Document, Page, View, Text, Image, StyleSheet, Font, pdf } from '@react-pdf/renderer';
 import { fmt, fmtD, numberToWords, currencySymbol } from '../../utils/helpers';
 import { computeDocTotals } from '../../utils/docTotals';
@@ -181,7 +186,7 @@ function ClassicDoc({ data, profile, type, settings }) {
             ) : null}
             <View style={{ marginTop: 8, borderTopWidth: 1, borderColor: '#ddd', paddingTop: 6 }}>
               <Text style={{ fontSize: 7, fontWeight: 'bold', textTransform: 'uppercase' }}>Total In Words</Text>
-              <Text style={{ fontSize: 9, fontWeight: 'bold', fontStyle: 'italic' }}>{numberToWords(ptots.total, docCurrency)}</Text>
+              <Text style={{ fontSize: 9, fontWeight: 'bold' }}>{numberToWords(ptots.total, docCurrency)}</Text>
             </View>
           </View>
         </View>
