@@ -548,10 +548,16 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         <div className="no-print" style={{ marginTop: 40, textAlign: 'center', paddingBottom: 40, display: 'flex', justifyContent: 'center', gap: 10 }}>
           <button className="btn btn-primary" onClick={() => window.print()}>Print / Save PDF</button>
           <button className="btn btn-secondary" onClick={() => window.print()}>Download PDF</button>
-          {/* BETA: real react-pdf file download. Hidden unless the localStorage
-              flag is set (t2g_pdf_beta=1) — invisible in production. Only the
+          {/* BETA: real react-pdf file download. Auto-visible on dev/localhost
+              and hidden on production (crm.t2gcrm.in) so it can be tested
+              directly without any console flag. The localStorage flag
+              (t2g_pdf_beta=1) can also force-enable it anywhere. Only the
               Classic template is supported; falls back to print otherwise. */}
-          {typeof window !== 'undefined' && localStorage.getItem('t2g_pdf_beta') === '1' && (
+          {typeof window !== 'undefined' && (
+            window.location.hostname.startsWith('dev.') ||
+            window.location.hostname === 'localhost' ||
+            localStorage.getItem('t2g_pdf_beta') === '1'
+          ) && (
             <button className="btn btn-secondary" onClick={async () => {
               try {
                 // Dynamic import keeps the ~1MB react-pdf bundle out of the
