@@ -3,6 +3,7 @@ import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
+import { AUTH_API } from '../../utils/authApi';
 
 export default function UserProfile({ user, profile, perms, memberProfile, ownerId }) {
   const isTeamMember = perms && !perms.isOwner;
@@ -55,7 +56,7 @@ export default function UserProfile({ user, profile, perms, memberProfile, owner
     if (!newPass || newPass.length < 6) return toast('Password must be at least 6 characters', 'error');
     
     try {
-      const res = await fetch('/api/auth', {
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'change-password', email: form.email, newPassword: newPass, userId: user.id })

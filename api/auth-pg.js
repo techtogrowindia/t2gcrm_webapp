@@ -111,7 +111,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { action, email: rawEmail, password, code } = req.body || {};
+  const { action, email: rawEmail, password, newPassword, code, userId, ownerUserId, teamMemberId, partnerId } = req.body || {};
   const email = (rawEmail || '').trim().toLowerCase();
 
   // ── action: me (verify token, return identity) ──────────────────
@@ -303,6 +303,159 @@ export default async function handler(req, res) {
       isTeam:   !!cred.is_team,
       isPartner: !!cred.is_partner,
     });
+  }
+
+  // ── action: change-password (self change / admin set) ───────────
+  // Mirrors /api/auth change-password on the PG `credentials` table.
+  if (action === 'change-password') {
+    if (!email || !newPassword) return res.status(400).json({ error: 'Required fields missing' });
+    try {
+      const hash = await bcrypt.hash(newPassword, 10);
+      const { rows } = await rawQuery('SELECT id FROM credentials WHERE lower(email) = lower($1)', [email]);
+      if (rows.length) {
+        await rawQuery(
+          "UPDATE credentials SET password_hash = $1, is_verified = true, doc = (doc - 'resetCode' - 'resetExpires') WHERE id = $2",
+          [hash, rows[0].id]
+        );
+      } else {
+        if (!userId) return res.status(400).json({ error: 'userId required to create credentials' });
+        await rawQuery(
+          "INSERT INTO credentials (id, email, password_hash, is_verified, is_team, is_partner, account_id, doc, created_at) VALUES (gen_random_uuid(), $1, $2, true, false, false, $3, '{}'::jsonb, now())",
+          [email, hash, String(userId)]
+        );
+      }
+      return res.status(200).json({ success: true, message: 'Password updated' });
+    } catch (e) {
+      console.error('[auth-pg] change-password error:', e.message);
+      return res.status(500).json({ error: 'Password update failed' });
+    }
+  }
+
+  // ── action: reset-password-request (generate OTP, return it) ─────
+  // Stores resetCode/resetExpires in credentials.doc (mirrors the InstantDB
+  // resetCode/resetExpires fields). The OTP is returned to the caller, which
+  // emails it — same contract as /api/auth.
+  if (action === 'reset-password-request') {
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    try {
+      const otp = String(Math.floor(100000 + Math.random() * 900000));
+      const expires = Date.now() + 15 * 60 * 1000;
+      const { rows } = await rawQuery('SELECT id FROM credentials WHERE lower(email) = lower($1)', [email]);
+      if (rows.length) {
+        await rawQuery(
+          "UPDATE credentials SET doc = doc || jsonb_build_object('resetCode', $1::text, 'resetExpires', $2::bigint) WHERE id = $3",
+          [otp, expires, rows[0].id]
+        );
+      } else {
+        // No credential yet — allow owners (present in accounts) to bootstrap.
+        const { rows: acc } = await rawQuery('SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]);
+        if (!acc.length) return res.status(404).json({ error: 'User not found' });
+        await rawQuery(
+          "INSERT INTO credentials (id, email, password_hash, is_verified, is_team, is_partner, account_id, doc, created_at) VALUES (gen_random_uuid(), $1, '', true, false, false, $2, jsonb_build_object('resetCode', $3::text, 'resetExpires', $4::bigint), now())",
+          [email, acc[0].id, otp, expires]
+        );
+      }
+      return res.status(200).json({ success: true, otp, message: 'OTP generated' });
+    } catch (e) {
+      console.error('[auth-pg] reset-password-request error:', e.message);
+      return res.status(500).json({ error: 'Reset request failed' });
+    }
+  }
+
+  // ── action: reset-password-verify ───────────────────────────────
+  if (action === 'reset-password-verify') {
+    if (!email || !code || !newPassword) return res.status(400).json({ error: 'Required fields missing' });
+    try {
+      const { rows } = await rawQuery(
+        "SELECT id, doc->>'resetCode' AS reset_code, (doc->>'resetExpires')::bigint AS reset_expires FROM credentials WHERE lower(email) = lower($1)",
+        [email]
+      );
+      const cred = rows[0];
+      if (!cred || !cred.reset_code || cred.reset_code !== String(code) || Date.now() > Number(cred.reset_expires))
+        return res.status(400).json({ error: 'Invalid or expired code' });
+      const hash = await bcrypt.hash(newPassword, 10);
+      await rawQuery(
+        "UPDATE credentials SET password_hash = $1, is_verified = true, doc = (doc - 'resetCode' - 'resetExpires') WHERE id = $2",
+        [hash, cred.id]
+      );
+      return res.status(200).json({ success: true, message: 'Password updated' });
+    } catch (e) {
+      console.error('[auth-pg] reset-password-verify error:', e.message);
+      return res.status(500).json({ error: 'Reset failed' });
+    }
+  }
+
+  // ── action: set-team-password (admin sets a team member's password) ─
+  // account_id MUST be the owner tenant — team_members has RLS and can't be
+  // resolved at login, so the owner link lives on credentials.account_id.
+  if (action === 'set-team-password') {
+    if (!email || !password || !ownerUserId || !teamMemberId) return res.status(400).json({ error: 'Required fields missing' });
+    try {
+      const hash = await bcrypt.hash(password, 10);
+      const { rows } = await rawQuery('SELECT id, is_team, is_partner FROM credentials WHERE lower(email) = lower($1)', [email]);
+      const existing = rows[0];
+      // Existing OWNER credential (not team/partner) — only update the password,
+      // never stamp team flags onto an owner (would corrupt their login).
+      if (existing && !existing.is_team && !existing.is_partner) {
+        await rawQuery('UPDATE credentials SET password_hash = $1 WHERE id = $2', [hash, existing.id]);
+        return res.status(200).json({ success: true, message: 'Password updated (owner account)' });
+      }
+      if (existing) {
+        await rawQuery(
+          "UPDATE credentials SET password_hash = $1, is_team = true, is_verified = true, account_id = $2, doc = doc || jsonb_build_object('teamMemberId', $3::text, 'ownerUserId', $2::text) WHERE id = $4",
+          [hash, String(ownerUserId), String(teamMemberId), existing.id]
+        );
+      } else {
+        await rawQuery(
+          "INSERT INTO credentials (id, email, password_hash, is_verified, is_team, is_partner, account_id, doc, created_at) VALUES (gen_random_uuid(), $1, $2, true, true, false, $3, jsonb_build_object('teamMemberId', $4::text, 'ownerUserId', $3::text), now())",
+          [email, hash, String(ownerUserId), String(teamMemberId)]
+        );
+      }
+      return res.status(200).json({ success: true, message: 'Password set' });
+    } catch (e) {
+      console.error('[auth-pg] set-team-password error:', e.message);
+      return res.status(500).json({ error: 'Failed to set password' });
+    }
+  }
+
+  // ── action: set-partner-password ────────────────────────────────
+  if (action === 'set-partner-password') {
+    if (!email || !password || !ownerUserId || !partnerId) return res.status(400).json({ error: 'Required fields missing' });
+    try {
+      const hash = await bcrypt.hash(password, 10);
+      const { rows } = await rawQuery('SELECT id FROM credentials WHERE lower(email) = lower($1)', [email]);
+      const existing = rows[0];
+      if (existing) {
+        await rawQuery(
+          "UPDATE credentials SET password_hash = $1, is_partner = true, is_verified = true, account_id = $2, doc = doc || jsonb_build_object('partnerId', $3::text, 'ownerUserId', $2::text) WHERE id = $4",
+          [hash, String(ownerUserId), String(partnerId), existing.id]
+        );
+      } else {
+        await rawQuery(
+          "INSERT INTO credentials (id, email, password_hash, is_verified, is_team, is_partner, account_id, doc, created_at) VALUES (gen_random_uuid(), $1, $2, true, false, true, $3, jsonb_build_object('partnerId', $4::text, 'ownerUserId', $3::text), now())",
+          [email, hash, String(ownerUserId), String(partnerId)]
+        );
+      }
+      return res.status(200).json({ success: true, message: 'Partner password set' });
+    } catch (e) {
+      console.error('[auth-pg] set-partner-password error:', e.message);
+      return res.status(500).json({ error: 'Failed to set partner password' });
+    }
+  }
+
+  // ── action: delete-partner-credentials ──────────────────────────
+  if (action === 'delete-partner-credentials') {
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    try {
+      const { rows } = await rawQuery(
+        'DELETE FROM credentials WHERE lower(email) = lower($1) AND is_partner = true RETURNING id',
+        [email]
+      );
+      return res.status(200).json({ success: true, message: `Deleted ${rows.length} credential(s)` });
+    } catch (e) {
+      console.error('[auth-pg] delete-partner-credentials error:', e.message);
+      return res.status(500).json({ error: 'Failed to delete credentials' });
+    }
   }
 
   return res.status(400).json({ error: 'Unknown action' });

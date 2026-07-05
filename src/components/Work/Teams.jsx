@@ -3,6 +3,7 @@ import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
+import { AUTH_API } from '../../utils/authApi';
 import { EMPTY_MEMBER } from '../../utils/constants';
 import { fmtDT, normalizeName } from '../../utils/helpers';
 
@@ -267,7 +268,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     setPwdLoading(true);
     try {
       const normalizedEmail = pwdModal.email.trim().toLowerCase();
-      const res = await fetch('/api/auth', {
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

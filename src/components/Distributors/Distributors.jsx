@@ -4,6 +4,7 @@ import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
 import { fmtD, DEFAULT_SOURCES } from '../../utils/helpers';
+import { AUTH_API } from '../../utils/authApi';
 import { useApp } from '../../context/AppContext';
 import SearchableSelect from '../UI/SearchableSelect';
 
@@ -80,7 +81,7 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
     setSubmitting(true);
     try {
       const pId = id();
-      const res = await fetch('/api/auth', {
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -193,7 +194,7 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
     setSubmitting(true);
     try {
       // 1. Create the partner auth credential via API
-      const res = await fetch('/api/auth', {
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1779,7 +1780,7 @@ function HierarchyView({ availableDistributors, allApprovedPartners, ownerId, us
       // 1. Update password if provided
       if (newPassword) {
         if (newPassword.length < 6) throw new Error('Password must be at least 6 characters');
-        const res = await fetch('/api/auth', {
+        const res = await fetch(AUTH_API, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1853,7 +1854,7 @@ function HierarchyView({ availableDistributors, allApprovedPartners, ownerId, us
       await dbWrite(txs);
       // Delete credentials via API
       if (partner.email) {
-        await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete-partner-credentials', email: partner.email.trim().toLowerCase() }) }).catch(() => {});
+        await fetch(AUTH_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete-partner-credentials', email: partner.email.trim().toLowerCase() }) }).catch(() => {});
       }
       toast(`Partner "${partner.name}" deleted successfully`, 'success');
     } catch (err) {

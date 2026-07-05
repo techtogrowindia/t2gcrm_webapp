@@ -4,6 +4,7 @@ import { DEFAULT_PLANS } from '../../context/AppContext';
 import { useToast } from '../../context/ToastContext';
 import { pgAuthSetSession } from '../../hooks/useAuthPg';
 
+import { AUTH_API } from '../../utils/authApi';
 const USE_PG_AUTH = import.meta.env.VITE_USE_PG_AUTH === 'true';
 
 export default function AuthScreen({ settings }) {
@@ -164,7 +165,7 @@ export default function AuthScreen({ settings }) {
     if (!email.trim()) { toast('Please enter your email first', 'info'); return; }
     setLoading(true);
     try {
-      const res = await fetch('/api/auth', {
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reset-password-request', email: email.trim() })
@@ -190,7 +191,7 @@ export default function AuthScreen({ settings }) {
     if (!code.trim() || !newPassword) { toast('Enter code and new password', 'error'); return; }
     setLoading(true);
     try {
-      const res = await fetch('/api/auth', {
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reset-password-verify', email: email.trim(), code: code.trim(), newPassword })

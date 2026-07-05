@@ -4,6 +4,7 @@ import db from '../../instant';
 import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
 import { fmtD, DEFAULT_STAGES } from '../../utils/helpers';
+import { AUTH_API } from '../../utils/authApi';
 
 const PARTNER_NAV = [
   { group: 'Main' },
@@ -630,7 +631,7 @@ function ProfileSettingsView({ ownerId, partnerId }) {
     
     setResetting(true);
     try {
-      const res = await fetch('/api/auth', {
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
