@@ -95,6 +95,15 @@ const API_LIST = [
     ]
   },
   {
+    group: 'Lead Form Config (Mobile)',
+    path: '/api/lead-form-config',
+    method: 'GET',
+    desc: 'Business-defined dropdown lists for the mobile Create-Lead form — the same stages, sources, requirements and custom fields configured in Settings. Fetch once when opening the screen, populate the dropdowns, then create the lead via /api/data?module=leads with the chosen values. Returns config lists only (no tokens/SMTP).',
+    actions: [
+      { name: 'Get Lead Form Config (GET)', method: 'GET', query: 'ownerId=WORKSPACE_ID', resp: { success: true, stages: ['New Enquiry', 'Warm', 'Won'], sources: ['FB Ads', 'Referral', 'WhatsApp'], requirements: ['Hot', 'Warm', 'Cold'], productCats: [], customFields: [], wonStage: 'Won', lostStage: 'Lost' }, notes: 'stages = visible stages only (leadStages/stages minus disabledStages), matching what the web shows. sources & requirements fall back to system defaults if the business has not configured its own. productCats & customFields are [] when unset — hide that control. wonStage/lostStage identify the terminal stages.', errors: [{ status: 400, error: 'ownerId is required' }] }
+    ]
+  },
+  {
     group: 'Customers',
     path: '/api/data/customers',
     method: 'ALL',
