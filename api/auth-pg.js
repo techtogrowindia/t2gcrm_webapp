@@ -103,6 +103,23 @@ function checkSendRate(email) {
   return true;
 }
 
+// ── Cross-type email classification (uniqueness enforcement) ───────
+// Server-side backstop so an email can only be ONE user type. Uses only the
+// no-RLS auth tables: accounts (owners) + credentials (is_team/is_partner).
+// team_members/partner_applications are RLS-gated and unreadable here, but
+// credentials carries the same team/partner signal.
+async function classifyEmail(email) {
+  const [acc, cred] = await Promise.all([
+    rawQuery('SELECT 1 FROM accounts WHERE lower(email) = lower($1) LIMIT 1', [email]),
+    rawQuery('SELECT is_team, is_partner FROM credentials WHERE lower(email) = lower($1) LIMIT 1', [email]),
+  ]);
+  return {
+    isOwner: acc.rows.length > 0,
+    isTeam: !!cred.rows[0]?.is_team,
+    isPartner: !!cred.rows[0]?.is_partner,
+  };
+}
+
 // ── Handler ───────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -391,15 +408,14 @@ export default async function handler(req, res) {
   if (action === 'set-team-password') {
     if (!email || !password || !ownerUserId || !teamMemberId) return res.status(400).json({ error: 'Required fields missing' });
     try {
+      // Email uniqueness: a team member's email must not already be an owner or partner.
+      const cls = await classifyEmail(email);
+      if (cls.isOwner) return res.status(409).json({ error: 'This email belongs to a business owner — use a different email for the team member.' });
+      if (cls.isPartner) return res.status(409).json({ error: 'This email is already registered as a partner.' });
+
       const hash = await bcrypt.hash(password, 10);
-      const { rows } = await rawQuery('SELECT id, is_team, is_partner FROM credentials WHERE lower(email) = lower($1)', [email]);
+      const { rows } = await rawQuery('SELECT id FROM credentials WHERE lower(email) = lower($1)', [email]);
       const existing = rows[0];
-      // Existing OWNER credential (not team/partner) — only update the password,
-      // never stamp team flags onto an owner (would corrupt their login).
-      if (existing && !existing.is_team && !existing.is_partner) {
-        await rawQuery('UPDATE credentials SET password_hash = $1 WHERE id = $2', [hash, existing.id]);
-        return res.status(200).json({ success: true, message: 'Password updated (owner account)' });
-      }
       if (existing) {
         await rawQuery(
           "UPDATE credentials SET password_hash = $1, is_team = true, is_verified = true, account_id = $2, doc = doc || jsonb_build_object('teamMemberId', $3::text, 'ownerUserId', $2::text) WHERE id = $4",
@@ -422,6 +438,11 @@ export default async function handler(req, res) {
   if (action === 'set-partner-password') {
     if (!email || !password || !ownerUserId || !partnerId) return res.status(400).json({ error: 'Required fields missing' });
     try {
+      // Email uniqueness: a partner's email must not already be an owner or team member.
+      const cls = await classifyEmail(email);
+      if (cls.isOwner) return res.status(409).json({ error: 'This email belongs to a business owner — use a different email.' });
+      if (cls.isTeam) return res.status(409).json({ error: 'This email is already registered as a team member.' });
+
       const hash = await bcrypt.hash(password, 10);
       const { rows } = await rawQuery('SELECT id FROM credentials WHERE lower(email) = lower($1)', [email]);
       const existing = rows[0];
