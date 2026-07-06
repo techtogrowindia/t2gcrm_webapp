@@ -2,6 +2,7 @@ import { init, tx, id } from '@instantdb/admin';
 import { pgRunOps } from './data-pg.js';
 import { readData } from './_write-ops.js';
 import { getLeadsForOwner } from './_leads-cache.js';
+import { getLeadFormConfig, validateLeadAgainstConfig } from './_lead-config.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -374,6 +375,20 @@ export default async function handler(req, res) {
 
     /* ──────────── CREATE (POST) ──────────── */
     if (method === 'POST') {
+      // Restrict lead creation to configured dropdown values — reject free-text
+      // stage/source/requirement so a lead can only be created with the same
+      // options the business set up in Settings (fetched via /api/lead-form-config).
+      if (module === 'leads') {
+        const cfg = await getLeadFormConfig(db, ownerId);
+        const problems = validateLeadAgainstConfig(data, cfg);
+        if (problems.length) {
+          return res.status(400).json({
+            error: `Invalid lead field(s): ${problems.join('; ')}. Use values from GET /api/lead-form-config.`,
+            invalidFields: problems,
+          });
+        }
+      }
+
       const newId = id();
       let payload = { ...data, userId: ownerId, actorId: actorId || ownerId, createdAt: Date.now() };
 
