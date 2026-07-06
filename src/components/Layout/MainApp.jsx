@@ -119,9 +119,26 @@ export default function MainApp({ user, settings }) {
   const { data: partnerDiscovery, isLoading: partnerDiscLoading } = db.useQuery(partnerDiscQuery);
   const isDiscoveringPartner = !!partnerDiscQuery && partnerDiscLoading;
 
+  // 2c. Owner-precedence check: does this email own a business? If so this user
+  // is the OWNER and must never be resolved as a team member — guards the case
+  // where an owner also added themselves to teamMembers with their own email,
+  // which otherwise flips isTeamMember=true and locks them out of Settings/Admin.
+  const ownerCheckQuery = (user.email && !isSuperadmin)
+    ? { userProfiles: { $: { where: { email: String(user.email).toLowerCase() }, limit: 1 } } }
+    : null;
+  const { data: ownerCheck } = db.useQuery(ownerCheckQuery);
+  const isEmailOwner = !!ownerCheck?.userProfiles?.[0];
+
   // Sync discovered team info
   useEffect(() => {
-    if (discovery?.teamMembers?.[0] && !teamInfo) {
+    // Owner precedence — clear any stale/erroneous team-member state for an
+    // owner so Settings/Admin unlock even if their email is also in teamMembers.
+    if (isEmailOwner && teamInfo?.isTeamMember) {
+      setTeamInfo(null);
+      localStorage.removeItem('tc_team_member');
+      return;
+    }
+    if (discovery?.teamMembers?.[0] && !teamInfo && !isEmailOwner) {
       const discovered = {
         isTeamMember: true,
         ownerUserId: discovery.teamMembers[0].userId,
@@ -131,7 +148,7 @@ export default function MainApp({ user, settings }) {
       setTeamInfo(discovered);
       localStorage.setItem('tc_team_member', JSON.stringify(discovered));
     }
-  }, [discovery, teamInfo]);
+  }, [discovery, teamInfo, isEmailOwner]);
 
   // Redirect discovered partners back to the partner portal
   useEffect(() => {
