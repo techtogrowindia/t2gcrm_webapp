@@ -40,17 +40,17 @@ const API_LIST = [
       },
       {
         name: 'Create Lead (Secure POST)', method: 'POST',
-        body: { module: 'leads', name: 'John Smith', email: 'john@example.com', phone: '9876543210', source: 'Website', stage: 'New', logText: 'Lead captured via app' },
-        notes: 'Send Authorization: Bearer <token> in the header. Do NOT include ownerId / actorId in the body — they are injected server-side from the verified token. All other module endpoints (customers, invoices, tasks, etc.) work the same way: pass module=<key> + the record fields, with the token in the header.',
+        body: { module: 'leads', name: 'John Smith', email: 'john@example.com', phone: '9876543210', source: 'Website', stage: 'New Enquiry', requirement: 'Hot', logText: 'Lead captured via app' },
+        notes: 'Send Authorization: Bearer <token> in the header. Do NOT include ownerId / actorId in the body — they are injected server-side from the verified token.\n\nVALIDATION (same as web): stage, source and requirement must be values returned by GET /api/lead-form-config — free-text / manual values are rejected with 400. Fetch the config first, show those options, then submit the chosen values.\n\nAll other module endpoints (customers, invoices, tasks, etc.) work the same way: pass module=<key> + the record fields, with the token in the header.',
         resp: { success: true, id: '12345...', message: 'Record created successfully' },
-        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Invalid or missing module' }]
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Invalid or missing module' }, { status: 400, error: 'Invalid lead field(s): stage "X" is not an allowed stage. Use values from GET /api/lead-form-config.' }]
       },
       {
         name: 'Update Lead (Secure PATCH)', method: 'PATCH',
-        body: { module: 'leads', id: 'LEAD_ID', stage: 'Contacted', logText: 'Called client' },
-        notes: 'Authorization: Bearer <token> header required. ownerId/actorId are derived from the token — only send the record id + the fields to change.',
+        body: { module: 'leads', id: 'LEAD_ID', stage: 'Budget Negotiation', logText: 'Called client' },
+        notes: 'Authorization: Bearer <token> header required. ownerId/actorId are derived from the token — only send the record id + the fields to change.\n\nVALIDATION (same as web): if you send stage / source / requirement, they must be values from GET /api/lead-form-config (wonStage/lostStage are always accepted for stage) — free-text values are rejected with 400.',
         resp: { success: true, message: 'Record updated successfully' },
-        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Record ID is required for updates' }]
+        errors: [{ status: 401, error: 'Invalid or expired token' }, { status: 400, error: 'Record ID is required for updates' }, { status: 400, error: 'Invalid lead field(s): stage "X" is not an allowed stage. Use values from GET /api/lead-form-config.' }]
       },
       {
         name: 'Delete Lead (Secure DELETE)', method: 'DELETE',
@@ -83,14 +83,14 @@ const API_LIST = [
     ]
   },
   {
-    group: 'Leads (CRM)',
+    group: 'Leads (CRM) — Legacy',
     path: '/api/data/leads',
     method: 'ALL',
-    desc: 'Manage potential clients and inquiries.',
+    desc: 'Manage potential clients and inquiries. LEGACY variant of the Secure Data API above — same operations and the same validation, but identity is passed explicitly (ownerId/actorId) instead of a bearer token. Prefer /api/secure-data for new integrations.',
     actions: [
       { name: 'Create Lead (POST)', method: 'POST', notes: 'stage, source and requirement must be values returned by GET /api/lead-form-config — free-text / manual values are rejected with 400. Omit a field to skip it (matching is case-insensitive; source "Retailer" is normalised to "Channel Partners").', body: { ownerId: 'WORKSPACE_ID', actorId: 'USER_ID', module: 'leads', name: 'John Smith', email: 'john@example.com', phone: '9876543210', source: 'Website', stage: 'New Enquiry', requirement: 'Hot', logText: 'Lead captured via app' }, resp: { success: true, id: '12345...', message: 'Record created successfully' }, errors: [{ status: 400, error: 'Invalid or missing module' }, { status: 400, error: 'ownerId is required to identify the workspace context' }, { status: 400, error: 'Invalid lead field(s): stage "X" is not an allowed stage. Use values from GET /api/lead-form-config.' }] },
       { name: 'List Leads (GET)', method: 'GET', query: 'module=leads&ownerId=WORKSPACE_ID&actorId=CALLER_ID', notes: 'actorId identifies the caller and drives Team-Permissions visibility.\n  • Owner: pass actorId = ownerUserId (or omit actorId) — returns ALL leads in the workspace.\n  • Team member: pass actorId = teamMemberId — returns only leads that member is allowed to see based on Settings → Team Permissions (assigned-only, with or without unassigned).\n\nWhere do these IDs come from? The /api/auth Login response returns both ownerUserId and teamMemberId — store them after login and reuse for every API call.', resp: { success: true, data: [{ id: '123', name: 'John Smith', stage: 'New' }], count: 25 }, errors: [{ status: 400, error: 'Invalid or missing module' }, { status: 400, error: 'ownerId is required' }] },
-      { name: 'Update Lead (PATCH)', method: 'PATCH', body: { module: 'leads', id: 'LEAD_ID', ownerId: 'WORKSPACE_ID', stage: 'Contacted', logText: 'Called client' }, resp: { success: true, message: 'Record updated successfully' }, errors: [{ status: 400, error: 'Record ID is required for updates' }] },
+      { name: 'Update Lead (PATCH)', method: 'PATCH', notes: 'If you send stage / source / requirement they must be values from GET /api/lead-form-config (wonStage/lostStage always accepted for stage) — free-text values are rejected with 400, same as web.', body: { module: 'leads', id: 'LEAD_ID', ownerId: 'WORKSPACE_ID', stage: 'Budget Negotiation', logText: 'Called client' }, resp: { success: true, message: 'Record updated successfully' }, errors: [{ status: 400, error: 'Record ID is required for updates' }, { status: 400, error: 'Invalid lead field(s): stage "X" is not an allowed stage. Use values from GET /api/lead-form-config.' }] },
       { name: 'Delete Lead (DELETE)', method: 'DELETE', body: { module: 'leads', id: 'LEAD_ID', ownerId: 'WORKSPACE_ID' }, resp: { success: true, message: 'Record deleted successfully' }, errors: [{ status: 400, error: 'Record ID is required for deletion' }] }
     ]
   },

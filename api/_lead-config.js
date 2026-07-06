@@ -52,7 +52,11 @@ export function validateLeadAgainstConfig(payload, cfg) {
   const problems = [];
   const inList = (v, list) => list.some(x => String(x).toLowerCase() === String(v).toLowerCase());
 
-  if (payload.stage && !inList(payload.stage, cfg.stages)) {
+  // wonStage/lostStage are always valid targets even when hidden from the
+  // visible kanban subset — the web moves leads there on Won/Lost, so the API
+  // must accept them too.
+  const allowedStages = [...cfg.stages, cfg.wonStage, cfg.lostStage].filter(Boolean);
+  if (payload.stage && !inList(payload.stage, allowedStages)) {
     problems.push(`stage "${payload.stage}" is not an allowed stage`);
   }
   let source = payload.source;

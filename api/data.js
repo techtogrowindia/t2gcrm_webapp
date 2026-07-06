@@ -447,6 +447,20 @@ export default async function handler(req, res) {
       const { id: targetId, ...updates } = data;
       if (!targetId) return res.status(400).json({ error: 'Record ID is required for updates' });
 
+      // Same dropdown validation as CREATE — an update must not smuggle in a
+      // free-text stage/source/requirement either (web only offers configured
+      // values, so the API mirrors that). wonStage/lostStage always allowed.
+      if (module === 'leads') {
+        const cfg = await getLeadFormConfig(db, ownerId);
+        const problems = validateLeadAgainstConfig(updates, cfg);
+        if (problems.length) {
+          return res.status(400).json({
+            error: `Invalid lead field(s): ${problems.join('; ')}. Use values from GET /api/lead-form-config.`,
+            invalidFields: problems,
+          });
+        }
+      }
+
       // Record when a lead's assignee changes. Only stamp when assigning to a
       // real person — clearing the assignee (assign = '') must not set a date.
       if (module === 'leads' && updates.assign) {
