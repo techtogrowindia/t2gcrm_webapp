@@ -152,6 +152,18 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     if (!editData && planEnforcement && !planEnforcement.isWithinLimit('maxUsers', team.length)) { toast('Team member limit reached for your plan. Please upgrade.', 'error'); return; }
     if (!form.name.trim() || !form.email.trim()) { toast('Name and email required', 'error'); return; }
     const normalizedEmail = form.email.trim().toLowerCase();
+    // Duplicate-email guard: identity is resolved by email, so a member sharing
+    // the owner's email (or another member's) corrupts login/permissions — an
+    // owner added as a member with their own email gets locked out of Settings.
+    if (!editData || normalizedEmail !== (editData.email || '').trim().toLowerCase()) {
+      const ownerEmail = (data?.userProfiles?.[0]?.email || '').trim().toLowerCase();
+      if (ownerEmail && normalizedEmail === ownerEmail) {
+        toast('This email belongs to the business owner — use a different email for the team member', 'error');
+        return;
+      }
+      const dup = team.find(m => m.id !== editData?.id && (m.email || '').trim().toLowerCase() === normalizedEmail);
+      if (dup) { toast(`This email is already used by team member "${dup.name}"`, 'error'); return; }
+    }
     const trimmedName = normalizeName(form.name);   // trim edges + collapse internal double-spaces — stray spaces break name-based assignment matching
     const payload = { ...form, name: trimmedName, email: normalizedEmail, userId: ownerId };
     if (editData) {

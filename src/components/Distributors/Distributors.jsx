@@ -77,7 +77,12 @@ export default function Distributors({ user, ownerId, perms, initialTab }) {
     e.preventDefault();
     if (!onboardForm.password || onboardForm.password.length < 6) return toast('Password min 6 chars', 'error');
     if (!onboardForm.name || !onboardForm.email || !onboardForm.phone) return toast('Name, Email, Phone required', 'error');
-    
+    // Duplicate-email guard — identity is resolved by email; block the owner's
+    // email or an existing partner's email so logins/permissions don't collide.
+    const em = onboardForm.email.trim().toLowerCase();
+    if ((profile?.email || '').trim().toLowerCase() === em) return toast('This email belongs to the business owner — use a different email', 'error');
+    if (applications.some(p => (p.email || '').trim().toLowerCase() === em)) return toast('A partner with this email already exists', 'error');
+
     setSubmitting(true);
     try {
       const pId = id();
