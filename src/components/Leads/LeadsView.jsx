@@ -91,7 +91,11 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const teamCanSeeAllLeads = data?.userProfiles?.[0]?.teamCanSeeAllLeads !== false;
   const teamCanSeeUnassignedLeads = data?.userProfiles?.[0]?.teamCanSeeUnassignedLeads !== false;
   const myTeamMember = (data?.teamMembers || []).find(t => (t.email || '').toLowerCase() === (user.email || '').toLowerCase());
-  const myName = myTeamMember?.name || user.name || '';
+  // perms.name is the authoritative team-member name (usePermissions resolves it
+  // from the owner's member list). On the Postgres/JWT path user.name is empty,
+  // so without this fallback myName can be '' — which silently zeroes the
+  // name-based lead visibility filter and hides all of a member's assigned leads.
+  const myName = myTeamMember?.name || perms?.name || user.name || '';
 
   // Server-driven page state — { items, counts, totalFiltered }
   const [pageData, setPageData] = useState(null);
