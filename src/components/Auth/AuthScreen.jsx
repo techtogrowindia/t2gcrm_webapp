@@ -102,19 +102,7 @@ export default function AuthScreen({ settings }) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Authentication failed');
-        pgAuthSetSession(data);
-        if (data.isTeam) {
-          localStorage.setItem('tc_team_member', JSON.stringify({
-            isTeamMember: true,
-            ownerUserId: data.accountId,
-            teamMemberId: data.credentialId,
-          }));
-        } else { localStorage.removeItem('tc_team_member'); }
-        if (data.isPartner) {
-          localStorage.setItem('tc_channel_partner', JSON.stringify({
-            isPartner: true, ownerUserId: data.accountId, partnerId: data.credentialId,
-          }));
-        } else { localStorage.removeItem('tc_channel_partner'); }
+        pgAuthSetSession(data); // sets tc_team_member/tc_channel_partner too
         toast('Welcome Back! 👋', 'success');
         window.location.reload();
         return;

@@ -108,6 +108,32 @@ export function pgAuthSetSession(data) {
     isPartner: data.isPartner,
   };
   localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+
+  // MainApp.jsx reads tc_team_member / tc_channel_partner (separate keys from
+  // pg_auth_profile above) to resolve targetUserId = the OWNER's tenant id for
+  // data queries. Must be set here — the single call site every PG login path
+  // (password AND magic-code) goes through — or a team/partner session falls
+  // back to their own identity id as targetUserId, querying a tenant that
+  // doesn't exist and silently returning zero leads/stats for them.
+  if (data.isTeam) {
+    localStorage.setItem('tc_team_member', JSON.stringify({
+      isTeamMember: true,
+      ownerUserId: data.accountId,
+      teamMemberId: data.credentialId,
+    }));
+  } else {
+    localStorage.removeItem('tc_team_member');
+  }
+  if (data.isPartner) {
+    localStorage.setItem('tc_channel_partner', JSON.stringify({
+      isPartner: true,
+      ownerUserId: data.accountId,
+      partnerId: data.credentialId,
+    }));
+  } else {
+    localStorage.removeItem('tc_channel_partner');
+  }
+
   // Pre-warm hot collections in background so first page navigations are instant.
   // Fire-and-forget — failure silently falls back to normal per-page fetches.
   pgPreWarm(data.token).catch(() => {});
