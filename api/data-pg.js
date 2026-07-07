@@ -155,9 +155,18 @@ export async function pgRead(tenantId, querySpec, { isSuperadmin = false } = {})
   const out = {};
   for (const [coll, cfg] of Object.entries(querySpec || {})) {
     if (coll === 'userProfiles') {
+      // A `where.email` lookup (e.g. "does an account exist with this email")
+      // must search by email, NOT default to the caller's own tenant — accounts
+      // has no RLS specifically so this kind of cross-tenant-by-email lookup
+      // works, mirroring InstantDB's admin-token behavior. Any other/empty
+      // where clause (the common case — userId is stripped upstream) falls
+      // back to "my own account" via tenantId.
+      const emailFilter = cfg?.$?.where?.email;
       const r = isSuperadmin
         ? await rawQuery('SELECT id, doc FROM accounts')
-        : await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
+        : emailFilter
+          ? await rawQuery('SELECT id, doc FROM accounts WHERE lower(email) = lower($1)', [String(emailFilter)])
+          : await rawQuery('SELECT id, doc FROM accounts WHERE id = $1', [tenantId]);
       out[coll] = r.rows.map(row => ({ ...row.doc, id: row.id, userId: row.id }));
       continue;
     }
