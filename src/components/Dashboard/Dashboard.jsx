@@ -40,8 +40,11 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const commissionsRaw = deferredData?.partnerCommissions || [];
 
   const teamMembers = coreData?.teamMembers || [];
-  const myTeamMember = teamMembers.find(t => t.email === user.email);
-  const myName = myTeamMember?.name || user.name || '';
+  const myTeamMember = teamMembers.find(t => (t.email || '').toLowerCase() === (user.email || '').toLowerCase());
+  // perms.name is the authoritative member name (usePermissions). On the PG/JWT
+  // path user.name is empty, so without this fallback myName can be '' and the
+  // name-based lead filter hides all of a member's assigned leads.
+  const myName = myTeamMember?.name || perms?.name || user.name || '';
   const teamCanSeeAllLeads = profile.teamCanSeeAllLeads !== false;
   const teamCanSeeUnassignedLeads = profile.teamCanSeeUnassignedLeads !== false;
 
