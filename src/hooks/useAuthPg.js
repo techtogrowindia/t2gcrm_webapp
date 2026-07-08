@@ -143,10 +143,29 @@ export function pgAuthSetSession(data) {
 export function pgAuthSignOut() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(PROFILE_KEY);
+  // Also clear team/partner identity — leaving these behind would let a stale
+  // teamInfo leak into whatever session logs in next on this browser.
+  localStorage.removeItem('tc_team_member');
+  localStorage.removeItem('tc_channel_partner');
   pgCacheClear();
 }
 
 /** Get the stored JWT (for API calls that need Authorization header). */
 export function pgAuthGetToken() {
   return localStorage.getItem(TOKEN_KEY);
+}
+
+/**
+ * Call right after any fetch to /api/data-pg or /api/auth-pg. If the response
+ * is 401 (expired/invalid JWT), signs out and reloads so the user lands on
+ * the login screen instead of a dead-end "Unauthorized: Token expired" error.
+ * Returns true if it handled a 401 (caller should stop and not read the body).
+ */
+export function pgAuthHandleUnauthorized(res) {
+  if (res.status === 401) {
+    pgAuthSignOut();
+    window.location.reload();
+    return true;
+  }
+  return false;
 }

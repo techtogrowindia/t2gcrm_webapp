@@ -22,7 +22,7 @@
 // directly — this hook is only wired up in migrated components.
 // ===================================================================
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { pgAuthGetToken } from './useAuthPg';
+import { pgAuthGetToken, pgAuthHandleUnauthorized } from './useAuthPg';
 import { pgCacheGet, pgCacheSet, pgCacheClear } from './pgCache';
 
 export function usePgQuery(spec) {
@@ -75,6 +75,7 @@ export function usePgQuery(spec) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ action: 'query', queries: q }),
       });
+      if (pgAuthHandleUnauthorized(res)) return; // expired session — page is reloading to login
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Query failed');
       if (mounted.current) {

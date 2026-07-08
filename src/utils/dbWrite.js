@@ -21,7 +21,7 @@
 //   await dbWrite(dbOp.delete('leads', leadId));
 // ===================================================================
 import db from '../instant';
-import { pgAuthGetToken } from '../hooks/useAuthPg';
+import { pgAuthGetToken, pgAuthHandleUnauthorized } from '../hooks/useAuthPg';
 import { instantToPgSpec } from '../hooks/usePgQuery';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
@@ -38,6 +38,7 @@ export async function dbQueryOnce(querySpec) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ action: 'query', queries: instantToPgSpec(querySpec) }),
   });
+  if (pgAuthHandleUnauthorized(res)) return new Promise(() => {}); // expired — page is reloading
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Query failed');
   return json.data;
@@ -71,6 +72,7 @@ export async function dbWrite(opsInput) {
       },
       body: JSON.stringify(body),
     });
+    if (pgAuthHandleUnauthorized(res)) return new Promise(() => {}); // expired — page is reloading
     const result = await res.json();
     if (!res.ok) throw new Error(result.error || 'Write to Postgres failed');
     // Notify all active usePgQuery hooks to refetch (PG is not real-time).
