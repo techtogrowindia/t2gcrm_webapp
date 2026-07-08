@@ -3,6 +3,9 @@ import db from './instant';
 import { ToastProvider } from './context/ToastContext';
 import { AppProvider } from './context/AppContext';
 import { useAuthPg, pgAuthSignOut } from './hooks/useAuthPg';
+import { useIdleLogout } from './hooks/useIdleLogout';
+
+const IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // log out after 2 hours of no activity
 
 const USE_PG_AUTH = import.meta.env.VITE_USE_PG_AUTH === 'true';
 import AuthScreen from './components/Auth/AuthScreen';
@@ -80,6 +83,12 @@ function AppInner() {
     ? { partnerApplications: { $: { where: { email: String(user.email).toLowerCase() }, limit: 1 } } }
     : null;
   const { data: partnerData, isLoading: partnerLoading } = db.useQuery(partnerQuery);
+
+  // Idle-session logout — same sign-out path as the manual logout button.
+  useIdleLogout(!!user, IDLE_TIMEOUT_MS, () => {
+    if (USE_PG_AUTH) { pgAuthSignOut(); window.location.href = '/'; }
+    else db.auth.signOut();
+  });
 
   React.useEffect(() => {
     document.title = settings.title || settings.brandName || 'T2GCRM';
