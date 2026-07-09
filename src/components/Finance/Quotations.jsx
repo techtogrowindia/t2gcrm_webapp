@@ -10,6 +10,8 @@ import { EMPTY_CUSTOMER } from '../../utils/constants';
 import { logActivity } from '../../utils/activityLogger';
 import { fireAutoNotifications } from '../../utils/messaging';
 
+const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
+
 const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
 
 function calcTotals(items, disc, discType, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
@@ -62,8 +64,19 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     if (custFetchRef.current) return;
     custFetchRef.current = true;
     try {
-      const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
-      setModalCustomers(result.customers || []);
+      if (USE_PG_DATA) {
+        const token = localStorage.getItem('pg_auth_token');
+        const res = await fetch('/api/data-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: 'query', queries: { customers: {} } }),
+        });
+        const json = await res.json();
+        setModalCustomers(json.data?.customers || []);
+      } else {
+        const result = await db.queryOnce({ customers: { $: { where: { userId: ownerId } } } });
+        setModalCustomers(result.customers || []);
+      }
     } catch(e) { custFetchRef.current = false; }
   };
   const customers = modalCustomers;
