@@ -64,6 +64,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     gstin: profile?.gstin || '', pan: profile?.pan || '',
     website: profile?.website || '',
     logo: profile?.logo || null,
+    signature: profile?.signature || null,
     bizExtraEmails: profile?.bizExtraEmails || '',
     followupNotifyMinutes: profile?.followupNotifyMinutes ?? 0,
     slug: profile?.slug || '',
@@ -124,6 +125,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         pan: profile.pan || '',
         website: profile.website || '',
         logo: profile.logo || null,
+        signature: profile.signature || null,
         bizExtraEmails: profile.bizExtraEmails || '',
         followupNotifyMinutes: profile.followupNotifyMinutes ?? 0,
         slug: profile.slug || '',
@@ -312,7 +314,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
       if (fieldName && profileId) {
         try {
           await dbWrite(dbOp.update('userProfiles', profileId, { [fieldName]: result }));
-          toast(`${fieldName === 'logo' ? 'Logo' : 'QR Code'} auto-saved!`, 'success');
+          toast(`${fieldName === 'logo' ? 'Logo' : fieldName === 'signature' ? 'Signature/Stamp' : 'QR Code'} auto-saved!`, 'success');
         } catch (err) {
           console.error(`Auto-save failed for ${fieldName}:`, err);
         }
@@ -607,7 +609,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
   const sampleInv = {
     no: 'INV/2026/001', date: new Date().toISOString().split('T')[0], dueDate: new Date(Date.now() + 86400000*7).toISOString().split('T')[0],
     client: 'John Doe Corp', items: [{ name: 'Premium Service', qty: 1, rate: 2500, taxRate: 18 }, { name: 'Consulting', qty: 2, rate: 500, taxRate: 0 }],
-    disc: 10, discType: '%', notes: 'Sample invoice preview', terms: 'Due in 7 days'
+    disc: 10, discType: '%', notes: 'Sample invoice preview', terms: 'Due in 7 days', quoteFor: 'Premium Service Package'
   };
 
   return (
@@ -810,6 +812,22 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                         if (!window.confirm('Remove the brand logo? This cannot be undone.')) return;
                         setBiz(b => ({ ...b, logo: null }));
                         if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, { logo: null }));
+                      }}>Remove</button>}
+                    </div>
+                  </div>
+
+                  <div className="fg span2">
+                    <label>Signature / Stamp Image</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 15, marginTop: 5 }}>
+                      {biz.signature && <img src={biz.signature} alt="Signature" style={{ height: 60, width: 100, objectFit: 'contain', border: '1px solid var(--border)', borderRadius: 8, background: '#fff' }} />}
+                      <div style={{ flex: 1 }}>
+                        <input type="file" accept="image/*" onChange={e => handleFile(e, (res) => setBiz(b => ({ ...b, signature: res })), 'signature')} style={{ fontSize: 12 }} />
+                        <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>Used on the "Formal Quote" template's Authorised Signatory section. Recommended: transparent PNG, Max 500KB.</div>
+                      </div>
+                      {biz.signature && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={async () => {
+                        if (!window.confirm('Remove the signature/stamp image? This cannot be undone.')) return;
+                        setBiz(b => ({ ...b, signature: null }));
+                        if (profileId) await dbWrite(dbOp.update('userProfiles', profileId, { signature: null }));
                       }}>Remove</button>}
                     </div>
                   </div>
@@ -1986,6 +2004,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             { id: 'Modern', name: 'Modern' },
                             { id: 'Minimal', name: 'Minimal' },
                             { id: 'Spreadsheet', name: 'Template 1' },
+                            { id: 'Formal', name: 'Formal Quote' },
                           ].map(t => (
                             <div key={t.id} onClick={() => setFin(f => ({ ...f, invoiceTemplate: t.id, quotationTemplate: t.id }))} style={{ border: fin.invoiceTemplate === t.id ? '2px solid var(--accent)' : '1px solid var(--border)', borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'center', backgroundColor: fin.invoiceTemplate === t.id ? 'rgba(var(--accent-rgb), 0.05)' : 'transparent', transition: '0.2s', minWidth: 0 }}>
                                <div style={{ height: 160, background: '#f8fafc', borderRadius: 6, marginBottom: 8, overflow: 'hidden', border: '1px solid var(--border)', position: 'relative', display: 'flex', justifyContent: 'center' }}>

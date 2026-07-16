@@ -340,6 +340,152 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
       );
     }
 
+    if (t === 'Formal') {
+      const termsLines = (data.terms || '').split('\n').map(l => l.trim()).filter(Boolean);
+      return (
+        <div style={{ fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 12, color: '#000', lineHeight: 1.5 }}>
+          <style>{`
+            @media print {
+              @page { size: A4; margin: 0; }
+              body { margin: 0; padding: 0; background: #fff; -webkit-print-color-adjust: exact; }
+              .a4-container { box-shadow: none !important; margin: 0 !important; border: none !important; padding: 15mm !important; width: auto !important; height: auto !important; min-height: auto !important; }
+              .no-print { display: none !important; }
+            }
+          `}</style>
+
+          {/* Top bar: GSTIN | Phone */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid var(--accent, #16a34a)', paddingBottom: 8, marginBottom: 6, fontSize: 11 }}>
+            <div>{profile.gstin ? <>GSTIN : {profile.gstin}</> : null}</div>
+            <div>{profile.bizPhone ? <>📞 {profile.bizPhone}</> : null}</div>
+          </div>
+
+          {/* Big centered logo + business name */}
+          <div style={{ textAlign: 'center', marginBottom: 6 }}>
+            {profile.logo && <img src={profile.logo} alt="Logo" style={{ height: 60, objectFit: 'contain', marginBottom: 6 }} />}
+            <div style={{ fontSize: 26, fontWeight: 700, color: '#b91c1c', letterSpacing: 1 }}>{profile.bizName}</div>
+          </div>
+          <div style={{ borderBottom: '2px solid var(--accent, #16a34a)', marginBottom: 20 }} />
+
+          {/* M/s. / Date row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <div><strong>M/s.</strong> {clientMatch.companyName || data.companyName || ''}</div>
+              <div><strong>MOB:</strong> {clientMatch.phone || ''}</div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div><strong>Date-</strong> {fmtD(data.date)}</div>
+              <div><strong>{type === 'Invoice' ? 'Invoice No.' : 'Quote No.'}:</strong> {data.no}</div>
+            </div>
+          </div>
+          <div style={{ marginBottom: 16 }}><strong>CONTACT PERSON :</strong> {data.client || ''}</div>
+
+          <div style={{ marginBottom: 8 }}>Dear Mam/Sir,</div>
+          <div style={{ marginBottom: 20 }}>
+            As per the discussion we had, we are happy to provide our best {type === 'Invoice' ? 'invoice' : 'quote'} for{data.quoteFor ? <> <strong>{data.quoteFor}</strong></> : null}.
+          </div>
+
+          {/* Items table */}
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 4 }}>
+            <thead>
+              <tr>
+                <th style={{ border: '1px solid #000', padding: '6px 8px', color: '#b91c1c', textDecoration: 'underline', fontSize: 12, width: 40 }}>S.NO</th>
+                <th style={{ border: '1px solid #000', padding: '6px 8px', color: '#b91c1c', textDecoration: 'underline', fontSize: 12, textAlign: 'left' }}>PRODUCT NAME</th>
+                <th style={{ border: '1px solid #000', padding: '6px 8px', color: '#b91c1c', textDecoration: 'underline', fontSize: 12, width: 60 }}>QTY</th>
+                <th style={{ border: '1px solid #000', padding: '6px 8px', color: '#b91c1c', textDecoration: 'underline', fontSize: 12, width: 90 }}>RATE</th>
+                <th style={{ border: '1px solid #000', padding: '6px 8px', color: '#b91c1c', textDecoration: 'underline', fontSize: 12, width: 100 }}>AMOUNT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, i) => {
+                const descLines = (it.desc || '').split('\n').map(l => l.trim()).filter(Boolean);
+                const itemTotal = (it.qty || 0) * (it.rate || 0);
+                return (
+                  <tr key={i}>
+                    <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'center', verticalAlign: 'top' }}>{i + 1}.</td>
+                    <td style={{ border: '1px solid #000', padding: '8px', verticalAlign: 'top' }}>
+                      <div style={{ fontWeight: 700 }}>{it.name}</div>
+                      {descLines.length > 0 && (
+                        <ul style={{ margin: '4px 0 0', paddingLeft: 18, color: '#b91c1c', fontWeight: 700 }}>
+                          {descLines.map((line, li) => <li key={li}>{line}</li>)}
+                        </ul>
+                      )}
+                    </td>
+                    <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'center', verticalAlign: 'top' }}>{it.qty} {it.unit || 'No'}</td>
+                    <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', verticalAlign: 'top' }}>{moneyNo(it.rate)}</td>
+                    <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', verticalAlign: 'top' }}>{moneyNo(itemTotal)}</td>
+                  </tr>
+                );
+              })}
+              {ptots.taxTotal > 0 && (
+                <tr>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 700 }}>GST{items[0]?.taxRate ? ` -${items[0].taxRate}%` : ''}</td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>{moneyNo(ptots.taxTotal)}</td>
+                </tr>
+              )}
+              <tr>
+                <td colSpan={4} style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>Total</td>
+                <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>{money(ptots.total)}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* Terms and Conditions — each line of data.terms auto-numbered */}
+          {termsLines.length > 0 && (
+            <div style={{ marginTop: 20, marginBottom: 20 }}>
+              <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 8 }}>TERMS AND CONDITIONS</div>
+              <ol style={{ margin: 0, paddingLeft: 20 }}>
+                {termsLines.map((line, i) => <li key={i} style={{ marginBottom: 4 }}>{line}</li>)}
+              </ol>
+            </div>
+          )}
+
+          {data.notes ? <div style={{ marginBottom: 20, whiteSpace: 'pre-wrap' }}>{data.notes}</div> : null}
+
+          <div style={{ marginBottom: 24 }}>
+            Thank you for giving us the opportunity to serve you. As always, it's a pleasure doing business with you.
+          </div>
+
+          {/* Bank Details | Signature */}
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div>
+              {profile.bankName ? (
+                <>
+                  <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 6 }}>BANK DETAILS:</div>
+                  <div>Bank Name: {profile.bankName}</div>
+                  <div>A/C Holder Name: {profile.accHolder}</div>
+                  <div>A/C No.: {profile.accountNo}</div>
+                  {profile.bankExtra ? <div>Branch: {profile.bankExtra}</div> : null}
+                  <div>IFSC Code: {profile.ifsc}</div>
+                </>
+              ) : null}
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ marginBottom: 4 }}>For <strong>{profile.bizName}</strong></div>
+              {profile.signature ? (
+                <img src={profile.signature} alt="Signature" style={{ height: 50, objectFit: 'contain', margin: '8px 0' }} />
+              ) : <div style={{ height: 58 }} />}
+              <div style={{ fontWeight: 700 }}>Authorised Signatory</div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div style={{ marginTop: 40, borderTop: '1px solid #93c5fd', paddingTop: 10, textAlign: 'center', color: '#1e40af', fontSize: 11 }}>
+            {profile.address ? <div style={{ whiteSpace: 'pre-wrap' }}>{profile.address}</div> : null}
+            {profile.bizEmail ? <div>E-mail : {profile.bizEmail}</div> : null}
+          </div>
+
+          {settings?.showBranding !== false && (
+            <div style={{ fontSize: 10, fontWeight: 600, color: '#555', marginTop: 10, textAlign: 'center' }}>
+              POWERED BY <strong style={{ color: '#000' }}>{settings?.brandName || 'T2GCRM'}</strong>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // Standard Template Wrapper for others
     return (
       <div style={{ fontFamily: t === 'Modern' ? 'Outfit, sans-serif' : 'sans-serif' }}>

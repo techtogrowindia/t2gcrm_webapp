@@ -24,7 +24,7 @@ function calcTotals(items, disc, discType, adj, delivery = 0, deliveryTaxRate = 
   return { sub, taxTotal, discAmt, deliveryAmt, deliveryTax, total };
 }
 
-const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
+const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
 
 export default function Invoices({ user, perms, ownerId, settings, planEnforcement }) {
   const canCreate = perms?.can('Invoices', 'create') === true;
@@ -985,6 +985,10 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
               </table>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 14 }}>
                 <div>
+                  <div className="fg">
+                    <label>Quote Summary <span style={{ fontWeight: 400, color: 'var(--muted)', fontSize: 11 }}>(highlighted in "Formal Quote" template's opening line)</span></label>
+                    <input value={form.quoteFor || ''} onChange={e => setForm(p => ({ ...p, quoteFor: e.target.value }))} placeholder="e.g. ARS Wood Chipper" />
+                  </div>
                   <div className="fg"><label>Notes</label><textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} style={{ minHeight: 55 }} /></div>
                   <div className="fg"><label>Terms</label><textarea value={form.terms} onChange={e => setForm(p => ({ ...p, terms: e.target.value }))} style={{ minHeight: 120 }} /></div>
                 </div>

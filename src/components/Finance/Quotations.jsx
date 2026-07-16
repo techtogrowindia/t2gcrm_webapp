@@ -12,7 +12,7 @@ import { fireAutoNotifications } from '../../utils/messaging';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
 
-const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
+const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
 
 function calcTotals(items, disc, discType, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
   const its = Array.isArray(items) ? items : (items ? JSON.parse(items) : []);
@@ -777,6 +777,10 @@ export default function Quotations({ user, perms, ownerId, settings }) {
               {/* Totals & Notes */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 14 }}>
                 <div>
+                  <div className="fg">
+                    <label>Quote Summary <span style={{ fontWeight: 400, color: 'var(--muted)', fontSize: 11 }}>(highlighted in "Formal Quote" template's opening line)</span></label>
+                    <input value={form.quoteFor || ''} onChange={e => setForm(p => ({ ...p, quoteFor: e.target.value }))} placeholder="e.g. ARS Wood Chipper" />
+                  </div>
                   <div className="fg"><label>Notes</label><textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} style={{ minHeight: 60 }} placeholder="Customer notes..." /></div>
                   <div className="fg"><label>Terms & Conditions</label><textarea value={form.terms} onChange={e => setForm(p => ({ ...p, terms: e.target.value }))} style={{ minHeight: 120 }} /></div>
                 </div>

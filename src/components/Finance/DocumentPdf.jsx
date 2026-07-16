@@ -483,6 +483,166 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
   );
 }
 
+// ─────────────────────────────────────────────────── Formal Quote template ──
+const f = StyleSheet.create({
+  page: { paddingVertical: 34, paddingHorizontal: 40, fontFamily: 'NotoSans', fontSize: 10, color: '#000', lineHeight: 1.4 },
+  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 2, borderColor: '#16a34a', paddingBottom: 8, marginBottom: 6 },
+  bizName: { fontSize: 22, fontWeight: 'bold', color: '#b91c1c', textAlign: 'center' },
+  rule: { borderBottomWidth: 2, borderColor: '#16a34a', marginBottom: 18 },
+  row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
+  th: { flexDirection: 'row' },
+  thCell: { borderWidth: 1, borderColor: '#000', padding: 6, fontSize: 9, fontWeight: 'bold', color: '#b91c1c' },
+  tr: { flexDirection: 'row' },
+  td: { borderWidth: 1, borderColor: '#000', padding: 6, fontSize: 9 },
+  cNo: { width: 30, textAlign: 'center' },
+  cName: { flex: 1 },
+  cQty: { width: 55, textAlign: 'center' },
+  cRate: { width: 70, textAlign: 'right' },
+  cAmt: { width: 80, textAlign: 'right' },
+});
+
+function FormalDoc({ data, profile, type, settings }) {
+  const ctx = buildCtx(data, profile);
+  const { items, money, moneyNo, ptots, clientMatch } = ctx;
+  const termsLines = (data.terms || '').split('\n').map(l => l.trim()).filter(Boolean);
+  return (
+    <Document title={`${type} ${data.no || ''}`.trim()}>
+      <Page size="A4" style={f.page}>
+        <LogoWatermark profile={profile} />
+
+        {/* Top bar: GSTIN | Phone */}
+        <View style={f.topBar}>
+          <Text style={{ fontSize: 9 }}>{profile?.gstin ? `GSTIN : ${profile.gstin}` : ''}</Text>
+          <Text style={{ fontSize: 9 }}>{profile?.bizPhone || ''}</Text>
+        </View>
+
+        {/* Centered logo + business name */}
+        <View style={{ alignItems: 'center', marginBottom: 6 }}>
+          {profile?.logo ? (
+            <View style={{ width: 70, marginBottom: 6 }}>
+              <Image src={profile.logo} style={{ height: 50, width: 70, objectFit: 'contain' }} />
+            </View>
+          ) : null}
+          <Text style={f.bizName}>{profile?.bizName || ''}</Text>
+        </View>
+        <View style={f.rule} />
+
+        {/* M/s. / Date row */}
+        <View style={f.row}>
+          <View>
+            <Text>M/s. {clientMatch.companyName || data.companyName || ''}</Text>
+            <Text style={{ marginTop: 3 }}>MOB: {clientMatch.phone || ''}</Text>
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text>Date- {fmtD(data.date)}</Text>
+            <Text style={{ marginTop: 3 }}>{type === 'Invoice' ? 'Invoice No.' : 'Quote No.'}: {data.no}</Text>
+          </View>
+        </View>
+        <Text style={{ marginBottom: 14 }}>CONTACT PERSON : {data.client || ''}</Text>
+
+        <Text style={{ marginBottom: 8 }}>Dear Mam/Sir,</Text>
+        <Text style={{ marginBottom: 18 }}>
+          As per the discussion we had, we are happy to provide our best {type === 'Invoice' ? 'invoice' : 'quote'} for{data.quoteFor ? ` ${data.quoteFor}` : ''}.
+        </Text>
+
+        {/* Items table */}
+        <View style={f.th}>
+          <Text style={[f.thCell, f.cNo]}>S.NO</Text>
+          <Text style={[f.thCell, f.cName]}>PRODUCT NAME</Text>
+          <Text style={[f.thCell, f.cQty]}>QTY</Text>
+          <Text style={[f.thCell, f.cRate]}>RATE</Text>
+          <Text style={[f.thCell, f.cAmt]}>AMOUNT</Text>
+        </View>
+        {items.map((it, i) => {
+          const descLines = (it.desc || '').split('\n').map(l => l.trim()).filter(Boolean);
+          const itemTotal = (it.qty || 0) * (it.rate || 0);
+          return (
+            <View style={f.tr} key={i} wrap={false}>
+              <Text style={[f.td, f.cNo]}>{i + 1}.</Text>
+              <View style={[f.td, f.cName]}>
+                <Text style={{ fontWeight: 'bold' }}>{it.name}</Text>
+                {descLines.map((line, li) => (
+                  <Text key={li} style={{ color: '#b91c1c', fontWeight: 'bold', marginTop: 2 }}>• {line}</Text>
+                ))}
+              </View>
+              <Text style={[f.td, f.cQty]}>{it.qty} {it.unit || 'No'}</Text>
+              <Text style={[f.td, f.cRate]}>{moneyNo(it.rate)}</Text>
+              <Text style={[f.td, f.cAmt]}>{moneyNo(itemTotal)}</Text>
+            </View>
+          );
+        })}
+        {ptots.taxTotal > 0 ? (
+          <View style={f.tr} wrap={false}>
+            <Text style={[f.td, f.cNo]}></Text>
+            <Text style={[f.td, f.cName, { fontWeight: 'bold' }]}>GST{items[0]?.taxRate ? ` -${items[0].taxRate}%` : ''}</Text>
+            <Text style={[f.td, f.cQty]}></Text>
+            <Text style={[f.td, f.cRate]}></Text>
+            <Text style={[f.td, f.cAmt]}>{moneyNo(ptots.taxTotal)}</Text>
+          </View>
+        ) : null}
+        <View style={f.tr} wrap={false}>
+          <Text style={[f.td, f.cNo]}></Text>
+          <Text style={[f.td, f.cName, { textAlign: 'right', fontWeight: 'bold', color: '#b91c1c' }]}>Total</Text>
+          <Text style={[f.td, f.cQty]}></Text>
+          <Text style={[f.td, f.cRate]}></Text>
+          <Text style={[f.td, f.cAmt, { fontWeight: 'bold', color: '#b91c1c' }]}>{money(ptots.total)}</Text>
+        </View>
+
+        {/* Terms and Conditions */}
+        {termsLines.length > 0 ? (
+          <View style={{ marginTop: 18, marginBottom: 18 }} wrap={false}>
+            <Text style={{ fontWeight: 'bold', marginBottom: 6 }}>TERMS AND CONDITIONS</Text>
+            {termsLines.map((line, i) => (
+              <Text key={i} style={{ marginBottom: 3 }}>{i + 1}. {line}</Text>
+            ))}
+          </View>
+        ) : null}
+
+        {data.notes ? <Text style={{ marginBottom: 18 }}>{data.notes}</Text> : null}
+
+        <Text style={{ marginBottom: 20 }}>
+          Thank you for giving us the opportunity to serve you. As always, it's a pleasure doing business with you.
+        </Text>
+
+        {/* Bank Details | Signature */}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }} wrap={false}>
+          <View style={{ maxWidth: '55%' }}>
+            {profile?.bankName ? (
+              <>
+                <Text style={{ fontWeight: 'bold', marginBottom: 5 }}>BANK DETAILS:</Text>
+                <Text>Bank Name: {profile.bankName}</Text>
+                <Text style={{ marginTop: 2 }}>A/C Holder Name: {profile.accHolder}</Text>
+                <Text style={{ marginTop: 2 }}>A/C No.: {profile.accountNo}</Text>
+                {profile.bankExtra ? <Text style={{ marginTop: 2 }}>Branch: {profile.bankExtra}</Text> : null}
+                <Text style={{ marginTop: 2 }}>IFSC Code: {profile.ifsc}</Text>
+              </>
+            ) : null}
+          </View>
+          <View style={{ alignItems: 'center' }}>
+            <Text>For {profile?.bizName || ''}</Text>
+            {profile?.signature ? (
+              <View style={{ width: 100, marginVertical: 8 }}>
+                <Image src={profile.signature} style={{ height: 45, width: 100, objectFit: 'contain' }} />
+              </View>
+            ) : <View style={{ height: 53 }} />}
+            <Text style={{ fontWeight: 'bold' }}>Authorised Signatory</Text>
+          </View>
+        </View>
+
+        {/* Footer */}
+        <View style={{ marginTop: 30, borderTopWidth: 1, borderColor: '#93c5fd', paddingTop: 8 }} fixed>
+          {profile?.address ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9 }}>{profile.address}</Text> : null}
+          {profile?.bizEmail ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9, marginTop: 2 }}>E-mail : {profile.bizEmail}</Text> : null}
+        </View>
+
+        {settings?.showBranding !== false ? (
+          <Text style={{ fontSize: 8, color: '#555', textAlign: 'center', marginTop: 8 }}>POWERED BY {settings?.brandName || 'T2GCRM'}</Text>
+        ) : null}
+      </Page>
+    </Document>
+  );
+}
+
 // Resolve the template variant exactly like DocumentTemplate.jsx does.
 function resolveTemplate(data, profile, type) {
   const profileTemplate = type === 'Invoice' ? profile?.invoiceTemplate : profile?.quotationTemplate;
@@ -492,6 +652,7 @@ function resolveTemplate(data, profile, type) {
 function DocumentPdf({ data, profile, type, settings }) {
   const t = resolveTemplate(data, profile, type);
   if (t === 'Spreadsheet') return <SpreadsheetDoc data={data} profile={profile} type={type} settings={settings} />;
+  if (t === 'Formal') return <FormalDoc data={data} profile={profile} type={type} settings={settings} />;
   return <StandardDoc t={t} data={data} profile={profile} type={type} settings={settings} />;
 }
 
