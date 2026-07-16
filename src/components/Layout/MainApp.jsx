@@ -6,7 +6,7 @@ import { useApp } from '../../context/AppContext';
 import { usePermissions } from '../../hooks/usePermissions';
 import { usePlanEnforcement } from '../../hooks/usePlanEnforcement';
 import { useToast } from '../../context/ToastContext';
-import { DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS } from '../../utils/helpers';
+import { DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, fmtDT } from '../../utils/helpers';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
 import NotifPanel from './NotifPanel';
@@ -402,14 +402,25 @@ export default function MainApp({ user, settings }) {
     // Follow-up Notification (profile.followupNotifyMinutes, 0 = off).
     // followupLeadsData already includes both past and future follow-ups,
     // pre-filtered server-side for team visibility (same as overdue above).
+    // One notification PER LEAD (not a combined line) so the follow-up time
+    // and phone number are visible for each.
     const lookaheadMin = profile?.followupNotifyMinutes || 0;
     if (lookaheadMin > 0) {
       const lookaheadMs = lookaheadMin * 60 * 1000;
       const nowMs = now.getTime();
-      const dueSoon = followupLeadsData.filter(l => l.followup && l.followup > nowMs && (l.followup - nowMs) <= lookaheadMs);
-      if (dueSoon.length > 0) {
-        notifs.push({ id: 'fu-due-soon', unread: true, title: `🔔 ${dueSoon.length} Follow-up${dueSoon.length > 1 ? 's' : ''} Due Soon`, desc: `Leads: ${dueSoon.slice(0, 10).map(l => l.name).join(', ')}${dueSoon.length > 10 ? '...' : ''}`, time: new Date().toLocaleString() });
-      }
+      const dueSoon = followupLeadsData
+        .filter(l => l.followup && l.followup > nowMs && (l.followup - nowMs) <= lookaheadMs)
+        .sort((a, b) => a.followup - b.followup)
+        .slice(0, 20); // cap so a misconfigured long lookahead can't flood the panel
+      dueSoon.forEach(l => {
+        notifs.push({
+          id: 'fu-due-soon-' + l.id,
+          unread: true,
+          title: `🔔 Follow-up Due Soon: ${l.name}`,
+          desc: `${l.phone ? l.phone + ' | ' : ''}Due ${fmtDT(l.followup)}${l.stage ? ' | ' + l.stage : ''}`,
+          time: new Date().toLocaleString(),
+        });
+      });
     }
 
     return notifs;
