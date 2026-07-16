@@ -1606,7 +1606,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                     <option value="">All Stages</option>
                     {allEnabledStages.map(s => <option key={s}>{s}</option>)}
                   </select>
-                  <select className="si" style={{ width: 130 }} value={reqFilter} onChange={e => setReqFilter(e.target.value)}>
+                  <select className="si" style={{ width: 150 }} value={reqFilter} onChange={e => setReqFilter(e.target.value)}>
                     <option value="">All Requirements</option>
                     {activeRequirements.map(r => <option key={r}>{r}</option>)}
                   </select>
@@ -1847,7 +1847,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                 <option value="">All Stages</option>
                 {allEnabledStages.map(s => <option key={s}>{s}</option>)}
               </select>
-              <select className="si" style={{ width: 120, padding: '4px 8px' }} value={reqFilter} onChange={e => setReqFilter(e.target.value)}>
+              <select className="si" style={{ width: 145, padding: '4px 8px' }} value={reqFilter} onChange={e => setReqFilter(e.target.value)}>
                 <option value="">All Requirements</option>
                 {activeRequirements.map(r => <option key={r}>{r}</option>)}
               </select>
