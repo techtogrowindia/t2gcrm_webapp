@@ -354,18 +354,21 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
             }
           `}</style>
 
-          {/* Top bar: GSTIN | Phone */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid var(--accent, #16a34a)', paddingBottom: 8, marginBottom: 6, fontSize: 11 }}>
-            <div>{profile.gstin ? <>GSTIN : {profile.gstin}</> : null}</div>
-            <div>{profile.bizPhone ? <>📞 {profile.bizPhone}</> : null}</div>
-          </div>
+          {/* Header block, boxed in a single-line border */}
+          <div style={{ border: '1px solid #000', padding: '10px 14px', marginBottom: 20 }}>
+            {/* Top bar: GSTIN | Phone */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid var(--accent, #16a34a)', paddingBottom: 8, marginBottom: 6, fontSize: 11 }}>
+              <div>{profile.gstin ? <>GSTIN : {profile.gstin}</> : null}</div>
+              <div>{profile.bizPhone ? <>📞 {profile.bizPhone}</> : null}</div>
+            </div>
 
-          {/* Big centered logo + business name */}
-          <div style={{ textAlign: 'center', marginBottom: 6 }}>
-            {profile.logo && <img src={profile.logo} alt="Logo" style={{ height: 60, objectFit: 'contain', marginBottom: 6 }} />}
-            <div style={{ fontSize: 26, fontWeight: 700, color: '#b91c1c', letterSpacing: 1 }}>{profile.bizName}</div>
+            {/* Big centered logo + business name */}
+            <div style={{ textAlign: 'center', marginBottom: 6 }}>
+              {profile.logo && <img src={profile.logo} alt="Logo" style={{ height: 60, objectFit: 'contain', marginBottom: 6 }} />}
+              <div style={{ fontSize: 26, fontWeight: 700, color: '#b91c1c', letterSpacing: 1 }}>{profile.bizName}</div>
+            </div>
+            <div style={{ borderBottom: '2px solid var(--accent, #16a34a)' }} />
           </div>
-          <div style={{ borderBottom: '2px solid var(--accent, #16a34a)', marginBottom: 20 }} />
 
           {/* M/s. / Date row */}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -380,9 +383,8 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
           </div>
           <div style={{ marginBottom: 16 }}><strong>CONTACT PERSON :</strong> {data.client || ''}</div>
 
-          <div style={{ marginBottom: 8 }}>Dear Mam/Sir,</div>
-          <div style={{ marginBottom: 20 }}>
-            As per the discussion we had, we are happy to provide our best {type === 'Invoice' ? 'invoice' : 'quote'} for{data.quoteFor ? <> <strong>{data.quoteFor}</strong></> : null}.
+          <div style={{ marginBottom: 20, whiteSpace: 'pre-wrap' }}>
+            {(data.quoteFor && data.quoteFor.trim()) ? data.quoteFor : `Dear Mam/Sir,\nAs per the discussion we had, we are happy to provide our best ${type === 'Invoice' ? 'invoice' : 'quote'} for.`}
           </div>
 
           {/* Items table */}

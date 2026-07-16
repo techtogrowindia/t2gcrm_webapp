@@ -609,7 +609,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
   const sampleInv = {
     no: 'INV/2026/001', date: new Date().toISOString().split('T')[0], dueDate: new Date(Date.now() + 86400000*7).toISOString().split('T')[0],
     client: 'John Doe Corp', items: [{ name: 'Premium Service', qty: 1, rate: 2500, taxRate: 18 }, { name: 'Consulting', qty: 2, rate: 500, taxRate: 0 }],
-    disc: 10, discType: '%', notes: 'Sample invoice preview', terms: 'Due in 7 days', quoteFor: 'Premium Service Package'
+    disc: 10, discType: '%', notes: 'Sample invoice preview', terms: 'Due in 7 days', quoteFor: 'Dear Mam/Sir,\nAs per the discussion we had, we are happy to provide our best quote for Premium Service Package.'
   };
 
   return (

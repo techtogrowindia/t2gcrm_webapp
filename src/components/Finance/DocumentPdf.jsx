@@ -486,14 +486,20 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
 // ─────────────────────────────────────────────────── Formal Quote template ──
 const f = StyleSheet.create({
   page: { paddingVertical: 34, paddingHorizontal: 40, fontFamily: 'NotoSans', fontSize: 10, color: '#000', lineHeight: 1.4 },
+  headerBox: { borderWidth: 1, borderColor: '#000', padding: 10, marginBottom: 20 },
   topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 2, borderColor: '#16a34a', paddingBottom: 8, marginBottom: 6 },
   bizName: { fontSize: 22, fontWeight: 'bold', color: '#b91c1c', textAlign: 'center' },
-  rule: { borderBottomWidth: 2, borderColor: '#16a34a', marginBottom: 18 },
+  rule: { borderBottomWidth: 2, borderColor: '#16a34a' },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
+  // Border-collapse trick: the table wrapper draws the top+left edges once;
+  // every cell only draws its own right+bottom edge. Adjacent cells then
+  // share a single 1px line instead of each contributing their own border
+  // (which doubled the thickness on every internal row/column line).
+  table: { borderTopWidth: 1, borderLeftWidth: 1, borderColor: '#000' },
   th: { flexDirection: 'row' },
-  thCell: { borderWidth: 1, borderColor: '#000', padding: 6, fontSize: 9, fontWeight: 'bold', color: '#b91c1c' },
+  thCell: { borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#000', padding: 6, fontSize: 9, fontWeight: 'bold', color: '#b91c1c' },
   tr: { flexDirection: 'row' },
-  td: { borderWidth: 1, borderColor: '#000', padding: 6, fontSize: 9 },
+  td: { borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#000', padding: 6, fontSize: 9 },
   cNo: { width: 30, textAlign: 'center' },
   cName: { flex: 1 },
   cQty: { width: 55, textAlign: 'center' },
@@ -510,22 +516,25 @@ function FormalDoc({ data, profile, type, settings }) {
       <Page size="A4" style={f.page}>
         <LogoWatermark profile={profile} />
 
-        {/* Top bar: GSTIN | Phone */}
-        <View style={f.topBar}>
-          <Text style={{ fontSize: 9 }}>{profile?.gstin ? `GSTIN : ${profile.gstin}` : ''}</Text>
-          <Text style={{ fontSize: 9 }}>{profile?.bizPhone || ''}</Text>
-        </View>
+        {/* Header block, boxed in a single-line border */}
+        <View style={f.headerBox}>
+          {/* Top bar: GSTIN | Phone */}
+          <View style={f.topBar}>
+            <Text style={{ fontSize: 9 }}>{profile?.gstin ? `GSTIN : ${profile.gstin}` : ''}</Text>
+            <Text style={{ fontSize: 9 }}>{profile?.bizPhone || ''}</Text>
+          </View>
 
-        {/* Centered logo + business name */}
-        <View style={{ alignItems: 'center', marginBottom: 6 }}>
-          {profile?.logo ? (
-            <View style={{ width: 70, marginBottom: 6 }}>
-              <Image src={profile.logo} style={{ height: 50, width: 70, objectFit: 'contain' }} />
-            </View>
-          ) : null}
-          <Text style={f.bizName}>{profile?.bizName || ''}</Text>
+          {/* Centered logo + business name */}
+          <View style={{ alignItems: 'center', marginBottom: 6 }}>
+            {profile?.logo ? (
+              <View style={{ width: 70, marginBottom: 6 }}>
+                <Image src={profile.logo} style={{ height: 50, width: 70, objectFit: 'contain' }} />
+              </View>
+            ) : null}
+            <Text style={f.bizName}>{profile?.bizName || ''}</Text>
+          </View>
+          <View style={f.rule} />
         </View>
-        <View style={f.rule} />
 
         {/* M/s. / Date row */}
         <View style={f.row}>
@@ -540,12 +549,12 @@ function FormalDoc({ data, profile, type, settings }) {
         </View>
         <Text style={{ marginBottom: 14 }}>CONTACT PERSON : {data.client || ''}</Text>
 
-        <Text style={{ marginBottom: 8 }}>Dear Mam/Sir,</Text>
         <Text style={{ marginBottom: 18 }}>
-          As per the discussion we had, we are happy to provide our best {type === 'Invoice' ? 'invoice' : 'quote'} for{data.quoteFor ? ` ${data.quoteFor}` : ''}.
+          {(data.quoteFor && data.quoteFor.trim()) ? data.quoteFor : `Dear Mam/Sir,\nAs per the discussion we had, we are happy to provide our best ${type === 'Invoice' ? 'invoice' : 'quote'} for.`}
         </Text>
 
         {/* Items table */}
+        <View style={f.table}>
         <View style={f.th}>
           <Text style={[f.thCell, f.cNo]}>S.NO</Text>
           <Text style={[f.thCell, f.cName]}>PRODUCT NAME</Text>
@@ -623,7 +632,8 @@ function FormalDoc({ data, profile, type, settings }) {
           <Text style={[f.td, f.cRate]}></Text>
           <Text style={[f.td, f.cAmt, { fontWeight: 'bold', color: '#b91c1c' }]}>{money(ptots.total)}</Text>
         </View>
-        <Text style={{ fontSize: 8, marginBottom: 4 }}>Total In Words: {numberToWords(ptots.total, ctx.docCurrency)}</Text>
+        </View>
+        <Text style={{ fontSize: 8, marginBottom: 4, marginTop: 4 }}>Total In Words: {numberToWords(ptots.total, ctx.docCurrency)}</Text>
 
         {/* Terms and Conditions */}
         {termsLines.length > 0 ? (
