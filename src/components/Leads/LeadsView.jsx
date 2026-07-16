@@ -121,29 +121,45 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const partners = data?.partnerApplications || [];
   const partnerLeadSource = data?.userProfiles?.[0]?.partnerLeadSource || 'Channel Partners';
   
-  useEffect(() => {
-    const openId = localStorage.getItem('tc_open_lead');
+  // Try current page first. If not there, fetch by id — necessary because
+  // the server-paginated table only holds ~25 rows.
+  const tryOpenLead = async (openId) => {
     if (!openId || !ownerId) return;
-    // Try current page first. If not there, fetch by id — necessary because
-    // the server-paginated table only holds ~25 rows.
     const target = leads.find(l => l.id === openId);
     if (target) {
       setViewLead(target);
       localStorage.removeItem('tc_open_lead');
       return;
     }
-    (async () => {
-      try {
-        const r = await fetch(`/api/data/leads?id=${encodeURIComponent(openId)}`, { method: 'GET' });
-        if (!r.ok) return;
-        const json = await r.json();
-        const found = Array.isArray(json?.items) ? json.items.find(l => l.id === openId) : (json?.item || null);
-        if (found) {
-          setViewLead(found);
-          localStorage.removeItem('tc_open_lead');
-        }
-      } catch { /* ignore */ }
-    })();
+    try {
+      const r = await fetch(`/api/data/leads?id=${encodeURIComponent(openId)}`, { method: 'GET' });
+      if (!r.ok) return;
+      const json = await r.json();
+      const found = Array.isArray(json?.items) ? json.items.find(l => l.id === openId) : (json?.item || null);
+      if (found) {
+        setViewLead(found);
+        localStorage.removeItem('tc_open_lead');
+      }
+    } catch { /* ignore */ }
+  };
+
+  // Covers navigating here FROM another view (LeadsView mounts fresh, or its
+  // `leads` list changes and happens to include the target).
+  useEffect(() => {
+    const openId = localStorage.getItem('tc_open_lead');
+    if (openId) tryOpenLead(openId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads, ownerId]);
+
+  // Covers clicking a notification while ALREADY on the Leads page — the
+  // effect above wouldn't re-fire just from writing localStorage (its deps
+  // are leads/ownerId, not the stored value), so without this the lead only
+  // opened once some unrelated action changed `leads` and re-ran the effect.
+  useEffect(() => {
+    const onOpenLeadRequest = (e) => { if (e.detail) tryOpenLead(e.detail); };
+    window.addEventListener('tc-open-lead-request', onOpenLeadRequest);
+    return () => window.removeEventListener('tc-open-lead-request', onOpenLeadRequest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leads, ownerId]);
 
   // Fetch saved settings from localStorage (per user)

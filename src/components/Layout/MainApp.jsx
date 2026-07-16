@@ -479,7 +479,14 @@ export default function MainApp({ user, settings }) {
         // uses) only when the notif is tied to a single lead.
         const msgNode = n.leadId ? (
           <span
-            onClick={() => { localStorage.setItem('tc_open_lead', n.leadId); setActiveView('leads'); }}
+            onClick={() => {
+              localStorage.setItem('tc_open_lead', n.leadId);
+              setActiveView('leads');
+              // If LeadsView is already mounted (user already on Leads), its
+              // localStorage-watching effect won't re-fire on its own — this
+              // event tells it to open the lead immediately either way.
+              window.dispatchEvent(new CustomEvent('tc-open-lead-request', { detail: n.leadId }));
+            }}
             style={{ cursor: 'pointer', display: 'block' }}
           >
             <div>{n.title}</div>
