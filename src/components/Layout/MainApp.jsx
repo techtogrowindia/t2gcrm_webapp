@@ -381,21 +381,25 @@ export default function MainApp({ user, settings }) {
 
     amc.forEach(a => {
       if (isTeam && a.actorId !== user.id) return;
-      const diff = Math.ceil((new Date(a.endDate) - now) / (1000 * 60 * 60 * 24));
+      const endMs = new Date(a.endDate).getTime();
+      const diff = Math.ceil((endMs - now) / (1000 * 60 * 60 * 24));
       if (diff <= 30 && diff >= 0)
-        notifs.push({ id: 'amc-' + a.id, unread: true, title: `🛡 AMC Expiring: ${a.client}`, desc: `Contract ${a.contractNo} expires in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString() });
+        notifs.push({ id: 'amc-' + a.id, unread: true, title: `🛡 AMC Expiring: ${a.client}`, desc: `Contract ${a.contractNo} expires in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString(), _sortKey: endMs });
     });
 
     subs.forEach(s => {
       if (isTeam && s.actorId !== user.id) return;
-      const diff = Math.ceil((new Date(s.nextPayment) - now) / (1000 * 60 * 60 * 24));
+      const dueMs = new Date(s.nextPayment).getTime();
+      const diff = Math.ceil((dueMs - now) / (1000 * 60 * 60 * 24));
       if (diff <= 7 && diff >= 0)
-        notifs.push({ id: 'sub-' + s.id, unread: true, title: `💰 Payment Due: ${s.client}`, desc: `₹${(s.amount || 0).toLocaleString()} for ${s.plan} due in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString() });
+        notifs.push({ id: 'sub-' + s.id, unread: true, title: `💰 Payment Due: ${s.client}`, desc: `₹${(s.amount || 0).toLocaleString()} for ${s.plan} due in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString(), _sortKey: dueMs });
     });
 
-    // Overdue follow-ups — sourced from server to avoid 11k+ lead subscription
+    // Overdue follow-ups — sourced from server to avoid 11k+ lead subscription.
+    // Sorted ascending (most overdue first) by dashboard-stats.js already, so
+    // [0] is the earliest/most-overdue — use it to rank this entry among others.
     if (notifLeadData.length > 0) {
-      notifs.push({ id: 'fu-overdue', unread: true, title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString() });
+      notifs.push({ id: 'fu-overdue', unread: true, title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString(), _sortKey: notifLeadData[0].followup });
     }
 
     // Advance-notice follow-ups — "due soon" per Settings > Business >
@@ -419,10 +423,14 @@ export default function MainApp({ user, settings }) {
           title: `🔔 Follow-up Due Soon: ${l.name}`,
           desc: `${l.phone ? l.phone + ' | ' : ''}Due ${fmtDT(l.followup)}${l.stage ? ' | ' + l.stage : ''}`,
           time: new Date().toLocaleString(),
+          _sortKey: l.followup,
         });
       });
     }
 
+    // Most urgent/soonest-due first, regardless of category (AMC/payment/
+    // follow-up) — matches what the user should act on next.
+    notifs.sort((a, b) => (a._sortKey ?? Infinity) - (b._sortKey ?? Infinity));
     return notifs;
   }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user]);
 
