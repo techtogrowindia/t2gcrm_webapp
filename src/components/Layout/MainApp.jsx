@@ -470,7 +470,9 @@ export default function MainApp({ user, settings }) {
     if (newOnes.length > 0) {
       newOnes.forEach(n => {
         seenNotifIdsRef.current.add(n.id);
-        toast(n.title, 'warning');
+        // persistent: stays on screen until manually closed — a 3.5s
+        // auto-dismiss risks the user missing a due-soon alert entirely.
+        toast(n.title, 'warning', { persistent: true });
       });
       playNotifSound();
     }
