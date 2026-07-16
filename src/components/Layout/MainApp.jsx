@@ -441,6 +441,7 @@ export default function MainApp({ user, settings }) {
         notifs.push({
           id: 'fu-due-soon-' + l.id,
           unread: true,
+          leadId: l.id, // lets the click handler deep-link into this lead
           title: `🔔 Follow-up Due Soon: ${l.name}`,
           desc: `${l.phone ? l.phone + ' | ' : ''}Due ${fmtDT(l.followup)}${l.stage ? ' | ' + l.stage : ''}`,
           time: new Date().toLocaleString(),
@@ -472,7 +473,25 @@ export default function MainApp({ user, settings }) {
         seenNotifIdsRef.current.add(n.id);
         // persistent: stays on screen until manually closed — a 3.5s
         // auto-dismiss risks the user missing a due-soon alert entirely.
-        toast(n.title, 'warning', { persistent: true });
+        // Includes the desc line (due time / phone / stage) so the timing is
+        // visible right in the popup, not just in the bell panel. Clickable
+        // (deep-links via tc_open_lead, the same mechanism LeadsView already
+        // uses) only when the notif is tied to a single lead.
+        const msgNode = n.leadId ? (
+          <span
+            onClick={() => { localStorage.setItem('tc_open_lead', n.leadId); setActiveView('leads'); }}
+            style={{ cursor: 'pointer', display: 'block' }}
+          >
+            <div>{n.title}</div>
+            <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{n.desc}</div>
+          </span>
+        ) : (
+          <span style={{ display: 'block' }}>
+            <div>{n.title}</div>
+            <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{n.desc}</div>
+          </span>
+        );
+        toast(msgNode, 'warning', { persistent: true });
       });
       playNotifSound();
     }
