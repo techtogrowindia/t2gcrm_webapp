@@ -571,6 +571,15 @@ function FormalDoc({ data, profile, type, settings }) {
             </View>
           );
         })}
+        {ptots.discAmt > 0 ? (
+          <View style={f.tr} wrap={false}>
+            <Text style={[f.td, f.cNo]}></Text>
+            <Text style={[f.td, f.cName, { fontWeight: 'bold' }]}>Discount ({data.discType === '₹' ? 'Flat' : `${data.disc}%`})</Text>
+            <Text style={[f.td, f.cQty]}></Text>
+            <Text style={[f.td, f.cRate]}></Text>
+            <Text style={[f.td, f.cAmt, { color: '#d97706' }]}>(-) {moneyNo(ptots.discAmt)}</Text>
+          </View>
+        ) : null}
         {ptots.taxTotal > 0 ? (
           <View style={f.tr} wrap={false}>
             <Text style={[f.td, f.cNo]}></Text>
@@ -580,6 +589,33 @@ function FormalDoc({ data, profile, type, settings }) {
             <Text style={[f.td, f.cAmt]}>{moneyNo(ptots.taxTotal)}</Text>
           </View>
         ) : null}
+        {parseFloat(data.deliveryCharge) > 0 ? (
+          <View style={f.tr} wrap={false}>
+            <Text style={[f.td, f.cNo]}></Text>
+            <Text style={[f.td, f.cName, { fontWeight: 'bold' }]}>Delivery Charges</Text>
+            <Text style={[f.td, f.cQty]}></Text>
+            <Text style={[f.td, f.cRate]}></Text>
+            <Text style={[f.td, f.cAmt]}>{moneyNo(parseFloat(data.deliveryCharge))}</Text>
+          </View>
+        ) : null}
+        {parseFloat(data.deliveryCharge) > 0 && parseFloat(data.deliveryTaxRate) > 0 ? (
+          <View style={f.tr} wrap={false}>
+            <Text style={[f.td, f.cNo]}></Text>
+            <Text style={[f.td, f.cName, { fontWeight: 'bold' }]}>Delivery Tax ({data.deliveryTaxRate}%)</Text>
+            <Text style={[f.td, f.cQty]}></Text>
+            <Text style={[f.td, f.cRate]}></Text>
+            <Text style={[f.td, f.cAmt]}>{moneyNo((parseFloat(data.deliveryCharge) || 0) * (parseFloat(data.deliveryTaxRate) || 0) / 100)}</Text>
+          </View>
+        ) : null}
+        {data.adj && Number(data.adj) !== 0 ? (
+          <View style={f.tr} wrap={false}>
+            <Text style={[f.td, f.cNo]}></Text>
+            <Text style={[f.td, f.cName, { fontWeight: 'bold' }]}>Adjustment</Text>
+            <Text style={[f.td, f.cQty]}></Text>
+            <Text style={[f.td, f.cRate]}></Text>
+            <Text style={[f.td, f.cAmt]}>{data.adj > 0 ? '(+) ' : '(-) '}{moneyNo(Math.abs(data.adj))}</Text>
+          </View>
+        ) : null}
         <View style={f.tr} wrap={false}>
           <Text style={[f.td, f.cNo]}></Text>
           <Text style={[f.td, f.cName, { textAlign: 'right', fontWeight: 'bold', color: '#b91c1c' }]}>Total</Text>
@@ -587,6 +623,7 @@ function FormalDoc({ data, profile, type, settings }) {
           <Text style={[f.td, f.cRate]}></Text>
           <Text style={[f.td, f.cAmt, { fontWeight: 'bold', color: '#b91c1c' }]}>{money(ptots.total)}</Text>
         </View>
+        <Text style={{ fontSize: 8, marginBottom: 4 }}>Total In Words: {numberToWords(ptots.total, ctx.docCurrency)}</Text>
 
         {/* Terms and Conditions */}
         {termsLines.length > 0 ? (

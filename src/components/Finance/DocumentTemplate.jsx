@@ -350,6 +350,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               body { margin: 0; padding: 0; background: #fff; -webkit-print-color-adjust: exact; }
               .a4-container { box-shadow: none !important; margin: 0 !important; border: none !important; padding: 15mm !important; width: auto !important; height: auto !important; min-height: auto !important; }
               .no-print { display: none !important; }
+              .formal-avoid-break { page-break-inside: avoid; }
             }
           `}</style>
 
@@ -416,6 +417,15 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                   </tr>
                 );
               })}
+              {ptots.discAmt > 0 && (
+                <tr>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 700 }}>Discount ({data.discType === '₹' ? 'Flat' : `${data.disc}%`})</td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', color: '#d97706' }}>(-) {moneyNo(ptots.discAmt)}</td>
+                </tr>
+              )}
               {ptots.taxTotal > 0 && (
                 <tr>
                   <td style={{ border: '1px solid #000' }}></td>
@@ -425,16 +435,47 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                   <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>{moneyNo(ptots.taxTotal)}</td>
                 </tr>
               )}
+              {parseFloat(data.deliveryCharge) > 0 && (
+                <tr>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 700 }}>Delivery Charges</td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>{moneyNo(parseFloat(data.deliveryCharge))}</td>
+                </tr>
+              )}
+              {parseFloat(data.deliveryCharge) > 0 && parseFloat(data.deliveryTaxRate) > 0 && (
+                <tr>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 700 }}>Delivery Tax ({data.deliveryTaxRate}%)</td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>{moneyNo((parseFloat(data.deliveryCharge) || 0) * (parseFloat(data.deliveryTaxRate) || 0) / 100)}</td>
+                </tr>
+              )}
+              {data.adj && Number(data.adj) !== 0 && (
+                <tr>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 700 }}>Adjustment</td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000' }}></td>
+                  <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>{data.adj > 0 ? '(+) ' : '(-) '}{moneyNo(Math.abs(data.adj))}</td>
+                </tr>
+              )}
               <tr>
-                <td colSpan={4} style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>Total</td>
+                <td style={{ border: '1px solid #000' }}></td>
+                <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>Total</td>
+                <td style={{ border: '1px solid #000' }}></td>
+                <td style={{ border: '1px solid #000' }}></td>
                 <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right', fontWeight: 700, color: '#b91c1c' }}>{money(ptots.total)}</td>
               </tr>
             </tbody>
           </table>
+          <div style={{ fontSize: 10, fontStyle: 'italic', marginBottom: 4 }}>Total In Words: {numberToWords(ptots.total, docCurrency)}</div>
 
           {/* Terms and Conditions — each line of data.terms auto-numbered */}
           {termsLines.length > 0 && (
-            <div style={{ marginTop: 20, marginBottom: 20 }}>
+            <div className="formal-avoid-break" style={{ marginTop: 20, marginBottom: 20, overflow: 'hidden' }}>
               <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 8 }}>TERMS AND CONDITIONS</div>
               <ol style={{ margin: 0, paddingLeft: 20 }}>
                 {termsLines.map((line, i) => <li key={i} style={{ marginBottom: 4 }}>{line}</li>)}
@@ -442,14 +483,16 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
             </div>
           )}
 
-          {data.notes ? <div style={{ marginBottom: 20, whiteSpace: 'pre-wrap' }}>{data.notes}</div> : null}
+          {data.notes ? (
+            <div className="formal-avoid-break" style={{ marginBottom: 20, marginTop: 4, whiteSpace: 'pre-wrap', overflow: 'hidden' }}>{data.notes}</div>
+          ) : null}
 
-          <div style={{ marginBottom: 24 }}>
+          <div className="formal-avoid-break" style={{ marginTop: 24, marginBottom: 24, overflow: 'hidden' }}>
             Thank you for giving us the opportunity to serve you. As always, it's a pleasure doing business with you.
           </div>
 
           {/* Bank Details | Signature */}
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div className="formal-avoid-break" style={{ display: 'flex', justifyContent: 'space-between' }}>
             <div>
               {profile.bankName ? (
                 <>
