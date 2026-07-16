@@ -88,6 +88,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     qrCode: profile?.qrCode || null,
     invoiceTemplate: profile?.invoiceTemplate || 'Spreadsheet',
     quotationTemplate: profile?.quotationTemplate || 'Spreadsheet',
+    logoWatermark: profile?.logoWatermark === true,
   });
   const [smtpHost, setSmtpHost] = useState(profile?.smtpHost || '');
   const [smtpPort, setSmtpPort] = useState(profile?.smtpPort || '587');
@@ -146,6 +147,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         qrCode: profile.qrCode || null,
         invoiceTemplate: profile.invoiceTemplate || 'Classic',
         quotationTemplate: profile.quotationTemplate || 'Classic',
+        logoWatermark: profile.logoWatermark === true,
       });
       setSmtpHost(profile.smtpHost || '');
       setSmtpPort(profile.smtpPort || '587');
@@ -1979,6 +1981,21 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                        </div>
                     </div>
                  </div>
+
+                <div style={{ marginTop: 30 }}>
+                   <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>
+                     <input
+                       type="checkbox"
+                       checked={fin.logoWatermark}
+                       onChange={e => setFin(f => ({ ...f, logoWatermark: e.target.checked }))}
+                       style={{ width: 16, height: 16 }}
+                     />
+                     Show logo as a faded watermark on Invoice & Quotation PDFs
+                   </label>
+                   <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4, marginLeft: 24 }}>
+                     Adds your business logo, faded, in the center of the page background. Requires a logo to be uploaded above.
+                   </div>
+                </div>
 
                 <div style={{ marginTop: 40, padding: 20, bgcolor: '#f8fafc', borderRadius: 12, border: '1px solid var(--border)' }}>
                    <div style={{ fontWeight: 700, marginBottom: 10 }}>💡 Pro Tip</div>

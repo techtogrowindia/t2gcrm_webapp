@@ -88,6 +88,19 @@ const s = StyleSheet.create({
   powered: { marginTop: 22, fontSize: 8, color: '#555' },
 });
 
+// Logo watermark — must be the FIRST child inside <Page>: react-pdf draws
+// elements in render order (like a canvas, no CSS stacking context), so
+// anything rendered after this paints on top of it. `fixed` repeats it on
+// every physical page for documents that span more than one.
+function LogoWatermark({ profile }) {
+  if (!profile?.logoWatermark || !profile?.logo) return null;
+  return (
+    <View style={{ position: 'absolute', top: '32%', left: 0, right: 0, alignItems: 'center', opacity: 0.08 }} fixed>
+      <Image src={profile.logo} style={{ width: 280, objectFit: 'contain' }} />
+    </View>
+  );
+}
+
 function StandardHeader({ t, data, profile, type, accent }) {
   if (t === 'Modern') {
     return (
@@ -220,6 +233,7 @@ function StandardDoc({ t, data, profile, type, settings }) {
   return (
     <Document title={`${type} ${data.no || ''}`.trim()}>
       <Page size="A4" style={s.page}>
+        <LogoWatermark profile={profile} />
         <StandardHeader t={t} data={data} profile={profile} type={type} accent={accent} />
 
         {/* Client */}
@@ -319,6 +333,7 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
   return (
     <Document title={`${type} ${data.no || ''}`.trim()}>
       <Page size="A4" style={z.page}>
+        <LogoWatermark profile={profile} />
         {/* Border frame repeats on every page */}
         <View style={z.frame} fixed />
 

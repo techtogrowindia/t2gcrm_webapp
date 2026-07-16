@@ -517,6 +517,27 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
 
   return (
     <div className="a4-container" style={A4_STYLE}>
+      {/* Logo watermark — negative z-index on a positioned parent paints above
+          the container's own background but behind the in-flow content below,
+          so it sits faintly under the invoice/quotation text without being
+          hidden by the white page background. */}
+      {profile?.logoWatermark && profile?.logo && (
+        <img
+          src={profile.logo}
+          alt=""
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: '55%',
+            maxWidth: '380px',
+            opacity: 0.08,
+            zIndex: -1,
+            pointerEvents: 'none',
+          }}
+        />
+      )}
       {renderContent()}
     </div>
   );
