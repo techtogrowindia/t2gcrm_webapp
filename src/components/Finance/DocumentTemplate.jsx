@@ -351,25 +351,30 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               .a4-container { box-shadow: none !important; margin: 0 !important; border: none !important; padding: 15mm !important; width: auto !important; height: auto !important; min-height: auto !important; }
               .no-print { display: none !important; }
               .formal-avoid-break { page-break-inside: avoid; }
+              /* Header box + footer repeat on EVERY printed page via position:fixed;
+                 body padding reserves their space so content never underlaps. */
+              .formal-header { position: fixed !important; top: 8mm !important; left: 15mm !important; right: 15mm !important; background: #fff !important; }
+              .formal-footer { position: fixed !important; bottom: 8mm !important; left: 15mm !important; right: 15mm !important; background: #fff !important; margin: 0 !important; }
+              .formal-body { padding-top: 30mm !important; padding-bottom: 22mm !important; }
             }
           `}</style>
 
-          {/* Header block, boxed in a single-line border */}
-          <div style={{ border: '1px solid #000', padding: '10px 14px', marginBottom: 20 }}>
+          {/* Header block, boxed in a single-line border — repeats per page in print */}
+          <div className="formal-header" style={{ border: '1px solid #000', padding: '10px 14px', marginBottom: 20 }}>
             {/* Top bar: GSTIN | Phone */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid var(--accent, #16a34a)', paddingBottom: 8, marginBottom: 6, fontSize: 11 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, fontSize: 11 }}>
               <div>{profile.gstin ? <>GSTIN : {profile.gstin}</> : null}</div>
               <div>{profile.bizPhone ? <>📞 {profile.bizPhone}</> : null}</div>
             </div>
 
             {/* Big centered logo + business name */}
-            <div style={{ textAlign: 'center', marginBottom: 6 }}>
-              {profile.logo && <img src={profile.logo} alt="Logo" style={{ height: 60, objectFit: 'contain', marginBottom: 6 }} />}
-              <div style={{ fontSize: 26, fontWeight: 700, color: '#b91c1c', letterSpacing: 1 }}>{profile.bizName}</div>
+            <div style={{ textAlign: 'center' }}>
+              {profile.logo && <img src={profile.logo} alt="Logo" style={{ display: 'block', margin: '0 auto 6px', height: 60, objectFit: 'contain' }} />}
+              <div style={{ fontSize: 26, fontWeight: 700, color: '#b91c1c', letterSpacing: 1, textAlign: 'center' }}>{profile.bizName}</div>
             </div>
-            <div style={{ borderBottom: '2px solid var(--accent, #16a34a)' }} />
           </div>
 
+          <div className="formal-body">
           {/* M/s. / Date row */}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
             <div>
@@ -515,18 +520,18 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               <div style={{ fontWeight: 700 }}>Authorised Signatory</div>
             </div>
           </div>
+          </div>{/* /formal-body */}
 
-          {/* Footer */}
-          <div style={{ marginTop: 40, borderTop: '1px solid #93c5fd', paddingTop: 10, textAlign: 'center', color: '#1e40af', fontSize: 11 }}>
+          {/* Footer — repeats per page in print, sits at the page bottom */}
+          <div className="formal-footer" style={{ marginTop: 40, borderTop: '1px solid #93c5fd', paddingTop: 10, textAlign: 'center', color: '#1e40af', fontSize: 11 }}>
             {profile.address ? <div style={{ whiteSpace: 'pre-wrap' }}>{profile.address}</div> : null}
             {profile.bizEmail ? <div>E-mail : {profile.bizEmail}</div> : null}
+            {settings?.showBranding !== false && (
+              <div style={{ fontSize: 10, fontWeight: 600, color: '#555', marginTop: 8, textAlign: 'center' }}>
+                POWERED BY <strong style={{ color: '#000' }}>{settings?.brandName || 'T2GCRM'}</strong>
+              </div>
+            )}
           </div>
-
-          {settings?.showBranding !== false && (
-            <div style={{ fontSize: 10, fontWeight: 600, color: '#555', marginTop: 10, textAlign: 'center' }}>
-              POWERED BY <strong style={{ color: '#000' }}>{settings?.brandName || 'T2GCRM'}</strong>
-            </div>
-          )}
         </div>
       );
     }

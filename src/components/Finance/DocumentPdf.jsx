@@ -485,11 +485,15 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
 
 // ─────────────────────────────────────────────────── Formal Quote template ──
 const f = StyleSheet.create({
-  page: { paddingVertical: 34, paddingHorizontal: 40, fontFamily: 'NotoSans', fontSize: 10, color: '#000', lineHeight: 1.4 },
-  headerBox: { borderWidth: 1, borderColor: '#000', padding: 10, marginBottom: 20 },
-  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 2, borderColor: '#16a34a', paddingBottom: 8, marginBottom: 6 },
+  // paddingTop/Bottom reserve room for the fixed (repeating) header + footer so
+  // body content never slides underneath them — on page 1 or any later page.
+  page: { paddingTop: 172, paddingBottom: 96, paddingHorizontal: 40, fontFamily: 'NotoSans', fontSize: 10, color: '#000', lineHeight: 1.4 },
+  headerFixed: { position: 'absolute', top: 30, left: 40, right: 40 },
+  headerBox: { borderWidth: 1, borderColor: '#000', paddingHorizontal: 14, paddingTop: 8, paddingBottom: 10 },
+  topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  logoWrap: { width: 70, alignSelf: 'center', marginBottom: 4 },
   bizName: { fontSize: 22, fontWeight: 'bold', color: '#b91c1c', textAlign: 'center' },
-  rule: { borderBottomWidth: 2, borderColor: '#16a34a' },
+  footerFixed: { position: 'absolute', bottom: 24, left: 40, right: 40, borderTopWidth: 1, borderColor: '#93c5fd', paddingTop: 8 },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
   // Border-collapse trick: the table wrapper draws the top+left edges once;
   // every cell only draws its own right+bottom edge. Adjacent cells then
@@ -516,24 +520,23 @@ function FormalDoc({ data, profile, type, settings }) {
       <Page size="A4" style={f.page}>
         <LogoWatermark profile={profile} />
 
-        {/* Header block, boxed in a single-line border */}
-        <View style={f.headerBox}>
-          {/* Top bar: GSTIN | Phone */}
-          <View style={f.topBar}>
-            <Text style={{ fontSize: 9 }}>{profile?.gstin ? `GSTIN : ${profile.gstin}` : ''}</Text>
-            <Text style={{ fontSize: 9 }}>{profile?.bizPhone || ''}</Text>
-          </View>
+        {/* Boxed header — `fixed` so the box repeats at the top of every page */}
+        <View style={f.headerFixed} fixed>
+          <View style={f.headerBox}>
+            {/* Top bar: GSTIN | Phone */}
+            <View style={f.topBar}>
+              <Text style={{ fontSize: 9 }}>{profile?.gstin ? `GSTIN : ${profile.gstin}` : ''}</Text>
+              <Text style={{ fontSize: 9 }}>{profile?.bizPhone || ''}</Text>
+            </View>
 
-          {/* Centered logo + business name */}
-          <View style={{ alignItems: 'center', marginBottom: 6 }}>
+            {/* Centered logo + business name */}
             {profile?.logo ? (
-              <View style={{ width: 70, marginBottom: 6 }}>
+              <View style={f.logoWrap}>
                 <Image src={profile.logo} style={{ height: 50, width: 70, objectFit: 'contain' }} />
               </View>
             ) : null}
             <Text style={f.bizName}>{profile?.bizName || ''}</Text>
           </View>
-          <View style={f.rule} />
         </View>
 
         {/* M/s. / Date row */}
@@ -676,15 +679,15 @@ function FormalDoc({ data, profile, type, settings }) {
           </View>
         </View>
 
-        {/* Footer */}
-        <View style={{ marginTop: 30, borderTopWidth: 1, borderColor: '#93c5fd', paddingTop: 8 }} fixed>
+        {/* Footer — `fixed` + absolute bottom so it sits at the page bottom and
+            repeats on every page */}
+        <View style={f.footerFixed} fixed>
           {profile?.address ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9 }}>{profile.address}</Text> : null}
           {profile?.bizEmail ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9, marginTop: 2 }}>E-mail : {profile.bizEmail}</Text> : null}
+          {settings?.showBranding !== false ? (
+            <Text style={{ fontSize: 8, color: '#555', textAlign: 'center', marginTop: 6 }}>POWERED BY {settings?.brandName || 'T2GCRM'}</Text>
+          ) : null}
         </View>
-
-        {settings?.showBranding !== false ? (
-          <Text style={{ fontSize: 8, color: '#555', textAlign: 'center', marginTop: 8 }}>POWERED BY {settings?.brandName || 'T2GCRM'}</Text>
-        ) : null}
       </Page>
     </Document>
   );
