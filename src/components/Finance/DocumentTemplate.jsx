@@ -361,6 +361,11 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               /* thead/tfoot repeat natively on EVERY printed page (Chrome/Firefox). */
               .formal-head { display: table-header-group; }
               .formal-foot { display: table-footer-group; }
+              /* Items table repeats its own header on each page it spans and
+                 breaks only between rows, never mid-row. */
+              .formal-items-table { page-break-inside: auto; }
+              .formal-items-table thead { display: table-header-group; }
+              .formal-items-table tr { page-break-inside: avoid; page-break-after: auto; }
             }
           `}</style>
 
@@ -398,7 +403,12 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
             </tfoot>
 
             <tbody>
-              <tr><td>
+              {/* Each content block is its own table row so the print engine
+                  has a natural break point between them — packing everything
+                  into one giant row (the earlier version of this template)
+                  made long terms/notes squeeze or overlap because a single
+                  <tr> can't reliably split across pages in most browsers. */}
+              <tr className="formal-avoid-break"><td>
           {/* M/s. / Date row */}
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
             <div>
@@ -415,9 +425,11 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
           <div style={{ marginBottom: 20, whiteSpace: 'pre-wrap' }}>
             {(data.quoteFor && data.quoteFor.trim()) ? data.quoteFor : `Dear Mam/Sir,\nAs per the discussion we had, we are happy to provide our best ${type === 'Invoice' ? 'invoice' : 'quote'} for.`}
           </div>
+              </td></tr>
 
-          {/* Items table */}
-          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 4 }}>
+              <tr><td>
+          {/* Items table — allowed to break across pages between item rows */}
+          <table className="formal-items-table" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 4 }}>
             <thead>
               <tr>
                 <th style={{ border: '1px solid #000', padding: '6px 8px', color: '#b91c1c', textDecoration: 'underline', fontSize: 12, width: 40 }}>S.NO</th>
@@ -484,7 +496,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                   <td style={{ border: '1px solid #000', padding: '8px', textAlign: 'right' }}>{moneyNo((parseFloat(data.deliveryCharge) || 0) * (parseFloat(data.deliveryTaxRate) || 0) / 100)}</td>
                 </tr>
               )}
-              {data.adj && Number(data.adj) !== 0 && (
+              {Number(data.adj) !== 0 && (
                 <tr>
                   <td style={{ border: '1px solid #000' }}></td>
                   <td style={{ border: '1px solid #000', padding: '8px', fontWeight: 700 }}>Adjustment</td>
@@ -503,47 +515,57 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
             </tbody>
           </table>
           <div style={{ fontSize: 10, fontStyle: 'italic', marginBottom: 4 }}>Total In Words: {numberToWords(ptots.total, docCurrency)}</div>
+              </td></tr>
 
-          {/* Terms and Conditions — each line of data.terms auto-numbered */}
-          {termsLines.length > 0 && (
-            <div className="formal-avoid-break" style={{ marginTop: 20, marginBottom: 20, overflow: 'hidden' }}>
-              <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 8 }}>TERMS AND CONDITIONS</div>
-              <ol style={{ margin: 0, paddingLeft: 20 }}>
-                {termsLines.map((line, i) => <li key={i} style={{ marginBottom: 4 }}>{line}</li>)}
-              </ol>
-            </div>
-          )}
+              {/* Terms and Conditions — its own row so a long list can break
+                  across pages between <li> items instead of forcing everything
+                  before it to squeeze onto one page. */}
+              {termsLines.length > 0 && (
+                <tr><td>
+                  <div style={{ marginTop: 20, marginBottom: 20 }}>
+                    <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 8 }}>TERMS AND CONDITIONS</div>
+                    <ol style={{ margin: 0, paddingLeft: 20 }}>
+                      {termsLines.map((line, i) => <li key={i} style={{ marginBottom: 4 }}>{line}</li>)}
+                    </ol>
+                  </div>
+                </td></tr>
+              )}
 
-          {data.notes ? (
-            <div className="formal-avoid-break" style={{ marginBottom: 20, marginTop: 4, whiteSpace: 'pre-wrap', overflow: 'hidden' }}>{data.notes}</div>
-          ) : null}
-
-          <div className="formal-avoid-break" style={{ marginTop: 24, marginBottom: 24, overflow: 'hidden' }}>
-            Thank you for giving us the opportunity to serve you. As always, it's a pleasure doing business with you.
-          </div>
-
-          {/* Bank Details | Signature */}
-          <div className="formal-avoid-break" style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <div>
-              {profile.bankName ? (
-                <>
-                  <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 6 }}>BANK DETAILS:</div>
-                  <div>Bank Name: {profile.bankName}</div>
-                  <div>A/C Holder Name: {profile.accHolder}</div>
-                  <div>A/C No.: {profile.accountNo}</div>
-                  {profile.bankExtra ? <div>Branch: {profile.bankExtra}</div> : null}
-                  <div>IFSC Code: {profile.ifsc}</div>
-                </>
+              {data.notes ? (
+                <tr><td>
+                  <div style={{ marginBottom: 20, marginTop: 4, whiteSpace: 'pre-wrap' }}>{data.notes}</div>
+                </td></tr>
               ) : null}
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ marginBottom: 4 }}>For <strong>{profile.bizName}</strong></div>
-              {profile.signature ? (
-                <img src={profile.signature} alt="Signature" style={{ height: 50, objectFit: 'contain', margin: '8px 0' }} />
-              ) : <div style={{ height: 58 }} />}
-              <div style={{ fontWeight: 700 }}>Authorised Signatory</div>
-            </div>
-          </div>
+
+              <tr className="formal-avoid-break"><td>
+                <div style={{ marginTop: 24, marginBottom: 24 }}>
+                  Thank you for giving us the opportunity to serve you. As always, it's a pleasure doing business with you.
+                </div>
+              </td></tr>
+
+              {/* Bank Details | Signature */}
+              <tr className="formal-avoid-break"><td>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <div>
+                    {profile.bankName ? (
+                      <>
+                        <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 6 }}>BANK DETAILS:</div>
+                        <div>Bank Name: {profile.bankName}</div>
+                        <div>A/C Holder Name: {profile.accHolder}</div>
+                        <div>A/C No.: {profile.accountNo}</div>
+                        {profile.bankExtra ? <div>Branch: {profile.bankExtra}</div> : null}
+                        <div>IFSC Code: {profile.ifsc}</div>
+                      </>
+                    ) : null}
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ marginBottom: 4 }}>For <strong>{profile.bizName}</strong></div>
+                    {profile.signature ? (
+                      <img src={profile.signature} alt="Signature" style={{ height: 50, objectFit: 'contain', margin: '8px 0' }} />
+                    ) : <div style={{ height: 58 }} />}
+                    <div style={{ fontWeight: 700 }}>Authorised Signatory</div>
+                  </div>
+                </div>
               </td></tr>
             </tbody>
           </table>
