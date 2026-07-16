@@ -77,6 +77,27 @@ const LazyFallback = () => (
   </div>
 );
 
+// Short synthesized chime for new notifications — generated via Web Audio
+// API rather than an audio file, so there's no asset to host/license.
+function playNotifSound() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 880; // A5
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.35);
+    osc.onended = () => ctx.close();
+  } catch (e) { /* autoplay/permission restrictions — fail silently */ }
+}
+
 const TRIAL_DAYS = 7;
 const SUPERADMIN_KEY = 'santhanam.gokul@gmail.com';
 const DEFAULT_PLANS = [
@@ -433,6 +454,33 @@ export default function MainApp({ user, settings }) {
     notifs.sort((a, b) => (a._sortKey ?? Infinity) - (b._sortKey ?? Infinity));
     return notifs;
   }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user]);
+
+  // Proactive alert (toast + sound) the moment a notification FIRST appears —
+  // not just when the bell is manually opened. seenNotifIdsRef tracks which
+  // ids we've already alerted for, so the same due-soon lead doesn't re-toast
+  // on every 60s poll while it stays in the window. The very first computation
+  // after mount only records ids (no burst of toasts for things already due).
+  const seenNotifIdsRef = useRef(null);
+  useEffect(() => {
+    if (seenNotifIdsRef.current === null) {
+      seenNotifIdsRef.current = new Set(liveNotifs.map(n => n.id));
+      return;
+    }
+    const newOnes = liveNotifs.filter(n => !seenNotifIdsRef.current.has(n.id));
+    if (newOnes.length > 0) {
+      newOnes.forEach(n => {
+        seenNotifIdsRef.current.add(n.id);
+        toast(n.title, 'warning');
+      });
+      playNotifSound();
+    }
+    // Drop ids that are no longer present (lead acted on, window passed) so the
+    // Set doesn't grow unbounded over a long session.
+    const currentIds = new Set(liveNotifs.map(n => n.id));
+    for (const id of seenNotifIdsRef.current) {
+      if (!currentIds.has(id)) seenNotifIdsRef.current.delete(id);
+    }
+  }, [liveNotifs, toast]);
 
   const amcExpiringCount = amc.filter(a => {
     const isTeam = perms && !perms.isOwner;
