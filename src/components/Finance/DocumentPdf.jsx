@@ -487,13 +487,13 @@ function SpreadsheetDoc({ data, profile, type, settings }) {
 const f = StyleSheet.create({
   // paddingTop/Bottom reserve room for the fixed (repeating) header + footer so
   // body content never slides underneath them — on page 1 or any later page.
-  page: { paddingTop: 172, paddingBottom: 96, paddingHorizontal: 40, fontFamily: 'NotoSans', fontSize: 10, color: '#000', lineHeight: 1.4 },
+  page: { paddingTop: 176, paddingBottom: 74, paddingHorizontal: 40, fontFamily: 'NotoSans', fontSize: 10, color: '#000', lineHeight: 1.4 },
   headerFixed: { position: 'absolute', top: 30, left: 40, right: 40 },
-  headerBox: { borderWidth: 1, borderColor: '#000', paddingHorizontal: 14, paddingTop: 8, paddingBottom: 10 },
+  headerBox: { borderWidth: 1, borderColor: '#000', paddingHorizontal: 14, paddingTop: 8, paddingBottom: 18 },
   topBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  logoWrap: { width: 70, alignSelf: 'center', marginBottom: 4 },
+  logoWrap: { width: 70, alignSelf: 'center', marginBottom: 6 },
   bizName: { fontSize: 22, fontWeight: 'bold', color: '#b91c1c', textAlign: 'center' },
-  footerFixed: { position: 'absolute', bottom: 24, left: 40, right: 40, borderTopWidth: 1, borderColor: '#93c5fd', paddingTop: 8 },
+  footerFixed: { position: 'absolute', bottom: 18, left: 40, right: 40, borderTopWidth: 1, borderColor: '#93c5fd', paddingTop: 6 },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
   // Border-collapse trick: the table wrapper draws the top+left edges once;
   // every cell only draws its own right+bottom edge. Adjacent cells then
@@ -515,6 +515,9 @@ function FormalDoc({ data, profile, type, settings }) {
   const ctx = buildCtx(data, profile);
   const { items, money, moneyNo, ptots, clientMatch } = ctx;
   const termsLines = (data.terms || '').split('\n').map(l => l.trim()).filter(Boolean);
+  // Collapse the multi-line address into a single compact line so the repeating
+  // page footer stays 1–2 lines tall and doesn't spill onto its own page.
+  const compactAddress = (profile?.address || '').replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
   return (
     <Document title={`${type} ${data.no || ''}`.trim()}>
       <Page size="A4" style={f.page}>
@@ -682,10 +685,11 @@ function FormalDoc({ data, profile, type, settings }) {
         {/* Footer — `fixed` + absolute bottom so it sits at the page bottom and
             repeats on every page */}
         <View style={f.footerFixed} fixed>
-          {profile?.address ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9 }}>{profile.address}</Text> : null}
-          {profile?.bizEmail ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9, marginTop: 2 }}>E-mail : {profile.bizEmail}</Text> : null}
+          {compactAddress ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9 }}>{compactAddress}{profile?.bizEmail ? `  |  E-mail : ${profile.bizEmail}` : ''}</Text> : (
+            profile?.bizEmail ? <Text style={{ textAlign: 'center', color: '#1e40af', fontSize: 9 }}>E-mail : {profile.bizEmail}</Text> : null
+          )}
           {settings?.showBranding !== false ? (
-            <Text style={{ fontSize: 8, color: '#555', textAlign: 'center', marginTop: 6 }}>POWERED BY {settings?.brandName || 'T2GCRM'}</Text>
+            <Text style={{ fontSize: 8, color: '#555', textAlign: 'center', marginTop: 3 }}>POWERED BY {settings?.brandName || 'T2GCRM'}</Text>
           ) : null}
         </View>
       </Page>
