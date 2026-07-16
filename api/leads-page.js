@@ -27,6 +27,7 @@ export default async function handler(req, res) {
       staffFilter = '',
       srcFilter = '',
       stgFilter = '',
+      reqFilter = '',
       search = '',
       visibleStages = null, // null = all stages allowed
       disabledStages = [],
@@ -81,6 +82,7 @@ export default async function handler(req, res) {
     const baseFiltered = leads.filter(l => {
       if (srcFilter && l.source !== srcFilter) return false;
       if (stgFilter && l.stage !== stgFilter) return false;
+      if (reqFilter && l.requirement !== reqFilter) return false;
       if (staffFilter) {
         if (staffFilter === 'unassigned') {
           if (l.assign) return false;
