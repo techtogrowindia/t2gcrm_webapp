@@ -516,7 +516,8 @@ function FormalDoc({ data, profile, type, settings }) {
   const { items, money, moneyNo, ptots, clientMatch } = ctx;
   // Strip any enumerator the user typed (e.g. "1. ", "2) ") so the template's
   // own numbering doesn't produce "1. 1. …" double numbers.
-  const termsLines = (data.terms || '').split('\n').map(l => l.trim().replace(/^\d{1,3}[.)]\s*/, '')).filter(Boolean);
+  // No auto-numbering — each line is shown exactly as typed.
+  const termsLines = (data.terms || '').split('\n').map(l => l.trim()).filter(Boolean);
   // Collapse the multi-line address into a single compact line so the repeating
   // page footer stays 1–2 lines tall and doesn't spill onto its own page.
   const compactAddress = (profile?.address || '').replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
@@ -648,7 +649,7 @@ function FormalDoc({ data, profile, type, settings }) {
           <View style={{ marginTop: 18, marginBottom: 18 }} wrap={false}>
             <Text style={{ fontWeight: 'bold', marginBottom: 6 }}>TERMS AND CONDITIONS</Text>
             {termsLines.map((line, i) => (
-              <Text key={i} style={{ marginBottom: 3 }}>{i + 1}. {line}</Text>
+              <Text key={i} style={{ marginBottom: 3 }}>{line}</Text>
             ))}
           </View>
         ) : null}

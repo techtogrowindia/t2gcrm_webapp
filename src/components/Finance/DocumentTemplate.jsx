@@ -341,9 +341,9 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
     }
 
     if (t === 'Formal') {
-      // Strip any enumerator the user typed (e.g. "1. ", "2) ") so the <ol>'s
-      // own numbering doesn't produce "1. 1. …" double numbers.
-      const termsLines = (data.terms || '').split('\n').map(l => l.trim().replace(/^\d{1,3}[.)]\s*/, '')).filter(Boolean);
+      // No auto-numbering — each line is shown exactly as typed, so any
+      // numbering the user wants is entirely under their control.
+      const termsLines = (data.terms || '').split('\n').map(l => l.trim()).filter(Boolean);
       // Collapse the multi-line address to one compact line so the repeating
       // page footer stays 1–2 lines tall and never spills onto its own page.
       const compactAddress = (profile.address || '').replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
@@ -518,15 +518,15 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               </td></tr>
 
               {/* Terms and Conditions — its own row so a long list can break
-                  across pages between <li> items instead of forcing everything
-                  before it to squeeze onto one page. */}
+                  across pages between lines instead of forcing everything
+                  before it to squeeze onto one page. No auto-numbering — each
+                  line is shown as typed (the user's own numbering, if any,
+                  stays exactly as written). */}
               {termsLines.length > 0 && (
                 <tr><td>
                   <div style={{ marginTop: 20, marginBottom: 20 }}>
                     <div style={{ fontWeight: 700, textDecoration: 'underline', marginBottom: 8 }}>TERMS AND CONDITIONS</div>
-                    <ol style={{ margin: 0, paddingLeft: 20 }}>
-                      {termsLines.map((line, i) => <li key={i} style={{ marginBottom: 4 }}>{line}</li>)}
-                    </ol>
+                    {termsLines.map((line, i) => <div key={i} style={{ marginBottom: 4 }}>{line}</div>)}
                   </div>
                 </td></tr>
               )}
