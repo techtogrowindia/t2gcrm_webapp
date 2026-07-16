@@ -341,7 +341,9 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
     }
 
     if (t === 'Formal') {
-      const termsLines = (data.terms || '').split('\n').map(l => l.trim()).filter(Boolean);
+      // Strip any enumerator the user typed (e.g. "1. ", "2) ") so the <ol>'s
+      // own numbering doesn't produce "1. 1. …" double numbers.
+      const termsLines = (data.terms || '').split('\n').map(l => l.trim().replace(/^\d{1,3}[.)]\s*/, '')).filter(Boolean);
       // Collapse the multi-line address to one compact line so the repeating
       // page footer stays 1–2 lines tall and never spills onto its own page.
       const compactAddress = (profile.address || '').replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();

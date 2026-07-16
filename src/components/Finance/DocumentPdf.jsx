@@ -514,7 +514,9 @@ const f = StyleSheet.create({
 function FormalDoc({ data, profile, type, settings }) {
   const ctx = buildCtx(data, profile);
   const { items, money, moneyNo, ptots, clientMatch } = ctx;
-  const termsLines = (data.terms || '').split('\n').map(l => l.trim()).filter(Boolean);
+  // Strip any enumerator the user typed (e.g. "1. ", "2) ") so the template's
+  // own numbering doesn't produce "1. 1. …" double numbers.
+  const termsLines = (data.terms || '').split('\n').map(l => l.trim().replace(/^\d{1,3}[.)]\s*/, '')).filter(Boolean);
   // Collapse the multi-line address into a single compact line so the repeating
   // page footer stays 1–2 lines tall and doesn't spill onto its own page.
   const compactAddress = (profile?.address || '').replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
