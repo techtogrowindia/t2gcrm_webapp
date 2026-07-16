@@ -65,6 +65,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     website: profile?.website || '',
     logo: profile?.logo || null,
     bizExtraEmails: profile?.bizExtraEmails || '',
+    followupNotifyMinutes: profile?.followupNotifyMinutes ?? 0,
     slug: profile?.slug || '',
     defaultCurrency: profile?.defaultCurrency || 'INR',
     waNotifPhone: profile?.waNotifPhone || '',
@@ -124,6 +125,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         website: profile.website || '',
         logo: profile.logo || null,
         bizExtraEmails: profile.bizExtraEmails || '',
+        followupNotifyMinutes: profile.followupNotifyMinutes ?? 0,
         slug: profile.slug || '',
         defaultCurrency: profile.defaultCurrency || 'INR',
         waNotifPhone: profile.waNotifPhone || '',
@@ -732,6 +734,22 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       placeholder="manager@example.com, support@example.com" 
                     />
                     <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>These emails will also receive automated business alerts (Follow-ups, etc.)</div>
+                  </div>
+
+                  <div className="fg span2">
+                    <label>🔔 Follow-up Notification</label>
+                    <select value={biz.followupNotifyMinutes} onChange={e => setBiz(b => ({ ...b, followupNotifyMinutes: Number(e.target.value) }))}>
+                      <option value={0}>Off — no advance notice</option>
+                      <option value={15}>15 minutes before</option>
+                      <option value={30}>30 minutes before</option>
+                      <option value={45}>45 minutes before</option>
+                      <option value={60}>1 hour before</option>
+                      <option value={120}>2 hours before</option>
+                      <option value={180}>3 hours before</option>
+                    </select>
+                    <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
+                      Shows a notification in the bell menu before a lead's follow-up time is due, so you don't miss it.
+                    </div>
                   </div>
 
                   <div className="fg span2" style={{ background: 'var(--bg-soft)', padding: 16, borderRadius: 10, border: '1px solid var(--border)' }}>

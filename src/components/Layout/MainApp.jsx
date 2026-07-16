@@ -225,6 +225,9 @@ export default function MainApp({ user, settings }) {
 
   // Lightweight overdue-follow-up data for notifications (replaces 11k+ lead subscription)
   const [notifLeadData, setNotifLeadData] = useState([]);
+  // Every lead with a follow-up set (past or future) — used to compute the
+  // "due soon" advance-notice bucket per profile.followupNotifyMinutes.
+  const [followupLeadsData, setFollowupLeadsData] = useState([]);
   useEffect(() => {
     if (!targetUserId || !profile) return;
     const fetchNotifs = () => {
@@ -243,7 +246,10 @@ export default function MainApp({ user, settings }) {
         }),
       })
         .then(r => r.json())
-        .then(d => setNotifLeadData(d?.overdueReminders || []))
+        .then(d => {
+          setNotifLeadData(d?.overdueReminders || []);
+          setFollowupLeadsData(d?.followupLeads || []);
+        })
         .catch(() => {});
     };
     fetchNotifs();
@@ -392,8 +398,22 @@ export default function MainApp({ user, settings }) {
       notifs.push({ id: 'fu-overdue', unread: true, title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString() });
     }
 
+    // Advance-notice follow-ups — "due soon" per Settings > Business >
+    // Follow-up Notification (profile.followupNotifyMinutes, 0 = off).
+    // followupLeadsData already includes both past and future follow-ups,
+    // pre-filtered server-side for team visibility (same as overdue above).
+    const lookaheadMin = profile?.followupNotifyMinutes || 0;
+    if (lookaheadMin > 0) {
+      const lookaheadMs = lookaheadMin * 60 * 1000;
+      const nowMs = now.getTime();
+      const dueSoon = followupLeadsData.filter(l => l.followup && l.followup > nowMs && (l.followup - nowMs) <= lookaheadMs);
+      if (dueSoon.length > 0) {
+        notifs.push({ id: 'fu-due-soon', unread: true, title: `🔔 ${dueSoon.length} Follow-up${dueSoon.length > 1 ? 's' : ''} Due Soon`, desc: `Leads: ${dueSoon.slice(0, 10).map(l => l.name).join(', ')}${dueSoon.length > 10 ? '...' : ''}`, time: new Date().toLocaleString() });
+      }
+    }
+
     return notifs;
-  }, [amc, subs, notifLeadData, perms, user]);
+  }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user]);
 
   const amcExpiringCount = amc.filter(a => {
     const isTeam = perms && !perms.isOwner;
