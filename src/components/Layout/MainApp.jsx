@@ -249,6 +249,28 @@ export default function MainApp({ user, settings }) {
   // Every lead with a follow-up set (past or future) — used to compute the
   // "due soon" advance-notice bucket per profile.followupNotifyMinutes.
   const [followupLeadsData, setFollowupLeadsData] = useState([]);
+
+  // Read/dismissed notification ids — persisted per-tenant so "Mark all
+  // read" survives a reload instead of resetting on every mount (the
+  // previous NotifPanel onMarkRead/onMarkAllRead were both no-ops, so
+  // nothing ever left the unread state, which is why "Mark all read"
+  // appeared broken and overdue follow-ups seemed to never go away).
+  const readNotifsKey = targetUserId ? `tc_read_notifs_${targetUserId}` : null;
+  const [readNotifIds, setReadNotifIds] = useState(() => {
+    if (!readNotifsKey) return new Set();
+    try { return new Set(JSON.parse(localStorage.getItem(readNotifsKey) || '[]')); } catch { return new Set(); }
+  });
+  useEffect(() => {
+    if (!readNotifsKey) return;
+    try { setReadNotifIds(new Set(JSON.parse(localStorage.getItem(readNotifsKey) || '[]'))); } catch { setReadNotifIds(new Set()); }
+  }, [readNotifsKey]);
+  const persistReadNotifIds = (nextSet) => {
+    setReadNotifIds(nextSet);
+    if (readNotifsKey) localStorage.setItem(readNotifsKey, JSON.stringify([...nextSet]));
+  };
+  const markNotifRead = (notifId) => persistReadNotifIds(new Set([...readNotifIds, notifId]));
+  const markAllNotifsRead = () => persistReadNotifIds(new Set([...readNotifIds, ...liveNotifs.map(n => n.id)]));
+
   useEffect(() => {
     if (!targetUserId || !profile) return;
     const fetchNotifs = () => {
@@ -405,7 +427,7 @@ export default function MainApp({ user, settings }) {
       const endMs = new Date(a.endDate).getTime();
       const diff = Math.ceil((endMs - now) / (1000 * 60 * 60 * 24));
       if (diff <= 30 && diff >= 0)
-        notifs.push({ id: 'amc-' + a.id, unread: true, title: `🛡 AMC Expiring: ${a.client}`, desc: `Contract ${a.contractNo} expires in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString(), _sortKey: endMs });
+        notifs.push({ id: 'amc-' + a.id, unread: !readNotifIds.has('amc-' + a.id), title: `🛡 AMC Expiring: ${a.client}`, desc: `Contract ${a.contractNo} expires in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString(), _sortKey: endMs });
     });
 
     subs.forEach(s => {
@@ -413,14 +435,19 @@ export default function MainApp({ user, settings }) {
       const dueMs = new Date(s.nextPayment).getTime();
       const diff = Math.ceil((dueMs - now) / (1000 * 60 * 60 * 24));
       if (diff <= 7 && diff >= 0)
-        notifs.push({ id: 'sub-' + s.id, unread: true, title: `💰 Payment Due: ${s.client}`, desc: `₹${(s.amount || 0).toLocaleString()} for ${s.plan} due in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString(), _sortKey: dueMs });
+        notifs.push({ id: 'sub-' + s.id, unread: !readNotifIds.has('sub-' + s.id), title: `💰 Payment Due: ${s.client}`, desc: `₹${(s.amount || 0).toLocaleString()} for ${s.plan} due in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString(), _sortKey: dueMs });
     });
 
     // Overdue follow-ups — sourced from server to avoid 11k+ lead subscription.
     // Sorted ascending (most overdue first) by dashboard-stats.js already, so
     // [0] is the earliest/most-overdue — use it to rank this entry among others.
+    // The id incorporates the exact set of overdue lead ids (not just a fixed
+    // string) so marking it read only hides THIS set — once a new lead goes
+    // overdue or one gets resolved, the set (and id) changes and it correctly
+    // shows as unread again, instead of staying dismissed forever.
     if (notifLeadData.length > 0) {
-      notifs.push({ id: 'fu-overdue', unread: true, title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString(), _sortKey: notifLeadData[0].followup });
+      const fuOverdueId = 'fu-overdue-' + notifLeadData.map(l => l.id).sort().join(',');
+      notifs.push({ id: fuOverdueId, unread: !readNotifIds.has(fuOverdueId), title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString(), _sortKey: notifLeadData[0].followup });
     }
 
     // Advance-notice follow-ups — "due soon" per Settings > Business >
@@ -438,9 +465,10 @@ export default function MainApp({ user, settings }) {
         .sort((a, b) => a.followup - b.followup)
         .slice(0, 20); // cap so a misconfigured long lookahead can't flood the panel
       dueSoon.forEach(l => {
+        const dueSoonId = 'fu-due-soon-' + l.id;
         notifs.push({
-          id: 'fu-due-soon-' + l.id,
-          unread: true,
+          id: dueSoonId,
+          unread: !readNotifIds.has(dueSoonId),
           leadId: l.id, // lets the click handler deep-link into this lead
           title: `🔔 Follow-up Due Soon: ${l.name}`,
           desc: `${l.phone ? l.phone + ' | ' : ''}Due ${fmtDT(l.followup)}${l.stage ? ' | ' + l.stage : ''}`,
@@ -454,7 +482,7 @@ export default function MainApp({ user, settings }) {
     // follow-up) — matches what the user should act on next.
     notifs.sort((a, b) => (a._sortKey ?? Infinity) - (b._sortKey ?? Infinity));
     return notifs;
-  }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user]);
+  }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user, readNotifIds]);
 
   // Proactive alert (toast + sound) the moment a notification FIRST appears —
   // not just when the bell is manually opened. seenNotifIdsRef tracks which
@@ -691,7 +719,7 @@ export default function MainApp({ user, settings }) {
           </Suspense>
         </div>
       </div>
-      <NotifPanel notifications={liveNotifs} onMarkRead={() => {}} onMarkAllRead={() => {}} />
+      <NotifPanel notifications={liveNotifs} onMarkRead={markNotifRead} onMarkAllRead={markAllNotifsRead} />
     </div>
   );
 }
