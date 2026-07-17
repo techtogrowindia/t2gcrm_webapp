@@ -265,8 +265,20 @@ export default function MainApp({ user, settings }) {
     try { setReadNotifIds(new Set(JSON.parse(localStorage.getItem(readNotifsKey) || '[]'))); } catch { setReadNotifIds(new Set()); }
   }, [readNotifsKey]);
   const persistReadNotifIds = (nextSet) => {
-    setReadNotifIds(nextSet);
-    if (readNotifsKey) localStorage.setItem(readNotifsKey, JSON.stringify([...nextSet]));
+    // Cap to the most-recent 2000 ack ids so localStorage can't grow unbounded
+    // over a long-lived tenant. We intentionally do NOT prune ids just because
+    // their notif isn't in the CURRENT liveNotifs — that was the bug that made
+    // the overdue toast reappear on every refresh: liveNotifs starts without
+    // the overdue bucket (its data is fetched async from /api/dashboard-stats),
+    // so any "prune ids not currently present" step would wipe the acked ids
+    // during the window before that fetch resolves, and the bucket would then
+    // look brand-new and re-toast. A size cap achieves bounded growth without
+    // ever racing the fetch.
+    let arr = [...nextSet];
+    if (arr.length > 2000) arr = arr.slice(arr.length - 2000);
+    const capped = new Set(arr);
+    setReadNotifIds(capped);
+    if (readNotifsKey) localStorage.setItem(readNotifsKey, JSON.stringify(arr));
   };
   // Most notif types are 1 lead = 1 stable id, so ackIds is just [n.id]. The
   // combined overdue-follow-up row is the exception: it represents an entire
@@ -511,57 +523,44 @@ export default function MainApp({ user, settings }) {
   // snapshot removes that race entirely.
   useEffect(() => {
     const newOnes = liveNotifs.filter(n => ackIdsOf(n).some(aid => !readNotifIds.has(aid)));
-    let next = readNotifIds;
-    let changed = false;
+    if (newOnes.length === 0) return; // nothing genuinely new — never re-toast
 
-    if (newOnes.length > 0) {
-      newOnes.forEach(n => {
-        // persistent: stays on screen until manually closed — a 3.5s
-        // auto-dismiss risks the user missing a due-soon alert entirely.
-        // Includes the desc line (due time / phone / stage) so the timing is
-        // visible right in the popup, not just in the bell panel. Clickable
-        // (deep-links via tc_open_lead, the same mechanism LeadsView already
-        // uses) only when the notif is tied to a single lead.
-        const msgNode = n.leadId ? (
-          <span
-            onClick={() => {
-              localStorage.setItem('tc_open_lead', n.leadId);
-              setActiveView('leads');
-              // If LeadsView is already mounted (user already on Leads), its
-              // localStorage-watching effect won't re-fire on its own — this
-              // event tells it to open the lead immediately either way.
-              window.dispatchEvent(new CustomEvent('tc-open-lead-request', { detail: n.leadId }));
-            }}
-            style={{ cursor: 'pointer', display: 'block' }}
-          >
-            <div>{n.title}</div>
-            <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{n.desc}</div>
-          </span>
-        ) : (
-          <span style={{ display: 'block' }}>
-            <div>{n.title}</div>
-            <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{n.desc}</div>
-          </span>
-        );
-        toast(msgNode, 'warning', { persistent: true });
-      });
-      playNotifSound();
-      next = new Set([...next, ...newOnes.flatMap(ackIdsOf)]);
-      changed = true;
-    }
-
-    // Drop read ids that are no longer present (lead acted on, window
-    // passed) so localStorage doesn't grow unbounded over a long-lived tenant.
-    const currentAckIds = new Set(liveNotifs.flatMap(ackIdsOf));
-    for (const rid of next) {
-      if (!currentAckIds.has(rid)) {
-        if (next === readNotifIds) next = new Set(next);
-        next.delete(rid);
-        changed = true;
-      }
-    }
-
-    if (changed) persistReadNotifIds(next);
+    newOnes.forEach(n => {
+      // persistent: stays on screen until manually closed — a 3.5s
+      // auto-dismiss risks the user missing a due-soon alert entirely.
+      // Includes the desc line (due time / phone / stage) so the timing is
+      // visible right in the popup, not just in the bell panel. Clickable
+      // (deep-links via tc_open_lead, the same mechanism LeadsView already
+      // uses) only when the notif is tied to a single lead.
+      const msgNode = n.leadId ? (
+        <span
+          onClick={() => {
+            localStorage.setItem('tc_open_lead', n.leadId);
+            setActiveView('leads');
+            // If LeadsView is already mounted (user already on Leads), its
+            // localStorage-watching effect won't re-fire on its own — this
+            // event tells it to open the lead immediately either way.
+            window.dispatchEvent(new CustomEvent('tc-open-lead-request', { detail: n.leadId }));
+          }}
+          style={{ cursor: 'pointer', display: 'block' }}
+        >
+          <div>{n.title}</div>
+          <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{n.desc}</div>
+        </span>
+      ) : (
+        <span style={{ display: 'block' }}>
+          <div>{n.title}</div>
+          <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{n.desc}</div>
+        </span>
+      );
+      toast(msgNode, 'warning', { persistent: true });
+    });
+    playNotifSound();
+    // Mark the new ones read immediately so they can't re-toast on the next
+    // refresh. No pruning of old ids here — that raced the async overdue fetch
+    // and wiped acked ids (see persistReadNotifIds); bounded growth is handled
+    // by the size cap there instead.
+    persistReadNotifIds(new Set([...readNotifIds, ...newOnes.flatMap(ackIdsOf)]));
   }, [liveNotifs, toast, readNotifIds]);
 
   const amcExpiringCount = amc.filter(a => {
