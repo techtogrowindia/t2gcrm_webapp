@@ -485,20 +485,26 @@ export default function MainApp({ user, settings }) {
   }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user, readNotifIds]);
 
   // Proactive alert (toast + sound) the moment a notification FIRST appears —
-  // not just when the bell is manually opened. seenNotifIdsRef tracks which
-  // ids we've already alerted for, so the same due-soon lead doesn't re-toast
-  // on every 60s poll while it stays in the window. The very first computation
-  // after mount only records ids (no burst of toasts for things already due).
-  const seenNotifIdsRef = useRef(null);
+  // not just when the bell is manually opened. Dedup now uses the SAME
+  // persisted readNotifIds set as the bell panel (not an in-memory ref that
+  // reset on every mount): a notif toasts once, then is immediately marked
+  // read so it won't re-toast on the next page load.
+  //
+  // This also fixes a real bug: the old ref was seeded from `liveNotifs` on
+  // the first run of this effect, but notifLeadData/followupLeadsData start
+  // empty and only populate after the async /api/dashboard-stats fetch
+  // resolves. So the seed (taken before the fetch resolved) never included
+  // the overdue-follow-up entry; when the fetch then completed a moment
+  // later, that entry looked "new" and re-toasted — on every single page
+  // refresh. Reading from localStorage instead of the in-flight liveNotifs
+  // snapshot removes that race entirely.
   useEffect(() => {
-    if (seenNotifIdsRef.current === null) {
-      seenNotifIdsRef.current = new Set(liveNotifs.map(n => n.id));
-      return;
-    }
-    const newOnes = liveNotifs.filter(n => !seenNotifIdsRef.current.has(n.id));
+    const newOnes = liveNotifs.filter(n => !readNotifIds.has(n.id));
+    let next = readNotifIds;
+    let changed = false;
+
     if (newOnes.length > 0) {
       newOnes.forEach(n => {
-        seenNotifIdsRef.current.add(n.id);
         // persistent: stays on screen until manually closed — a 3.5s
         // auto-dismiss risks the user missing a due-soon alert entirely.
         // Includes the desc line (due time / phone / stage) so the timing is
@@ -529,14 +535,23 @@ export default function MainApp({ user, settings }) {
         toast(msgNode, 'warning', { persistent: true });
       });
       playNotifSound();
+      next = new Set([...next, ...newOnes.map(n => n.id)]);
+      changed = true;
     }
-    // Drop ids that are no longer present (lead acted on, window passed) so the
-    // Set doesn't grow unbounded over a long session.
+
+    // Drop read ids that are no longer present (lead acted on, window
+    // passed) so localStorage doesn't grow unbounded over a long-lived tenant.
     const currentIds = new Set(liveNotifs.map(n => n.id));
-    for (const id of seenNotifIdsRef.current) {
-      if (!currentIds.has(id)) seenNotifIdsRef.current.delete(id);
+    for (const rid of next) {
+      if (!currentIds.has(rid)) {
+        if (next === readNotifIds) next = new Set(next);
+        next.delete(rid);
+        changed = true;
+      }
     }
-  }, [liveNotifs, toast]);
+
+    if (changed) persistReadNotifIds(next);
+  }, [liveNotifs, toast, readNotifIds]);
 
   const amcExpiringCount = amc.filter(a => {
     const isTeam = perms && !perms.isOwner;
