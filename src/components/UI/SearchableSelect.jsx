@@ -1,6 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 
-export default function SearchableSelect({ options, value, onChange, placeholder = "Select...", displayKey = "name", returnKey = "name", disabled = false }) {
+// searchKeys: extra object keys whose values also count as a match (e.g.
+//   ['phone'] so a client can be found by phone number, not just name).
+// subKey: an object key whose value is shown as a small secondary line under
+//   each option (falls back to code/sku) — lets same-named records be told
+//   apart at a glance (e.g. the phone number).
+export default function SearchableSelect({ options, value, onChange, placeholder = "Select...", displayKey = "name", returnKey = "name", disabled = false, searchKeys = [], subKey = null }) {
+  const searchKeysSig = searchKeys.join(',');
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
   const wrapperRef = useRef(null);
@@ -44,9 +50,10 @@ export default function SearchableSelect({ options, value, onChange, placeholder
       const text = String(opt[displayKey] || '').toLowerCase();
       const code = String(opt.code || '').toLowerCase();
       const extra = String(opt.sku || '').toLowerCase();
-      return text.includes(s) || code.includes(s) || extra.includes(s);
+      const extraKeys = searchKeys.some(k => String(opt[k] || '').toLowerCase().includes(s));
+      return text.includes(s) || code.includes(s) || extra.includes(s) || extraKeys;
     });
-  }, [options, search, displayKey]);
+  }, [options, search, displayKey, searchKeysSig]);
 
   const handleSelect = (opt) => {
     const val = typeof opt === 'object' ? opt[returnKey] : opt;
@@ -174,9 +181,9 @@ export default function SearchableSelect({ options, value, onChange, placeholder
                       <span>{text}</span>
                       {isSelected && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>}
                     </div>
-                    {typeof opt === 'object' && (opt.code || opt.sku) && (
+                    {typeof opt === 'object' && (subKey ? opt[subKey] : (opt.code || opt.sku)) && (
                       <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 400 }}>
-                        {opt.code || opt.sku}
+                        {subKey ? opt[subKey] : (opt.code || opt.sku)}
                       </div>
                     )}
                   </div>

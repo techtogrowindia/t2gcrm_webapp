@@ -783,11 +783,13 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                   <label>Client *</label>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <div style={{ flex: 1 }}>
-                      <SearchableSelect 
-                        options={clientOptions} 
-                        displayKey="displayName" 
+                      <SearchableSelect
+                        options={clientOptions}
+                        displayKey="displayName"
                         returnKey="name"
-                        value={form.client} 
+                        searchKeys={['phone']}
+                        subKey="phone"
+                        value={form.client}
                         onChange={val => {
                           // Auto-map distributor/retailer from matching lead
                           const matchedLead = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
