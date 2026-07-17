@@ -17,8 +17,11 @@ const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: ''
 function calcTotals(items, disc, discType, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
   const its = Array.isArray(items) ? items : (items ? JSON.parse(items) : []);
   const sub = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0), 0);
-  const taxTotal = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0) * (it.taxRate || 0) / 100, 0);
   const discAmt = discType === '₹' ? (parseFloat(disc) || 0) : sub * (parseFloat(disc) || 0) / 100;
+  // GST on the post-discount taxable value — discount apportioned across items
+  // via this factor (keep in sync with computeDocTotals in utils/docTotals.js).
+  const discountFactor = sub > 0 ? Math.max(0, (sub - discAmt) / sub) : 1;
+  const taxTotal = its.reduce((s, it) => s + (it.qty || 0) * (it.rate || 0) * discountFactor * (it.taxRate || 0) / 100, 0);
   const tdsAmt = (sub - discAmt) * (tdsRate || 0) / 100;
   const deliveryAmt = parseFloat(delivery) || 0;
   const deliveryTax = deliveryAmt * (parseFloat(deliveryTaxRate) || 0) / 100;
