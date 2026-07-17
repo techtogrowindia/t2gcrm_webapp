@@ -21,7 +21,7 @@ export default function NotifPanel({ notifications, onMarkRead, onMarkAllRead })
           </div>
         ) : (
           notifications.map(n => (
-            <div key={n.id} className={`notif-item${n.unread ? ' unread' : ''}`} onClick={() => onMarkRead(n.id)}>
+            <div key={n.id} className={`notif-item${n.unread ? ' unread' : ''}`} onClick={() => onMarkRead(n)}>
               <div className="ni-title">{n.title}</div>
               <div className="ni-desc">{n.desc}</div>
               <div className="ni-time">{n.time}</div>

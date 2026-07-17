@@ -268,8 +268,15 @@ export default function MainApp({ user, settings }) {
     setReadNotifIds(nextSet);
     if (readNotifsKey) localStorage.setItem(readNotifsKey, JSON.stringify([...nextSet]));
   };
-  const markNotifRead = (notifId) => persistReadNotifIds(new Set([...readNotifIds, notifId]));
-  const markAllNotifsRead = () => persistReadNotifIds(new Set([...readNotifIds, ...liveNotifs.map(n => n.id)]));
+  // Most notif types are 1 lead = 1 stable id, so ackIds is just [n.id]. The
+  // combined overdue-follow-up row is the exception: it represents an entire
+  // BUCKET of leads under one display id, so it carries its own _ackIds (one
+  // per lead in the bucket) — marking read acks each lead individually, so a
+  // single new/resolved lead doesn't make the whole bucket look brand new
+  // again (see the comment above the overdue block in liveNotifs).
+  const ackIdsOf = (n) => n._ackIds || [n.id];
+  const markNotifRead = (notif) => persistReadNotifIds(new Set([...readNotifIds, ...ackIdsOf(notif)]));
+  const markAllNotifsRead = () => persistReadNotifIds(new Set([...readNotifIds, ...liveNotifs.flatMap(ackIdsOf)]));
 
   useEffect(() => {
     if (!targetUserId || !profile) return;
@@ -441,13 +448,16 @@ export default function MainApp({ user, settings }) {
     // Overdue follow-ups — sourced from server to avoid 11k+ lead subscription.
     // Sorted ascending (most overdue first) by dashboard-stats.js already, so
     // [0] is the earliest/most-overdue — use it to rank this entry among others.
-    // The id incorporates the exact set of overdue lead ids (not just a fixed
-    // string) so marking it read only hides THIS set — once a new lead goes
-    // overdue or one gets resolved, the set (and id) changes and it correctly
-    // shows as unread again, instead of staying dismissed forever.
+    // This is ONE combined row for display, but tracks read-state PER LEAD via
+    // _ackIds — hashing the whole set into a single id meant that whenever any
+    // one lead entered/left the overdue bucket (which happens constantly as
+    // leads get worked), the entire combined notification looked brand new
+    // and re-toasted, even though most of its leads were already acknowledged.
+    // Per-lead ack ids mean only the genuinely new lead(s) trigger a fresh
+    // toast, and already-seen leads staying overdue don't re-trigger it.
     if (notifLeadData.length > 0) {
-      const fuOverdueId = 'fu-overdue-' + notifLeadData.map(l => l.id).sort().join(',');
-      notifs.push({ id: fuOverdueId, unread: !readNotifIds.has(fuOverdueId), title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString(), _sortKey: notifLeadData[0].followup });
+      const ackIds = notifLeadData.map(l => 'fu-overdue-lead-' + l.id);
+      notifs.push({ id: 'fu-overdue-bucket', _ackIds: ackIds, unread: ackIds.some(aid => !readNotifIds.has(aid)), title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString(), _sortKey: notifLeadData[0].followup });
     }
 
     // Advance-notice follow-ups — "due soon" per Settings > Business >
@@ -488,7 +498,8 @@ export default function MainApp({ user, settings }) {
   // not just when the bell is manually opened. Dedup now uses the SAME
   // persisted readNotifIds set as the bell panel (not an in-memory ref that
   // reset on every mount): a notif toasts once, then is immediately marked
-  // read so it won't re-toast on the next page load.
+  // read (via its ackIds — see ackIdsOf above) so it won't re-toast on the
+  // next page load.
   //
   // This also fixes a real bug: the old ref was seeded from `liveNotifs` on
   // the first run of this effect, but notifLeadData/followupLeadsData start
@@ -499,7 +510,7 @@ export default function MainApp({ user, settings }) {
   // refresh. Reading from localStorage instead of the in-flight liveNotifs
   // snapshot removes that race entirely.
   useEffect(() => {
-    const newOnes = liveNotifs.filter(n => !readNotifIds.has(n.id));
+    const newOnes = liveNotifs.filter(n => ackIdsOf(n).some(aid => !readNotifIds.has(aid)));
     let next = readNotifIds;
     let changed = false;
 
@@ -535,15 +546,15 @@ export default function MainApp({ user, settings }) {
         toast(msgNode, 'warning', { persistent: true });
       });
       playNotifSound();
-      next = new Set([...next, ...newOnes.map(n => n.id)]);
+      next = new Set([...next, ...newOnes.flatMap(ackIdsOf)]);
       changed = true;
     }
 
     // Drop read ids that are no longer present (lead acted on, window
     // passed) so localStorage doesn't grow unbounded over a long-lived tenant.
-    const currentIds = new Set(liveNotifs.map(n => n.id));
+    const currentAckIds = new Set(liveNotifs.flatMap(ackIdsOf));
     for (const rid of next) {
-      if (!currentIds.has(rid)) {
+      if (!currentAckIds.has(rid)) {
         if (next === readNotifIds) next = new Set(next);
         next.delete(rid);
         changed = true;
