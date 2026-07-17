@@ -457,6 +457,12 @@ export default function MainApp({ user, settings }) {
         notifs.push({ id: 'sub-' + s.id, unread: !readNotifIds.has('sub-' + s.id), title: `💰 Payment Due: ${s.client}`, desc: `₹${(s.amount || 0).toLocaleString()} for ${s.plan} due in ${diff} day${diff !== 1 ? 's' : ''}`, time: new Date().toLocaleString(), _sortKey: dueMs });
     });
 
+    // The Settings > Business > "Follow-up Notification" interval is the master
+    // switch for BOTH follow-up notifications below (overdue + advance "due
+    // soon"). 0 = Off silences both — turning it off means the user wants no
+    // follow-up alerts at all, not just the advance ones.
+    const lookaheadMin = profile?.followupNotifyMinutes || 0;
+
     // Overdue follow-ups — sourced from server to avoid 11k+ lead subscription.
     // Sorted ascending (most overdue first) by dashboard-stats.js already, so
     // [0] is the earliest/most-overdue — use it to rank this entry among others.
@@ -467,18 +473,16 @@ export default function MainApp({ user, settings }) {
     // and re-toasted, even though most of its leads were already acknowledged.
     // Per-lead ack ids mean only the genuinely new lead(s) trigger a fresh
     // toast, and already-seen leads staying overdue don't re-trigger it.
-    if (notifLeadData.length > 0) {
+    if (lookaheadMin > 0 && notifLeadData.length > 0) {
       const ackIds = notifLeadData.map(l => 'fu-overdue-lead-' + l.id);
       notifs.push({ id: 'fu-overdue-bucket', _ackIds: ackIds, unread: ackIds.some(aid => !readNotifIds.has(aid)), title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString(), _sortKey: notifLeadData[0].followup });
     }
 
-    // Advance-notice follow-ups — "due soon" per Settings > Business >
-    // Follow-up Notification (profile.followupNotifyMinutes, 0 = off).
+    // Advance-notice follow-ups — "due soon" within the same interval.
     // followupLeadsData already includes both past and future follow-ups,
     // pre-filtered server-side for team visibility (same as overdue above).
     // One notification PER LEAD (not a combined line) so the follow-up time
     // and phone number are visible for each.
-    const lookaheadMin = profile?.followupNotifyMinutes || 0;
     if (lookaheadMin > 0) {
       const lookaheadMs = lookaheadMin * 60 * 1000;
       const nowMs = now.getTime();

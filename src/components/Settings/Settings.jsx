@@ -741,7 +741,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                   <div className="fg span2">
                     <label>🔔 Follow-up Notification</label>
                     <select value={biz.followupNotifyMinutes} onChange={e => setBiz(b => ({ ...b, followupNotifyMinutes: Number(e.target.value) }))}>
-                      <option value={0}>Off — no advance notice</option>
+                      <option value={0}>Off — no follow-up alerts</option>
                       <option value={15}>15 minutes before</option>
                       <option value={30}>30 minutes before</option>
                       <option value={45}>45 minutes before</option>
@@ -750,7 +750,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                       <option value={180}>3 hours before</option>
                     </select>
                     <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
-                      Shows a notification in the bell menu before a lead's follow-up time is due, so you don't miss it.
+                      Alerts you (bell + popup) about lead follow-ups: this many minutes before each one is due, plus any that are already overdue. Set to Off to disable all follow-up notifications.
                     </div>
                   </div>
 
