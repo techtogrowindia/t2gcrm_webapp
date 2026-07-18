@@ -52,6 +52,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [pendingBulkAssign, setPendingBulkAssign] = useState('');
   const [pendingBulkStage, setPendingBulkStage] = useState('');
+  const [pendingBulkReq, setPendingBulkReq] = useState('');
   const [colModal, setColModal] = useState(false);
   const [tempCols, setTempCols] = useState([]);
   const [tempStages, setTempStages] = useState([]);
@@ -1009,7 +1010,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   };
 
   const bulkApply = async () => {
-    if (!selectedIds.size || (!pendingBulkAssign && !pendingBulkStage)) return;
+    if (!selectedIds.size || (!pendingBulkAssign && !pendingBulkStage && !pendingBulkReq)) return;
     const ids = [...selectedIds];
     const count = ids.length;
     const msgs = [];
@@ -1018,6 +1019,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     const updates = {};
     if (pendingBulkAssign) { updates.assign = pendingBulkAssign; updates.assignedAt = Date.now(); }
     if (pendingBulkStage) { updates.stage = pendingBulkStage; updates.stageChangedAt = Date.now(); }
+    if (pendingBulkReq) { updates.requirement = pendingBulkReq; }
 
     // Track leads that need Won-stage customer conversion (rare, only for subset)
     const wonConversions = [];
@@ -1045,6 +1047,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     const summaryParts = [];
     if (pendingBulkAssign) summaryParts.push(`assigned to **${pendingBulkAssign}**`);
     if (pendingBulkStage) summaryParts.push(`stage set to **${pendingBulkStage}**`);
+    if (pendingBulkReq) summaryParts.push(`requirement set to **${pendingBulkReq}**`);
     await dbWrite(dbOp.update('activityLogs', id(), {
       entityType: 'lead', entityId: 'bulk',
       entityName: `Bulk: ${count} leads`, action: 'bulk-update',
@@ -1053,6 +1056,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       bulkFields: {
         ...(pendingBulkAssign ? { assign: pendingBulkAssign } : {}),
         ...(pendingBulkStage ? { stage: pendingBulkStage } : {}),
+        ...(pendingBulkReq ? { requirement: pendingBulkReq } : {}),
       },
       userId: ownerId, actorId: user.id, userName: user.email,
       teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
@@ -1065,8 +1069,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
     if (pendingBulkAssign) msgs.push(`Assigned to ${pendingBulkAssign}`);
     if (pendingBulkStage) msgs.push(`Stage → ${pendingBulkStage}`);
+    if (pendingBulkReq) msgs.push(`Requirement → ${pendingBulkReq}`);
     setPendingBulkAssign('');
     setPendingBulkStage('');
+    setPendingBulkReq('');
     setSelectedIds(new Set());
     toast(`${count} leads: ${msgs.join(', ')}`, 'success');
     refetchPage();
@@ -1600,9 +1606,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                 <option value="">Change Stage...</option>
                 {activeStages.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
-              {(pendingBulkAssign || pendingBulkStage) && <button className="btn btn-primary btn-sm" onClick={bulkApply}>Apply</button>}
+              <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }} value={pendingBulkReq} onChange={e => setPendingBulkReq(e.target.value)}>
+                <option value="">Change Requirement...</option>
+                {activeRequirements.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+              {(pendingBulkAssign || pendingBulkStage || pendingBulkReq) && <button className="btn btn-primary btn-sm" onClick={bulkApply}>Apply</button>}
               {canDelete && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={bulkDelete}>🗑 Delete Selected</button>}
-              <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedIds(new Set()); setPendingBulkAssign(''); setPendingBulkStage(''); }}>✕ Clear</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedIds(new Set()); setPendingBulkAssign(''); setPendingBulkStage(''); setPendingBulkReq(''); }}>✕ Clear</button>
             </div>
           )}
 
