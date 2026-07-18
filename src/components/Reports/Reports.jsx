@@ -55,10 +55,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
     expenses: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     partnerCommissions: { $: { where: { userId: ownerId } } },
+    teamMembers: { $: { where: { userId: ownerId } } },
   });
 
   // Deferred: subscription for non-leads tabs only; leads replaced by server fetch
-  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source'].includes(tab);
+  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source', 'source-team', 'stage-team'].includes(tab);
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
   const needsStageLogs = tab === 'stage-transitions';
@@ -138,6 +139,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
     deferredLoading ||
     (needsCore && coreLoading);
   const commissions = data?.partnerCommissions || [];
+  const teamMembers = data?.teamMembers || [];
 
   const isTeam = perms && !perms.isOwner;
   const canSeeAll = perms?.isAdmin || perms?.isManager || !isTeam;
@@ -409,6 +411,72 @@ export default function Reports({ user, perms, ownerId, profile }) {
   }, [tab, filteredLeadsAtSource, fromDate, toDate, wonStage, lostStage]);
 
   // ==================================================
+  // #2c LEADS BY SOURCE & TEAM MEMBER — pivot table (rows=source, cols=team
+  // member), replacing a manual notebook tally the business owner was keeping.
+  // Columns are every ACTIVE team member (so a member with 0 leads in range
+  // still gets a column) plus "Unassigned", plus any stray assign value that
+  // doesn't match a current team member (e.g. a renamed/removed member) so no
+  // lead is ever silently dropped from the grand total — same lesson learned
+  // auditing ARS Engineering's filter counts earlier.
+  // ==================================================
+  const sourceTeamMatrix = useMemo(() => {
+    if (tab !== 'source-team') return { matrix: {}, rows: [], cols: [], total: 0 };
+    const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
+    const teamNames = new Set(teamMembers.map(t => t.name).filter(Boolean));
+    const matrix = {};
+    const rowSet = new Set();
+    const colSet = new Set();
+    let total = 0;
+    inRangeLeads.forEach(l => {
+      const src = l.source || 'Unknown';
+      const col = l.assign ? l.assign : 'Unassigned';
+      if (!matrix[src]) matrix[src] = {};
+      matrix[src][col] = (matrix[src][col] || 0) + 1;
+      rowSet.add(src);
+      colSet.add(col);
+      total += 1;
+    });
+    // Columns: active team members first (alphabetical), then "Unassigned",
+    // then any stray assign values not matching a current team member.
+    const activeCols = [...teamNames].sort();
+    const strayCols = [...colSet].filter(c => c !== 'Unassigned' && !teamNames.has(c)).sort();
+    const cols = [...activeCols, ...(colSet.has('Unassigned') ? ['Unassigned'] : []), ...strayCols];
+    const rows = [...rowSet].sort();
+    return { matrix, rows, cols, total };
+  }, [tab, filteredLeadsAtSource, teamMembers, fromDate, toDate]);
+
+  // ==================================================
+  // #2d LEADS BY STAGE & TEAM MEMBER — same pivot, grouped by stage instead
+  // of source. Row order follows STAGE_ORDER (respects disabledStages/
+  // leadStages config); any stray stage value not in that list is appended
+  // at the end rather than hidden.
+  // ==================================================
+  const stageTeamMatrix = useMemo(() => {
+    if (tab !== 'stage-team') return { matrix: {}, rows: [], cols: [], total: 0 };
+    const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
+    const teamNames = new Set(teamMembers.map(t => t.name).filter(Boolean));
+    const matrix = {};
+    const rowSet = new Set();
+    const colSet = new Set();
+    let total = 0;
+    inRangeLeads.forEach(l => {
+      const stg = l.stage || 'Unknown';
+      const col = l.assign ? l.assign : 'Unassigned';
+      if (!matrix[stg]) matrix[stg] = {};
+      matrix[stg][col] = (matrix[stg][col] || 0) + 1;
+      rowSet.add(stg);
+      colSet.add(col);
+      total += 1;
+    });
+    const activeCols = [...teamNames].sort();
+    const strayCols = [...colSet].filter(c => c !== 'Unassigned' && !teamNames.has(c)).sort();
+    const cols = [...activeCols, ...(colSet.has('Unassigned') ? ['Unassigned'] : []), ...strayCols];
+    const strayRows = [...rowSet].filter(s => !STAGE_ORDER.includes(s)).sort();
+    const rows = [...STAGE_ORDER.filter(s => rowSet.has(s)), ...strayRows];
+    return { matrix, rows, cols, total };
+  }, [tab, filteredLeadsAtSource, teamMembers, fromDate, toDate, STAGE_ORDER.join()]);
+
+  // ==================================================
   // #3 CUSTOMER PURCHASE REPORT — from paid invoice items, grouped by product
   // ==================================================
   const customerPurchase = useMemo(() => {
@@ -626,6 +694,20 @@ export default function Reports({ user, perms, ownerId, profile }) {
         return row;
       });
       exportCSV(headers, rows, `Stage_Transitions_${fromDate}_to_${toDate}`);
+    } else if (tab === 'source-team' || tab === 'stage-team') {
+      const m = tab === 'source-team' ? sourceTeamMatrix : stageTeamMatrix;
+      const rowLabel = tab === 'source-team' ? 'Source' : 'Stage';
+      const headers = [rowLabel, ...m.cols, 'Total'];
+      const rows = m.rows.map(r => {
+        const row = [r];
+        let tot = 0;
+        m.cols.forEach(c => { const v = m.matrix[r]?.[c] || 0; row.push(v); tot += v; });
+        row.push(tot);
+        return row;
+      });
+      const totalsRow = ['Total', ...m.cols.map(c => m.rows.reduce((s, r) => s + (m.matrix[r]?.[c] || 0), 0)), m.total];
+      rows.push(totalsRow);
+      exportCSV(headers, rows, `Leads_By_${rowLabel}_And_Team_${fromDate}_to_${toDate}`);
     } else if (tab === 'leads') {
       exportCSV(['Stage', 'Count'], stageCount.map(s => [s.stage, s.count]), `Lead_Pipeline_${fromDate}_to_${toDate}`);
     } else if (tab === 'expenses' && expenseReport) {
@@ -699,6 +781,8 @@ export default function Reports({ user, perms, ownerId, profile }) {
             ['gst', 'GST Summary'],
             ['product-enquiry', 'Leads by Requirement'],
             ['lead-source', 'Leads by Source'],
+            ['source-team', 'Leads by Source & Team'],
+            ['stage-team', 'Leads by Stage & Team'],
             ['customer-purchase', 'Customer Purchases'],
             ['stage-transitions', 'Stage Transitions'],
             ['leads', 'Lead Pipeline'],
@@ -1367,6 +1451,73 @@ export default function Reports({ user, perms, ownerId, profile }) {
           )}
         </div>
       )}
+
+      {(tab === 'source-team' || tab === 'stage-team') && (() => {
+        const m = tab === 'source-team' ? sourceTeamMatrix : stageTeamMatrix;
+        const rowLabel = tab === 'source-team' ? 'Source' : 'Stage';
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <div className="stat-grid">
+              <div className="stat-card sc-blue"><div className="lbl">Total Leads</div><div className="val">{m.total}</div></div>
+              <div className="stat-card sc-green"><div className="lbl">{rowLabel}s</div><div className="val">{m.rows.length}</div></div>
+              <div className="stat-card sc-purple"><div className="lbl">Team Members</div><div className="val">{m.cols.length}</div></div>
+            </div>
+
+            <div className="tw">
+              <div className="tw-head"><h3>{rowLabel} × Team Member</h3></div>
+              <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
+                Rows = {rowLabel} · Columns = Team Member · Cell = # of leads
+              </div>
+              <div className="tw-scroll">
+                {m.total === 0 ? (
+                  <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>
+                    No leads in this period.
+                  </div>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style={{ background: '#f9fafb' }}>{rowLabel} \ Team</th>
+                        {m.cols.map(c => <th key={c} style={{ textAlign: 'right' }}>{c}</th>)}
+                        <th style={{ textAlign: 'right', background: '#f3f4f6' }}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {m.rows.map(r => {
+                        const rowTotal = m.cols.reduce((s, c) => s + (m.matrix[r]?.[c] || 0), 0);
+                        const rowMax = Math.max(...m.cols.map(c => m.matrix[r]?.[c] || 0), 1);
+                        return (
+                          <tr key={r}>
+                            <td><strong>{r}</strong></td>
+                            {m.cols.map(c => {
+                              const v = m.matrix[r]?.[c] || 0;
+                              const intensity = v === 0 ? 0 : Math.max(0.15, v / rowMax);
+                              return (
+                                <td key={c} style={{ textAlign: 'right', background: v > 0 ? `rgba(59, 130, 246, ${intensity * 0.3})` : 'transparent', fontWeight: v > 0 ? 700 : 400, color: v === 0 ? 'var(--muted)' : '#111' }}>
+                                  {v || '-'}
+                                </td>
+                              );
+                            })}
+                            <td style={{ textAlign: 'right', fontWeight: 700, background: '#f9fafb' }}>{rowTotal}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr style={{ background: '#f9fafb' }}>
+                        <td><strong>Total</strong></td>
+                        {m.cols.map(c => {
+                          const col = m.rows.reduce((s, r) => s + (m.matrix[r]?.[c] || 0), 0);
+                          return <td key={c} style={{ textAlign: 'right', fontWeight: 700 }}>{col}</td>;
+                        })}
+                        <td style={{ textAlign: 'right', fontWeight: 700, background: '#e5e7eb' }}>{m.total}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {tab === 'products' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
