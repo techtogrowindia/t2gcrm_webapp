@@ -5,12 +5,18 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 // subKey: an object key whose value is shown as a small secondary line under
 //   each option (falls back to code/sku) — lets same-named records be told
 //   apart at a glance (e.g. the phone number).
-export default function SearchableSelect({ options, value, onChange, placeholder = "Select...", displayKey = "name", returnKey = "name", disabled = false, searchKeys = [], subKey = null }) {
+// onSearchChange(query): optional — fires (debounced 300ms) whenever the
+//   search text changes. Lets a parent top up `options` with a server-side
+//   search when the full dataset is too large to preload (e.g. 11k+ leads —
+//   `options` only holds an initial page, so typing a name/phone that isn't
+//   in that page would otherwise silently find nothing).
+export default function SearchableSelect({ options, value, onChange, placeholder = "Select...", displayKey = "name", returnKey = "name", disabled = false, searchKeys = [], subKey = null, onSearchChange = null, searching = false }) {
   const searchKeysSig = searchKeys.join(',');
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
   const wrapperRef = useRef(null);
   const dropdownRef = useRef(null);
+  const searchDebounceRef = useRef(null);
 
   // Derive the display text for the current value
   const displayText = useMemo(() => {
@@ -18,6 +24,8 @@ export default function SearchableSelect({ options, value, onChange, placeholder
     const selectedOption = options.find(opt => typeof opt === 'object' ? opt[returnKey] === value : opt === value);
     return selectedOption ? (typeof selectedOption === 'object' ? selectedOption[displayKey] : selectedOption) : value;
   }, [value, options, displayKey, returnKey]);
+
+  useEffect(() => () => clearTimeout(searchDebounceRef.current), []);
 
   // Handle outside clicks
   useEffect(() => {
@@ -128,7 +136,14 @@ export default function SearchableSelect({ options, value, onChange, placeholder
                 type="text" 
                 placeholder="Type to search..." 
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSearch(v);
+                  if (onSearchChange) {
+                    clearTimeout(searchDebounceRef.current);
+                    searchDebounceRef.current = setTimeout(() => onSearchChange(v), 300);
+                  }
+                }}
                 style={{
                   width: '100%',
                   padding: '8px 10px 8px 32px',
@@ -144,8 +159,9 @@ export default function SearchableSelect({ options, value, onChange, placeholder
                 onBlur={e => e.target.style.borderColor = '#e2e8f0'}
               />
             </div>
+            {searching && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Searching all records…</div>}
           </div>
-          
+
           <div className="ss-dropdown-list" style={{ overflowY: 'auto', flex: 1, padding: 6 }}>
             {filteredOptions.length === 0 ? (
               <div style={{ padding: '16px 12px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>

@@ -94,7 +94,12 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   // print view, or the payment modal (payment_received WA notif needs the phone).
   useEffect(() => { if (modal || printing || payModal) fetchModalCustomers(); }, [!!modal, !!printing, !!payModal]);
 
+  // NOTE: this initial fetch only preloads the first 500 leads (by the
+  // server's default order) — production accounts have 11k+ leads, so a lead
+  // outside that window won't be found by name OR phone until searchLeads()
+  // (below) pulls it in from the server on demand.
   const [modalLeads, setModalLeads] = useState([]);
+  const [leadsSearching, setLeadsSearching] = useState(false);
   const fetchModalLeads = async () => {
     if (modalLeads.length > 0) return; // already cached for this session
     try {
@@ -106,6 +111,33 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
       const json = await r.json();
       setModalLeads(json.items || []);
     } catch (e) { /* silent — dropdown will be empty but save still works */ }
+  };
+  // Server-side type-ahead: runs the SAME name/phone/company search leads-page
+  // already applies (see api/leads-page.js), so typing a phone number or name
+  // finds a match across ALL of the tenant's leads, not just the preloaded
+  // first 500. Results are merged into modalLeads (deduped by id) so they
+  // become selectable and stay available for the rest of the session.
+  const searchLeads = async (query) => {
+    const q = (query || '').trim();
+    if (q.length < 2) return;
+    setLeadsSearching(true);
+    try {
+      const r = await fetch('/api/leads-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, mode: 'list', pageSize: 50, tab: 'all', page: 1, isOwner: true, teamCanSeeAllLeads: true, search: q, boundaries: {} }),
+      });
+      const json = await r.json();
+      const found = json.items || [];
+      if (found.length > 0) {
+        setModalLeads(prev => {
+          const byId = new Map(prev.map(l => [l.id, l]));
+          found.forEach(l => byId.set(l.id, l));
+          return [...byId.values()];
+        });
+      }
+    } catch (e) { /* silent — search just won't widen this time */ }
+    finally { setLeadsSearching(false); }
   };
   const profile = data?.userProfiles?.[0] || {};
   const partnerApplications = data?.partnerApplications || [];
@@ -789,6 +821,8 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                         returnKey="name"
                         searchKeys={['phone']}
                         subKey="phone"
+                        onSearchChange={searchLeads}
+                        searching={leadsSearching}
                         value={form.client}
                         onChange={val => {
                           // Auto-map distributor/retailer from matching lead
