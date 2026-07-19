@@ -293,13 +293,18 @@ export default async function handler(req, res) {
     // Mark used
     await rawQuery('UPDATE login_codes SET used = true WHERE id = $1', [codeRow.id]);
 
-    // Get credential
+    // Get credential. Same duplicate-credential guard as password login: an
+    // email may (wrongly) have multiple rows; the code was verified against
+    // the EMAIL, so pick the owner (non-team/non-partner) credential when
+    // several exist rather than an arbitrary rows[0] — otherwise an owner with
+    // a stray partner credential lands in the partner portal after a magic-code
+    // login too.
     const { rows: credRows } = await rawQuery(
       'SELECT id, email, is_team, is_partner, account_id FROM credentials WHERE lower(email) = lower($1)',
       [email]
     );
     if (!credRows.length) return res.status(404).json({ error: 'Account not found' });
-    const cred = credRows[0];
+    const cred = credRows.find(c => !c.is_team && !c.is_partner) || credRows[0];
 
     // Mark verified if not already
     await rawQuery(
@@ -307,31 +312,27 @@ export default async function handler(req, res) {
       [cred.id]
     );
 
-    let tenantId = cred.account_id;
-    if (!cred.is_team && !cred.is_partner) {
-      const { rows: accRows } = await rawQuery(
-        'SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]
-      );
-      tenantId = accRows[0]?.id || cred.account_id || cred.id;
-    }
+    // Owner priority: an email that owns an account is the owner even if a
+    // partner/team credential also exists (mirrors the password-login path).
+    const { rows: accRows } = await rawQuery(
+      'SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]
+    );
+    const isOwnerAccount = accRows.length > 0;
+    const isOwner   = isOwnerAccount || (!cred.is_team && !cred.is_partner);
+    const isTeam    = !!cred.is_team && !isOwnerAccount;
+    const isPartner = !!cred.is_partner && !isOwnerAccount;
+    const tenantId  = isOwner
+      ? (accRows[0]?.id || cred.account_id || cred.id)
+      : cred.account_id;
 
-    const token = signJwt({
-      sub:      cred.id,
-      email:    cred.email,
-      tenantId,
-      isOwner:  !cred.is_team && !cred.is_partner,
-      isTeam:   !!cred.is_team,
-      isPartner: !!cred.is_partner,
-    });
+    const token = signJwt({ sub: cred.id, email: cred.email, tenantId, isOwner, isTeam, isPartner });
 
     return res.json({
       ok: true, token,
       accountId: tenantId,
       credentialId: cred.id,
       email: cred.email,
-      isOwner:  !cred.is_team && !cred.is_partner,
-      isTeam:   !!cred.is_team,
-      isPartner: !!cred.is_partner,
+      isOwner, isTeam, isPartner,
     });
   }
 
