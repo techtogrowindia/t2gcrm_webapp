@@ -154,42 +154,54 @@ export default async function handler(req, res) {
         [email]
       );
       if (!rows.length) return res.status(401).json({ error: 'Invalid email or password' });
-      const cred = rows[0];
 
-      if (!cred.password_hash)
-        return res.status(401).json({ error: 'No password set — use magic code to login' });
-
-      const match = await bcrypt.compare(password, cred.password_hash);
-      if (!match) return res.status(401).json({ error: 'Invalid email or password' });
-
-      // Resolve tenantId = accounts.id (= userProfiles.userId).
-      // For owners: look up accounts by email (most reliable).
-      // For team/partner: their account_id points to the owner's accounts.id.
-      let tenantId = cred.account_id;
-      if (!cred.is_team && !cred.is_partner) {
-        const { rows: accRows } = await rawQuery(
-          'SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]
-        );
-        tenantId = accRows[0]?.id || cred.account_id || cred.id;
+      // An email may WRONGLY have more than one credential row — e.g. a
+      // business owner who was also added as a channel partner/team member
+      // (a data-integrity issue this app is prone to; see CLAUDE.md "No
+      // Orphaned Records"). The old code did `rows[0]` and logged the user in
+      // as whatever the DB happened to return first — which is how an owner
+      // ended up in the partner portal. Mirror api/auth.js: prefer the owner
+      // (non-team/non-partner) credential, and among candidates pick the one
+      // whose password actually matches (so a password reset that only touched
+      // one of the duplicate rows can't lock the user out).
+      const ordered = [...rows].sort(
+        (a, b) => Number(!!a.is_team || !!a.is_partner) - Number(!!b.is_team || !!b.is_partner)
+      );
+      let cred = null;
+      for (const c of ordered) {
+        if (c.password_hash && await bcrypt.compare(password, c.password_hash)) { cred = c; break; }
+      }
+      if (!cred) {
+        if (!rows.some(c => c.password_hash))
+          return res.status(401).json({ error: 'No password set — use magic code to login' });
+        return res.status(401).json({ error: 'Invalid email or password' });
       }
 
-      const token = signJwt({
-        sub:      cred.id,
-        email:    cred.email,
-        tenantId,
-        isOwner:  !cred.is_team && !cred.is_partner,
-        isTeam:   !!cred.is_team,
-        isPartner: !!cred.is_partner,
-      });
+      // Owner priority: if this email owns an account, treat it as the owner
+      // even if a partner/team credential also exists for the same email
+      // (mirrors auth.js isOwnerAccount override).
+      const { rows: accRows } = await rawQuery(
+        'SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]
+      );
+      const isOwnerAccount = accRows.length > 0;
+
+      const isOwner   = isOwnerAccount || (!cred.is_team && !cred.is_partner);
+      const isTeam    = !!cred.is_team && !isOwnerAccount;
+      const isPartner = !!cred.is_partner && !isOwnerAccount;
+      // For owners: tenantId = their own accounts.id. For team/partner: the
+      // owner tenant their credential points at.
+      const tenantId  = isOwner
+        ? (accRows[0]?.id || cred.account_id || cred.id)
+        : cred.account_id;
+
+      const token = signJwt({ sub: cred.id, email: cred.email, tenantId, isOwner, isTeam, isPartner });
 
       return res.json({
         ok: true, token,
         accountId: tenantId,
         credentialId: cred.id,
         email: cred.email,
-        isOwner:  !cred.is_team && !cred.is_partner,
-        isTeam:   !!cred.is_team,
-        isPartner: !!cred.is_partner,
+        isOwner, isTeam, isPartner,
       });
     } catch (e) {
       console.error('[auth-pg] login error:', e.message);
