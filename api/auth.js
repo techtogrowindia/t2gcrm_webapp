@@ -1,8 +1,18 @@
 import { init, tx, id } from '@instantdb/admin';
 import bcrypt from 'bcrypt';
+import { sendOtpEmail } from './_email-otp.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
+
+// Best-effort brand name lookup for the OTP email header — falls back to
+// 'T2GCRM' if globalSettings isn't reachable for any reason.
+async function getBrandName(db) {
+  try {
+    const { globalSettings } = await db.query({ globalSettings: {} });
+    return globalSettings?.[0]?.brandName || 'T2GCRM';
+  } catch { return 'T2GCRM'; }
+}
 
 export default async function handler(req, res) {
   // CORS headers
@@ -128,7 +138,15 @@ export default async function handler(req, res) {
       const hashedPassword = await bcrypt.hash(password, 10);
       const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
       await db.transact([tx.userCredentials[id()].update({ email: cleanEmail, password: hashedPassword, fullName: fullName || '', bizName: bizName || '', phone: phone || '', selectedPlan: selectedPlan || 'Trial', isVerified: false, otp: newOtp, createdAt: Date.now() })]);
-      return res.status(200).json({ success: true, otp: newOtp, message: 'Registration successful. Verify OTP.' });
+      // Email the code — previously only returned in the response / logged to
+      // the browser console, so a real signer-upper had no way to see it.
+      const brandName = await getBrandName(db);
+      await sendOtpEmail(cleanEmail, newOtp, brandName, {
+        subject: `Verify your ${brandName} account`,
+        heading: 'Your verification code',
+        blurb: 'Enter this code to verify your email and finish creating your account:',
+      });
+      return res.status(200).json({ success: true, message: 'Registration successful. Check your email for a verification code.' });
     }
 
     /* ──────────── VERIFY OTP ──────────── */
@@ -211,7 +229,16 @@ export default async function handler(req, res) {
       }
       const resetOtp = Math.floor(100000 + Math.random() * 900000).toString();
       await db.transact([tx.userCredentials[credId].update({ userId: uidToUse, email: cleanEmail, ...(!user ? { password: '', isVerified: true, ...partnerExtra } : {}), resetCode: resetOtp, resetExpires: Date.now() + 15 * 60 * 1000 })]);
-      return res.status(200).json({ success: true, otp: resetOtp, message: 'OTP generated' });
+      // Email the code — previously only returned in the response / logged to
+      // the browser console; also stops anyone who knows an email address from
+      // fetching the reset code directly from the API response.
+      const brandName = await getBrandName(db);
+      await sendOtpEmail(cleanEmail, resetOtp, brandName, {
+        subject: `Your ${brandName} password reset code`,
+        heading: 'Your password reset code',
+        blurb: 'Use this code to reset your password:',
+      });
+      return res.status(200).json({ success: true, message: 'If this email exists, a reset code has been sent.' });
     }
 
     if (action === 'reset-password-verify') {

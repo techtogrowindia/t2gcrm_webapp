@@ -16,6 +16,7 @@ import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { rawQuery } from './db-pg.js';
+import { sendOtpEmail } from './_email-otp.js';
 
 // ── JWT (no external library — pure Node crypto) ──────────────────
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -348,10 +349,11 @@ export default async function handler(req, res) {
     }
   }
 
-  // ── action: reset-password-request (generate OTP, return it) ─────
+  // ── action: reset-password-request (generate OTP, email it) ──────
   // Stores resetCode/resetExpires in credentials.doc (mirrors the InstantDB
-  // resetCode/resetExpires fields). The OTP is returned to the caller, which
-  // emails it — same contract as /api/auth.
+  // resetCode/resetExpires fields). The OTP is emailed directly — it must
+  // NEVER be returned in the response (that would let anyone who knows an
+  // email address fetch the reset code and take over the account).
   if (action === 'reset-password-request') {
     if (!email) return res.status(400).json({ error: 'Email required' });
     try {
@@ -372,7 +374,17 @@ export default async function handler(req, res) {
           [email, acc[0].id, otp, expires]
         );
       }
-      return res.status(200).json({ success: true, otp, message: 'OTP generated' });
+      let brandName = 'T2GCRM';
+      try {
+        const gs = await rawQuery('SELECT doc FROM global_settings LIMIT 1');
+        brandName = gs.rows[0]?.doc?.brandName || 'T2GCRM';
+      } catch {}
+      await sendOtpEmail(email, otp, brandName, {
+        subject: `Your ${brandName} password reset code`,
+        heading: 'Your password reset code',
+        blurb: 'Use this code to reset your password:',
+      });
+      return res.status(200).json({ success: true, message: 'If this email exists, a reset code has been sent.' });
     } catch (e) {
       console.error('[auth-pg] reset-password-request error:', e.message);
       return res.status(500).json({ error: 'Reset request failed' });

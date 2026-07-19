@@ -122,10 +122,8 @@ export default function AuthScreen({ settings }) {
         localStorage.setItem('tc_reg_data', JSON.stringify({
           bizName, fullName, phone, selectedPlan: selectedPlan || 'Trial'
         }));
-        localStorage.setItem('tc_pending_otp', data.otp || '');
-        console.log('REGISTRATION OTP (Dev Mode):', data.otp);
         setStep('otp-verify');
-        toast('Account created! Enter the OTP to verify your email.', 'success');
+        toast('Account created! Check your email for a verification code.', 'success');
       } else {
         await db.auth.signInWithToken(data.token);
         if (data.isTeamMember) {
@@ -161,11 +159,7 @@ export default function AuthScreen({ settings }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      // In production, backend should send the email or we call our /api/send-email from here
-      // For now we log it so development is easier
-      console.log('PASSWORD RESET CODE (Dev Mode):', data.otp);
-      
-      toast('Reset code sent! Check your email / console.', 'success');
+      toast('Reset code sent! Check your email.', 'success');
       setStep('reset');
     } catch (err) {
       toast(err.message, 'error');
