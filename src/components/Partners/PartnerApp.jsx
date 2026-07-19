@@ -5,6 +5,9 @@ import { id } from '@instantdb/react';
 import { useToast } from '../../context/ToastContext';
 import { fmtD, DEFAULT_STAGES } from '../../utils/helpers';
 import { AUTH_API } from '../../utils/authApi';
+import { pgAuthSignOut } from '../../hooks/useAuthPg';
+
+const USE_PG_AUTH = import.meta.env.VITE_USE_PG_AUTH === 'true';
 
 const PARTNER_NAV = [
   { group: 'Main' },
@@ -30,6 +33,14 @@ export default function PartnerApp({ user, settings, partnerInfo }) {
   const toast = useToast();
 
   const handleLogout = () => {
+    // On PG auth there is no InstantDB session — db.auth.signOut() would be a
+    // no-op and leave the JWT token in localStorage, so the partner stays
+    // logged in on reload. Clear the PG session the same way App.jsx does.
+    if (USE_PG_AUTH) {
+      pgAuthSignOut(); // clears token/profile + tc_channel_partner + cache
+      window.location.href = '/';
+      return;
+    }
     localStorage.removeItem('tc_channel_partner');
     db.auth.signOut().then(() => {
       window.location.href = '/';
