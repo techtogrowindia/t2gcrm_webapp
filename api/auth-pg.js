@@ -725,7 +725,14 @@ export default async function handler(req, res) {
 
         for (const r of RELATIONAL) {
           try {
-            const sql = `SELECT id FROM ${r.child} c WHERE c.tenant_id = $1 AND c.doc->>'${r.field}' IS NOT NULL
+            // "IS NOT NULL" alone is not enough — unset fields in this codebase
+            // are frequently stored as '' (empty string), not JSON null, so a
+            // bare NOT NULL check flags every unlinked record as an "orphan".
+            // Confirmed on real dev data: call_logs.leadId is '' (not null) for
+            // unlinked calls, and without the <> '' guard this misfired on
+            // 31,052 of 46,100 call logs (67%) that were never linked to any
+            // lead at all — not orphaned, just never linked.
+            const sql = `SELECT id FROM ${r.child} c WHERE c.tenant_id = $1 AND c.doc->>'${r.field}' IS NOT NULL AND c.doc->>'${r.field}' <> ''
               AND NOT EXISTS (SELECT 1 FROM ${r.parent} p WHERE p.tenant_id = $1 AND p.id::text = c.doc->>'${r.field}')`;
             const rows = (await tenantQuery(a.id, sql, [a.id])).rows;
             if (rows.length > 0) {
@@ -739,7 +746,7 @@ export default async function handler(req, res) {
 
         // attendance.staffEmail → must match a team_member email (this tenant)
         try {
-          const sql = `SELECT id FROM attendance att WHERE att.tenant_id = $1 AND att.doc->>'staffEmail' IS NOT NULL
+          const sql = `SELECT id FROM attendance att WHERE att.tenant_id = $1 AND att.doc->>'staffEmail' IS NOT NULL AND att.doc->>'staffEmail' <> ''
             AND NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.tenant_id = $1 AND lower(tm.doc->>'email') = lower(att.doc->>'staffEmail'))`;
           const rows = (await tenantQuery(a.id, sql, [a.id])).rows;
           if (rows.length > 0) {
