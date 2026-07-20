@@ -185,6 +185,19 @@ export default async function handler(req, res) {
       );
       const isOwnerAccount = accRows.length > 0;
 
+      // Email verification gate (mirrors auth.js). Self-signup creates an
+      // UNVERIFIED credential before the OTP step; such a user must not be able
+      // to log in yet (they'd get a broken session with no tenant). If an
+      // account already exists (imported/verified owners, team, partners) we
+      // auto-verify a stale is_verified=false flag instead of blocking.
+      if (!cred.is_verified) {
+        if (isOwnerAccount || cred.is_team || cred.is_partner) {
+          await rawQuery('UPDATE credentials SET is_verified = true WHERE id = $1 AND is_verified = false', [cred.id]);
+        } else {
+          return res.status(403).json({ error: 'Please verify your email before logging in. Check your inbox for the verification code.' });
+        }
+      }
+
       const isOwner   = isOwnerAccount || (!cred.is_team && !cred.is_partner);
       const isTeam    = !!cred.is_team && !isOwnerAccount;
       const isPartner = !!cred.is_partner && !isOwnerAccount;
