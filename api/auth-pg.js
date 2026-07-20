@@ -606,6 +606,64 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── action: business-analytics (admin Business Report, PG) ───────
+  // Per-tenant record counts + metadata. Uses one grouped count per table
+  // (cheap) instead of the InstantDB per-tenant-per-table loop. counts keys
+  // use the InstantDB collection names the admin UI already reads
+  // (activityLogs, teamMembers, …) so no frontend change is needed.
+  if (action === 'business-analytics') {
+    try {
+      const PG_TO_COLLECTION = {
+        purchase_orders: 'purchaseOrders', ecom_customers: 'ecomCustomers',
+        executed_automations: 'executedAutomations', partner_applications: 'partnerApplications',
+        partner_commissions: 'partnerCommissions', member_profiles: 'memberProfiles',
+        team_members: 'teamMembers', ecom_settings: 'ecomSettings',
+        appointment_settings: 'appointmentSettings', call_log_sync_state: 'callLogSyncState',
+        activity_logs: 'activityLogs', call_logs: 'callLogs',
+      };
+      const accts = (await rawQuery('SELECT id, email, business_name, plan, doc FROM accounts')).rows;
+      const tenantTables = (await rawQuery(
+        "SELECT table_name FROM information_schema.columns WHERE column_name='tenant_id' AND table_schema='public'"
+      )).rows.map(r => r.table_name);
+
+      const countsByTenant = {};
+      for (const t of tenantTables) {
+        const rows = (await rawQuery(`SELECT tenant_id, count(*)::int AS n FROM ${t} GROUP BY tenant_id`)).rows;
+        const key = PG_TO_COLLECTION[t] || t;
+        for (const r of rows) {
+          if (!countsByTenant[r.tenant_id]) countsByTenant[r.tenant_id] = {};
+          countsByTenant[r.tenant_id][key] = r.n;
+        }
+      }
+      const recentMap = {};
+      const recRows = (await rawQuery(
+        "SELECT tenant_id, count(*)::int AS n FROM activity_logs WHERE created_at > now() - interval '30 days' GROUP BY tenant_id"
+      )).rows;
+      for (const r of recRows) recentMap[r.tenant_id] = r.n;
+
+      const analytics = accts.map(a => {
+        const counts = countsByTenant[a.id] || {};
+        const totalRecords = Object.values(counts).reduce((s, n) => s + n, 0);
+        return {
+          id: a.id, userId: a.id,
+          email: a.email || a.doc?.email || '',
+          bizName: a.business_name || a.doc?.bizName || '',
+          plan: a.plan || a.doc?.plan || 'Trial',
+          planExpiry: a.doc?.planExpiry || 0,
+          createdAt: a.doc?.createdAt || 0,
+          totalRecords, counts,
+          recentActivity: recentMap[a.id] || 0,
+          teamSize: counts.teamMembers || 0,
+        };
+      }).sort((x, y) => y.totalRecords - x.totalRecords);
+
+      return res.status(200).json({ success: true, analytics });
+    } catch (e) {
+      console.error('[auth-pg] business-analytics error:', e.message);
+      return res.status(500).json({ error: 'Analytics failed' });
+    }
+  }
+
   // ── action: admin-create-user (create a new business owner on PG) ─
   // Mirrors api/auth.js admin-create-user, but writes the tenant (accounts
   // row) + owner credential straight to Postgres. This is REQUIRED on the PG

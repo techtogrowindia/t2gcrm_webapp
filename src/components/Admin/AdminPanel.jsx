@@ -878,7 +878,7 @@ export default function AdminPanel({ user }) {
               <button className="btn btn-primary btn-sm" disabled={analyticsLoading} onClick={async () => {
                 setAnalyticsLoading(true);
                 try {
-                  const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'business-analytics' }) });
+                  const r = await fetch(AUTH_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'business-analytics' }) });
                   const d = await r.json();
                   if (!r.ok) throw new Error(d.error);
                   setAnalyticsData(d.analytics);
