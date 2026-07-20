@@ -98,6 +98,33 @@ function playNotifSound() {
   } catch (e) { /* autoplay/permission restrictions — fail silently */ }
 }
 
+// A set of ids persisted to localStorage under storageKey, with a size cap
+// (2000) so it can't grow unbounded over a long-lived tenant. We deliberately
+// do NOT prune ids just because they're absent from the current in-memory
+// data — that was the bug that made the overdue-follow-up toast reappear on
+// every refresh: liveNotifs starts without the overdue bucket (its data is
+// fetched async from /api/dashboard-stats), so any "prune ids not currently
+// present" step would wipe ids during the window before that fetch resolves,
+// making the bucket look brand-new again. A size cap achieves bounded growth
+// without ever racing the fetch.
+function usePersistedIdSet(storageKey) {
+  const [ids, setIds] = useState(() => {
+    if (!storageKey) return new Set();
+    try { return new Set(JSON.parse(localStorage.getItem(storageKey) || '[]')); } catch { return new Set(); }
+  });
+  useEffect(() => {
+    if (!storageKey) return;
+    try { setIds(new Set(JSON.parse(localStorage.getItem(storageKey) || '[]'))); } catch { setIds(new Set()); }
+  }, [storageKey]);
+  const persist = (nextSet) => {
+    let arr = [...nextSet];
+    if (arr.length > 2000) arr = arr.slice(arr.length - 2000);
+    setIds(new Set(arr));
+    if (storageKey) localStorage.setItem(storageKey, JSON.stringify(arr));
+  };
+  return [ids, persist];
+}
+
 const TRIAL_DAYS = 7;
 const SUPERADMIN_KEY = 'santhanam.gokul@gmail.com';
 const DEFAULT_PLANS = [
@@ -250,36 +277,24 @@ export default function MainApp({ user, settings }) {
   // "due soon" advance-notice bucket per profile.followupNotifyMinutes.
   const [followupLeadsData, setFollowupLeadsData] = useState([]);
 
-  // Read/dismissed notification ids — persisted per-tenant so "Mark all
-  // read" survives a reload instead of resetting on every mount (the
-  // previous NotifPanel onMarkRead/onMarkAllRead were both no-ops, so
-  // nothing ever left the unread state, which is why "Mark all read"
-  // appeared broken and overdue follow-ups seemed to never go away).
-  const readNotifsKey = targetUserId ? `tc_read_notifs_${targetUserId}` : null;
-  const [readNotifIds, setReadNotifIds] = useState(() => {
-    if (!readNotifsKey) return new Set();
-    try { return new Set(JSON.parse(localStorage.getItem(readNotifsKey) || '[]')); } catch { return new Set(); }
-  });
-  useEffect(() => {
-    if (!readNotifsKey) return;
-    try { setReadNotifIds(new Set(JSON.parse(localStorage.getItem(readNotifsKey) || '[]'))); } catch { setReadNotifIds(new Set()); }
-  }, [readNotifsKey]);
-  const persistReadNotifIds = (nextSet) => {
-    // Cap to the most-recent 2000 ack ids so localStorage can't grow unbounded
-    // over a long-lived tenant. We intentionally do NOT prune ids just because
-    // their notif isn't in the CURRENT liveNotifs — that was the bug that made
-    // the overdue toast reappear on every refresh: liveNotifs starts without
-    // the overdue bucket (its data is fetched async from /api/dashboard-stats),
-    // so any "prune ids not currently present" step would wipe the acked ids
-    // during the window before that fetch resolves, and the bucket would then
-    // look brand-new and re-toast. A size cap achieves bounded growth without
-    // ever racing the fetch.
-    let arr = [...nextSet];
-    if (arr.length > 2000) arr = arr.slice(arr.length - 2000);
-    const capped = new Set(arr);
-    setReadNotifIds(capped);
-    if (readNotifsKey) localStorage.setItem(readNotifsKey, JSON.stringify(arr));
-  };
+  // Two SEPARATE persisted id sets, deliberately not shared:
+  //   - readNotifIds: controls the bell panel/badge. Only touched by an
+  //     explicit user action (click a notif, "Mark all read"). This is what
+  //     "read" should mean to the user — I saw it, I'm done with it.
+  //   - toastedNotifIds: controls the proactive popup only (prevents the same
+  //     content re-alerting on every refresh). Toasting something must NOT
+  //     silently mark it read — that was a real bug: a persistent toast would
+  //     fire, immediately mark itself "read", and the bell would show "No new
+  //     notifications" for an item the user never actually acknowledged (e.g.
+  //     "50 Overdue Follow-ups" toasts, user hasn't dealt with any of them,
+  //     but the bell panel is empty and the badge shows 0 — the toast was the
+  //     ONLY chance to see it, with no way to bring it back except a data
+  //     change). Keeping them separate means: toast fires once per distinct
+  //     content, AND the item still shows unread in the bell until the user
+  //     actually clears it there.
+  const [readNotifIds, persistReadNotifIds] = usePersistedIdSet(targetUserId ? `tc_read_notifs_${targetUserId}` : null);
+  const [toastedNotifIds, persistToastedNotifIds] = usePersistedIdSet(targetUserId ? `tc_toasted_notifs_${targetUserId}` : null);
+
   // Most notif types are 1 lead = 1 stable id, so ackIds is just [n.id]. The
   // combined overdue-follow-up row is the exception: it represents an entire
   // BUCKET of leads under one display id, so it carries its own _ackIds (one
@@ -511,22 +526,22 @@ export default function MainApp({ user, settings }) {
   }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user, readNotifIds]);
 
   // Proactive alert (toast + sound) the moment a notification FIRST appears —
-  // not just when the bell is manually opened. Dedup now uses the SAME
-  // persisted readNotifIds set as the bell panel (not an in-memory ref that
-  // reset on every mount): a notif toasts once, then is immediately marked
-  // read (via its ackIds — see ackIdsOf above) so it won't re-toast on the
-  // next page load.
+  // not just when the bell is manually opened. Dedup uses the persisted
+  // toastedNotifIds set — NOT readNotifIds — so a notif toasts once (won't
+  // re-toast on the next page load) WITHOUT silently marking it read in the
+  // bell. Marking it read too was a real bug: the bell would show "No new
+  // notifications" for something the user never actually acknowledged there
+  // (only saw a toast for, possibly closed without reading everything — e.g.
+  // "50 Overdue Follow-ups").
   //
-  // This also fixes a real bug: the old ref was seeded from `liveNotifs` on
-  // the first run of this effect, but notifLeadData/followupLeadsData start
-  // empty and only populate after the async /api/dashboard-stats fetch
-  // resolves. So the seed (taken before the fetch resolved) never included
-  // the overdue-follow-up entry; when the fetch then completed a moment
-  // later, that entry looked "new" and re-toasted — on every single page
-  // refresh. Reading from localStorage instead of the in-flight liveNotifs
-  // snapshot removes that race entirely.
+  // Reading from localStorage (not the in-flight liveNotifs snapshot) also
+  // avoids a race: notifLeadData/followupLeadsData start empty and only
+  // populate after the async /api/dashboard-stats fetch resolves, so seeding
+  // an in-memory ref from liveNotifs on first run would miss the
+  // overdue-follow-up entry and re-toast it once the fetch completed — on
+  // every single page refresh.
   useEffect(() => {
-    const newOnes = liveNotifs.filter(n => ackIdsOf(n).some(aid => !readNotifIds.has(aid)));
+    const newOnes = liveNotifs.filter(n => ackIdsOf(n).some(aid => !toastedNotifIds.has(aid)));
     if (newOnes.length === 0) return; // nothing genuinely new — never re-toast
 
     newOnes.forEach(n => {
@@ -560,12 +575,13 @@ export default function MainApp({ user, settings }) {
       toast(msgNode, 'warning', { persistent: true });
     });
     playNotifSound();
-    // Mark the new ones read immediately so they can't re-toast on the next
-    // refresh. No pruning of old ids here — that raced the async overdue fetch
-    // and wiped acked ids (see persistReadNotifIds); bounded growth is handled
-    // by the size cap there instead.
-    persistReadNotifIds(new Set([...readNotifIds, ...newOnes.flatMap(ackIdsOf)]));
-  }, [liveNotifs, toast, readNotifIds]);
+    // Mark the new ones TOASTED (not read) so they can't re-toast on the next
+    // refresh, while staying unread/visible in the bell until the user
+    // actually clears them there. No pruning of old ids here — that raced the
+    // async overdue fetch and wiped acked ids; bounded growth is handled by
+    // the size cap in usePersistedIdSet instead.
+    persistToastedNotifIds(new Set([...toastedNotifIds, ...newOnes.flatMap(ackIdsOf)]));
+  }, [liveNotifs, toast, toastedNotifIds]);
 
   const amcExpiringCount = amc.filter(a => {
     const isTeam = perms && !perms.isOwner;
