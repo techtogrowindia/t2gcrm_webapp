@@ -626,25 +626,29 @@ export default async function handler(req, res) {
         "SELECT table_name FROM information_schema.columns WHERE column_name='tenant_id' AND table_schema='public'"
       )).rows.map(r => r.table_name);
 
-      const countsByTenant = {};
-      for (const t of tenantTables) {
-        const rows = (await rawQuery(`SELECT tenant_id, count(*)::int AS n FROM ${t} GROUP BY tenant_id`)).rows;
-        const key = PG_TO_COLLECTION[t] || t;
-        for (const r of rows) {
-          if (!countsByTenant[r.tenant_id]) countsByTenant[r.tenant_id] = {};
-          countsByTenant[r.tenant_id][key] = r.n;
-        }
-      }
-      const recentMap = {};
-      const recRows = (await rawQuery(
-        "SELECT tenant_id, count(*)::int AS n FROM activity_logs WHERE created_at > now() - interval '30 days' GROUP BY tenant_id"
-      )).rows;
-      for (const r of recRows) recentMap[r.tenant_id] = r.n;
+      // Counts must be tenant-scoped: the tenant tables have RLS, so a plain
+      // rawQuery (no tenant context) fail-closes to 0 rows. Instead run ONE
+      // grouped count query PER tenant via tenantQuery (sets app.tenant_id so
+      // RLS returns that tenant's rows) — a single UNION covers all tables plus
+      // the 30-day recent-activity count. 1 query per tenant, not per table.
+      const countSql = [
+        ...tenantTables.map(t => `SELECT '${t}' AS tbl, count(*)::int AS n FROM ${t}`),
+        "SELECT '__recent30' AS tbl, count(*)::int AS n FROM activity_logs WHERE created_at > now() - interval '30 days'",
+      ].join(' UNION ALL ');
 
-      const analytics = accts.map(a => {
-        const counts = countsByTenant[a.id] || {};
+      const analytics = [];
+      for (const a of accts) {
+        const counts = {};
+        let recentActivity = 0;
+        try {
+          const rows = (await tenantQuery(a.id, countSql)).rows;
+          for (const r of rows) {
+            if (r.tbl === '__recent30') { recentActivity = r.n; continue; }
+            if (r.n > 0) counts[PG_TO_COLLECTION[r.tbl] || r.tbl] = r.n;
+          }
+        } catch (e) { /* tenant with a transient error → zeros, don't fail the whole report */ }
         const totalRecords = Object.values(counts).reduce((s, n) => s + n, 0);
-        return {
+        analytics.push({
           id: a.id, userId: a.id,
           email: a.email || a.doc?.email || '',
           bizName: a.business_name || a.doc?.bizName || '',
@@ -652,10 +656,11 @@ export default async function handler(req, res) {
           planExpiry: a.doc?.planExpiry || 0,
           createdAt: a.doc?.createdAt || 0,
           totalRecords, counts,
-          recentActivity: recentMap[a.id] || 0,
+          recentActivity,
           teamSize: counts.teamMembers || 0,
-        };
-      }).sort((x, y) => y.totalRecords - x.totalRecords);
+        });
+      }
+      analytics.sort((x, y) => y.totalRecords - x.totalRecords);
 
       return res.status(200).json({ success: true, analytics });
     } catch (e) {
