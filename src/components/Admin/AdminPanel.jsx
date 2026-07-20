@@ -127,7 +127,7 @@ export default function AdminPanel({ user }) {
     setOrphanLoading(true);
     setOrphanReport(null);
     try {
-      const r = await fetch('/api/auth', {
+      const r = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'scan-orphans' })
@@ -145,7 +145,7 @@ export default function AdminPanel({ user }) {
     if (!window.confirm(`Permanently delete ${orphanReport.totalOrphans} orphaned records from the database?\n\nThis action cannot be undone.`)) return;
     setOrphanLoading(true);
     try {
-      const r = await fetch('/api/auth', {
+      const r = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'cleanup-orphans' })

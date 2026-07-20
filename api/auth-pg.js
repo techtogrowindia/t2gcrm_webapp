@@ -687,6 +687,89 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── action: scan-orphans / cleanup-orphans (admin maintenance, PG) ─
+  // PG mirror of api/auth.js's relational orphan checks. NOTE: the
+  // "record.userId not in valid profiles" class of orphan from the InstantDB
+  // version does not translate directly — every tenant table has RLS keyed on
+  // tenant_id, so a row whose tenant_id no longer matches any account is
+  // invisible to the app role with no tenant context set (RLS fails closed to
+  // 0 rows). What CAN be checked here, per known tenant, are relational
+  // orphans (child record pointing at a parent id that no longer exists
+  // within that same tenant) and the cross-tenant credentials/email check
+  // (credentials has no RLS). memberStats has no PG table — skipped, same as
+  // elsewhere in this codebase.
+  if (action === 'scan-orphans' || action === 'cleanup-orphans') {
+    const dryRun = action === 'scan-orphans';
+    try {
+      const accts = (await rawQuery('SELECT id, email FROM accounts')).rows;
+      const report = {};
+      const validEmails = new Set(accts.map(a => (a.email || '').toLowerCase()).filter(Boolean));
+
+      const RELATIONAL = [
+        { key: 'call_logs (orphan leadId)', child: 'call_logs', field: 'leadId', parent: 'leads' },
+        { key: 'tasks (orphan projectId)', child: 'tasks', field: 'projectId', parent: 'projects' },
+        { key: 'amc (orphan customerId)', child: 'amc', field: 'customerId', parent: 'customers' },
+        { key: 'expenses (orphan projectId)', child: 'expenses', field: 'projectId', parent: 'projects' },
+        { key: 'purchase_orders (orphan vendorId)', child: 'purchase_orders', field: 'vendorId', parent: 'vendors' },
+        { key: 'partner_commissions (orphan partnerId)', child: 'partner_commissions', field: 'partnerId', parent: 'partner_applications' },
+      ];
+
+      for (const a of accts) {
+        // Collect this tenant's team/partner emails for the credentials check.
+        try {
+          const tm = (await tenantQuery(a.id, "SELECT lower(doc->>'email') AS email FROM team_members WHERE tenant_id = $1 AND doc->>'email' IS NOT NULL", [a.id])).rows;
+          tm.forEach(r => r.email && validEmails.add(r.email));
+          const pa = (await tenantQuery(a.id, "SELECT lower(doc->>'email') AS email FROM partner_applications WHERE tenant_id = $1 AND doc->>'email' IS NOT NULL", [a.id])).rows;
+          pa.forEach(r => r.email && validEmails.add(r.email));
+        } catch {}
+
+        for (const r of RELATIONAL) {
+          try {
+            const sql = `SELECT id FROM ${r.child} c WHERE c.tenant_id = $1 AND c.doc->>'${r.field}' IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM ${r.parent} p WHERE p.tenant_id = $1 AND p.id::text = c.doc->>'${r.field}')`;
+            const rows = (await tenantQuery(a.id, sql, [a.id])).rows;
+            if (rows.length > 0) {
+              report[r.key] = (report[r.key] || 0) + rows.length;
+              if (!dryRun) {
+                await tenantTransaction(a.id, rows.map(row => ({ sql: `DELETE FROM ${r.child} WHERE id = $1`, params: [row.id] })));
+              }
+            }
+          } catch {}
+        }
+
+        // attendance.staffEmail → must match a team_member email (this tenant)
+        try {
+          const sql = `SELECT id FROM attendance att WHERE att.tenant_id = $1 AND att.doc->>'staffEmail' IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM team_members tm WHERE tm.tenant_id = $1 AND lower(tm.doc->>'email') = lower(att.doc->>'staffEmail'))`;
+          const rows = (await tenantQuery(a.id, sql, [a.id])).rows;
+          if (rows.length > 0) {
+            report['attendance (orphan staffEmail)'] = (report['attendance (orphan staffEmail)'] || 0) + rows.length;
+            if (!dryRun) await tenantTransaction(a.id, rows.map(row => ({ sql: 'DELETE FROM attendance WHERE id = $1', params: [row.id] })));
+          }
+        } catch {}
+      }
+
+      // credentials.email → must match an account, team_member, or partner email (global, no RLS)
+      const creds = (await rawQuery('SELECT id, email FROM credentials')).rows;
+      const orphanCreds = creds.filter(c => c.email && !validEmails.has(c.email.toLowerCase()));
+      if (orphanCreds.length > 0) {
+        report['credentials (orphan email)'] = orphanCreds.length;
+        if (!dryRun) {
+          for (const c of orphanCreds) await rawQuery('DELETE FROM credentials WHERE id = $1', [c.id]);
+        }
+      }
+
+      const totalOrphans = Object.values(report).reduce((s, n) => s + n, 0);
+      return res.status(200).json({
+        success: true, dryRun, totalOrphans, report,
+        message: dryRun ? `Scan complete: ${totalOrphans} orphaned record(s) found` : `Cleanup complete: ${totalOrphans} orphaned record(s) removed`,
+      });
+    } catch (e) {
+      console.error(`[auth-pg] ${action} error:`, e.message);
+      return res.status(500).json({ error: 'Orphan scan/cleanup failed' });
+    }
+  }
+
   // ── action: admin-create-user (create a new business owner on PG) ─
   // Mirrors api/auth.js admin-create-user, but writes the tenant (accounts
   // row) + owner credential straight to Postgres. This is REQUIRED on the PG
