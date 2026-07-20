@@ -4,6 +4,7 @@ import db from '../../instant';
 import { id } from '@instantdb/react';
 import { fmt, fmtD } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
+import { AUTH_API } from '../../utils/authApi';
 import ArchiveManager from './ArchiveManager';
 
 const FALLBACK_PLANS = [
@@ -188,7 +189,11 @@ export default function AdminPanel({ user }) {
     if (!window.confirm(`Reset password for ${editUserData.email}?`)) return;
     setEditUserLoading(true);
     try {
-      const res = await fetch('/api/auth', {
+      // AUTH_API routes to /api/auth-pg when VITE_USE_PG_AUTH=true, so the new
+      // password lands in Postgres (which login reads) instead of only
+      // InstantDB. Hardcoding /api/auth here was why admin resets silently did
+      // nothing on the PG stack.
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'change-password', email: editUserData.email, newPassword: editUserForm.newPassword })
@@ -248,7 +253,9 @@ export default function AdminPanel({ user }) {
     setCreateBizLoading(true);
     try {
       const planObj = plans.find(p => p.name === createBizForm.plan);
-      const res = await fetch('/api/auth', {
+      // AUTH_API → /api/auth-pg on the PG stack, which creates the accounts +
+      // credential rows in Postgres so the new owner can actually log in.
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

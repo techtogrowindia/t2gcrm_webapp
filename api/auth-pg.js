@@ -504,5 +504,58 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── action: admin-create-user (create a new business owner on PG) ─
+  // Mirrors api/auth.js admin-create-user, but writes the tenant (accounts
+  // row) + owner credential straight to Postgres. This is REQUIRED on the PG
+  // stack: the normal userProfiles write path (data-pg.js) is UPDATE-only and
+  // never inserts an accounts row, so without this a brand-new business had no
+  // PG account or credential and could not log in at all (password OR magic
+  // code — verify-code also 404s when no credential row exists).
+  if (action === 'admin-create-user') {
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    try {
+      const { rows: accExisting } = await rawQuery('SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]);
+      if (accExisting.length) return res.status(400).json({ error: 'A business account with this email already exists' });
+      const { rows: credExisting } = await rawQuery('SELECT id, is_verified FROM credentials WHERE lower(email) = lower($1)', [email]);
+      if (credExisting[0]?.is_verified) return res.status(400).json({ error: 'User with this email already exists' });
+
+      const { fullName = '', bizName = '', phone = '', selectedPlan, duration } = req.body || {};
+      const plan = selectedPlan || 'Trial';
+      const now = Date.now();
+      const planExpiry = now + (Number(duration) || 7) * 24 * 60 * 60 * 1000;
+      const accountId = crypto.randomUUID(); // = tenant id (userProfiles.userId)
+      const hash = await bcrypt.hash(password, 10);
+
+      // accounts.doc mirrors the userProfiles shape the app reads back
+      // ({ ...doc, id, userId }). Promoted columns (email/business_name/plan)
+      // set explicitly to stay consistent with the doc.
+      const profileDoc = { userId: accountId, email, fullName, bizName, phone, plan, planExpiry, role: 'user', createdAt: now };
+      await rawQuery(
+        `INSERT INTO accounts (id, email, business_name, plan, doc, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, now(), now())`,
+        [accountId, email, bizName, plan, JSON.stringify(profileDoc)]
+      );
+
+      // Owner credential — verified, non-team/non-partner.
+      if (credExisting[0]?.id) {
+        await rawQuery(
+          `UPDATE credentials SET password_hash = $1, is_verified = true, is_team = false, is_partner = false, account_id = $2 WHERE id = $3`,
+          [hash, accountId, credExisting[0].id]
+        );
+      } else {
+        await rawQuery(
+          `INSERT INTO credentials (id, email, password_hash, is_verified, is_team, is_partner, account_id, doc, created_at)
+           VALUES (gen_random_uuid(), $1, $2, true, false, false, $3, '{}'::jsonb, now())`,
+          [email, hash, accountId]
+        );
+      }
+
+      return res.status(200).json({ success: true, message: `Business "${bizName || email}" created successfully`, userId: accountId });
+    } catch (e) {
+      console.error('[auth-pg] admin-create-user error:', e.message);
+      return res.status(500).json({ error: 'Failed to create business' });
+    }
+  }
+
   return res.status(400).json({ error: 'Unknown action' });
 }
