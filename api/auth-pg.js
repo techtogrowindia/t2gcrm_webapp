@@ -504,6 +504,95 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── action: register (public self-signup, PG) ───────────────────
+  // Creates an UNVERIFIED owner credential and emails a 6-digit OTP. The
+  // accounts (tenant) row is created on verify-otp — so an abandoned signup
+  // leaves only a throwaway unverified credential, never a half-built tenant.
+  if (action === 'register') {
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    try {
+      const { rows: acc } = await rawQuery('SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]);
+      if (acc.length) return res.status(400).json({ error: 'User already exists' });
+      const { rows: existing } = await rawQuery('SELECT id, is_verified FROM credentials WHERE lower(email) = lower($1)', [email]);
+      if (existing[0]?.is_verified) return res.status(400).json({ error: 'User already exists' });
+
+      const { fullName = '', bizName = '', phone = '', selectedPlan } = req.body || {};
+      const hash = await bcrypt.hash(password, 10);
+      const otp = String(Math.floor(100000 + Math.random() * 900000));
+      const otpExpires = Date.now() + 15 * 60 * 1000;
+      const regDoc = { otp, otpExpires, fullName, bizName, phone, selectedPlan: selectedPlan || 'Trial' };
+
+      if (existing[0]?.id) {
+        await rawQuery(
+          "UPDATE credentials SET password_hash = $1, is_verified = false, is_team = false, is_partner = false, doc = doc || $2::jsonb WHERE id = $3",
+          [hash, JSON.stringify(regDoc), existing[0].id]
+        );
+      } else {
+        await rawQuery(
+          "INSERT INTO credentials (id, email, password_hash, is_verified, is_team, is_partner, account_id, doc, created_at) VALUES (gen_random_uuid(), $1, $2, false, false, false, NULL, $3::jsonb, now())",
+          [email, hash, JSON.stringify(regDoc)]
+        );
+      }
+
+      let brandName = 'T2GCRM';
+      try { const gs = await rawQuery('SELECT doc FROM global_settings LIMIT 1'); brandName = gs.rows[0]?.doc?.brandName || 'T2GCRM'; } catch {}
+      await sendOtpEmail(email, otp, brandName, {
+        subject: `Verify your ${brandName} account`,
+        heading: 'Your verification code',
+        blurb: 'Enter this code to verify your email and finish creating your account:',
+      });
+      return res.status(200).json({ success: true, message: 'Registration successful. Check your email for a verification code.' });
+    } catch (e) {
+      console.error('[auth-pg] register error:', e.message);
+      return res.status(500).json({ error: 'Registration failed' });
+    }
+  }
+
+  // ── action: verify-otp (finish self-signup, PG) ──────────────────
+  // Verifies the registration OTP, creates the tenant (accounts) row on first
+  // success, marks the credential verified, and returns a JWT so the new owner
+  // is logged straight in.
+  if (action === 'verify-otp') {
+    const otpInput = req.body.otp || code;
+    if (!email || !otpInput) return res.status(400).json({ error: 'Email and code are required' });
+    try {
+      const { rows } = await rawQuery('SELECT id, doc FROM credentials WHERE lower(email) = lower($1)', [email]);
+      const cred = rows[0];
+      if (!cred) return res.status(404).json({ error: 'Account not found' });
+      const storedOtp = cred.doc?.otp;
+      const otpExpires = Number(cred.doc?.otpExpires || 0);
+      if (!storedOtp || String(storedOtp) !== String(otpInput).trim() || Date.now() > otpExpires) {
+        return res.status(400).json({ error: 'Invalid or expired code' });
+      }
+
+      // Create the tenant row on first verification (idempotent if it exists).
+      const { rows: accRows } = await rawQuery('SELECT id FROM accounts WHERE lower(email) = lower($1)', [email]);
+      let accountId = accRows[0]?.id;
+      if (!accountId) {
+        accountId = crypto.randomUUID();
+        const now = Date.now();
+        const plan = cred.doc?.selectedPlan || 'Trial';
+        const planExpiry = now + 7 * 24 * 60 * 60 * 1000; // 7-day trial
+        const profileDoc = { userId: accountId, email, fullName: cred.doc?.fullName || '', bizName: cred.doc?.bizName || '', phone: cred.doc?.phone || '', plan, planExpiry, role: 'user', createdAt: now };
+        await rawQuery(
+          'INSERT INTO accounts (id, email, business_name, plan, doc, created_at, updated_at) VALUES ($1, $2, $3, $4, $5::jsonb, now(), now())',
+          [accountId, email, cred.doc?.bizName || '', plan, JSON.stringify(profileDoc)]
+        );
+      }
+
+      await rawQuery(
+        "UPDATE credentials SET is_verified = true, account_id = $1, doc = (doc - 'otp' - 'otpExpires') WHERE id = $2",
+        [accountId, cred.id]
+      );
+
+      const token = signJwt({ sub: cred.id, email, tenantId: accountId, isOwner: true, isTeam: false, isPartner: false });
+      return res.status(200).json({ ok: true, success: true, token, accountId, credentialId: cred.id, email, isOwner: true, isTeam: false, isPartner: false });
+    } catch (e) {
+      console.error('[auth-pg] verify-otp error:', e.message);
+      return res.status(500).json({ error: 'Verification failed' });
+    }
+  }
+
   // ── action: admin-create-user (create a new business owner on PG) ─
   // Mirrors api/auth.js admin-create-user, but writes the tenant (accounts
   // row) + owner credential straight to Postgres. This is REQUIRED on the PG

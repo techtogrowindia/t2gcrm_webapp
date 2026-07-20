@@ -108,6 +108,22 @@ export default function AuthScreen({ settings }) {
         return;
       }
 
+      if (USE_PG_AUTH && tab === 'register') {
+        // Postgres public self-signup — creates an unverified credential and
+        // emails an OTP; the account is created on verify-otp.
+        const res = await fetch('/api/auth-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'register', email: email.trim(), password, fullName, bizName, phone, selectedPlan }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Registration failed');
+        localStorage.setItem('tc_reg_data', JSON.stringify({ bizName, fullName, phone, selectedPlan: selectedPlan || 'Trial' }));
+        setStep('otp-verify');
+        toast('Account created! Check your email for a verification code.', 'success');
+        return;
+      }
+
       // InstantDB path (prod, or register flow)
       const payload = { email: email.trim(), password, fullName, bizName, phone, selectedPlan };
       const res = await fetch('/api/auth', {
@@ -199,6 +215,21 @@ export default function AuthScreen({ settings }) {
     if (!code.trim()) { toast('Enter the OTP from your email', 'error'); return; }
     setLoading(true);
     try {
+      if (USE_PG_AUTH) {
+        // Postgres: verify the signup OTP, create the tenant, and sign in.
+        const res = await fetch('/api/auth-pg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'verify-otp', email: email.trim(), otp: code.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Verification failed');
+        pgAuthSetSession(data);
+        toast('Email verified! Welcome! 🎉', 'success');
+        window.location.reload();
+        return;
+      }
+
       const res = await fetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
