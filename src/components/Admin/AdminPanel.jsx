@@ -1068,7 +1068,7 @@ export default function AdminPanel({ user }) {
                         try {
                           let totalDeleted = 0;
                           for (const uid of selectedBizIds) {
-                            const r = await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'cleanup-old-logs', months: cleanupDays / 30, targetUserId: uid }) });
+                            const r = await fetch(AUTH_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'cleanup-old-logs', months: cleanupDays / 30, targetUserId: uid }) });
                             const d = await r.json();
                             if (r.ok) totalDeleted += (d.deleted || 0);
                           }

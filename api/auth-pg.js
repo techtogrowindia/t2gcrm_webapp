@@ -669,6 +669,24 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── action: cleanup-old-logs (admin purge, PG) ────────────────────
+  // Deletes activity_logs rows older than N months for one tenant. Always
+  // called per-tenant from the admin UI (targetUserId required) — mirrors
+  // api/auth.js, minus messagingLogs (no PG table for it; not in TABLE_MAP).
+  if (action === 'cleanup-old-logs') {
+    const targetUserId = req.body.targetUserId;
+    if (!targetUserId) return res.status(400).json({ error: 'targetUserId is required' });
+    try {
+      const months = Number(req.body.months) || 3;
+      const cutoffIso = new Date(Date.now() - months * 30 * 24 * 60 * 60 * 1000).toISOString();
+      const result = await tenantQuery(targetUserId, 'DELETE FROM activity_logs WHERE tenant_id = $1 AND created_at < $2', [targetUserId, cutoffIso]);
+      return res.status(200).json({ success: true, deleted: result.rowCount || 0, message: `Deleted ${result.rowCount || 0} old records` });
+    } catch (e) {
+      console.error('[auth-pg] cleanup-old-logs error:', e.message);
+      return res.status(500).json({ error: 'Cleanup failed' });
+    }
+  }
+
   // ── action: admin-create-user (create a new business owner on PG) ─
   // Mirrors api/auth.js admin-create-user, but writes the tenant (accounts
   // row) + owner credential straight to Postgres. This is REQUIRED on the PG
