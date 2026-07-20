@@ -15,7 +15,7 @@
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
-import { rawQuery } from './db-pg.js';
+import { rawQuery, tenantQuery, tenantTransaction } from './db-pg.js';
 import { sendOtpEmail } from './_email-otp.js';
 
 // ── JWT (no external library — pure Node crypto) ──────────────────
@@ -554,6 +554,53 @@ export default async function handler(req, res) {
     } catch (e) {
       console.error('[auth-pg] admin-create-user error:', e.message);
       return res.status(500).json({ error: 'Failed to create business' });
+    }
+  }
+
+  // ── action: admin-delete-user (hard-delete a business + all its data) ─
+  // PG mirror of api/auth.js admin-delete-user. Deletes every tenant table
+  // row (tenant_id = the business), the owner + team + partner credentials,
+  // and the accounts (tenant) row itself — all in ONE tenant-scoped
+  // transaction so a mid-way failure rolls back instead of half-deleting.
+  if (action === 'admin-delete-user') {
+    const targetUserId = req.body.targetUserId || req.body.profileId;
+    if (!targetUserId) return res.status(400).json({ error: 'targetUserId (business id) is required' });
+    try {
+      // Gather team/partner emails first (RLS tables — need tenant context) so
+      // their login credentials get removed too.
+      const teamRows = (await tenantQuery(targetUserId,
+        "SELECT lower(doc->>'email') AS email FROM team_members WHERE tenant_id = $1", [targetUserId])).rows;
+      const partnerRows = (await tenantQuery(targetUserId,
+        "SELECT lower(doc->>'email') AS email FROM partner_applications WHERE tenant_id = $1", [targetUserId])).rows;
+
+      // Every tenant-scoped table (auto-discovered so new tables are covered).
+      const tenantTables = (await rawQuery(
+        "SELECT table_name FROM information_schema.columns WHERE column_name='tenant_id' AND table_schema='public'"
+      )).rows.map(r => r.table_name);
+
+      const queries = [];
+      // 1. all tenant data (RLS-scoped by the tenant context set below)
+      for (const t of tenantTables) {
+        queries.push({ sql: `DELETE FROM ${t} WHERE tenant_id = $1`, params: [targetUserId] });
+      }
+      // 2. credentials for owner + team + partners (credentials has no RLS)
+      const emails = [...new Set([
+        (req.body.ownerEmail || '').trim().toLowerCase(),
+        ...teamRows.map(r => r.email),
+        ...partnerRows.map(r => r.email),
+      ].filter(Boolean))];
+      for (const em of emails) {
+        queries.push({ sql: 'DELETE FROM credentials WHERE lower(email) = lower($1)', params: [em] });
+      }
+      // 3. the tenant (accounts) row itself
+      queries.push({ sql: 'DELETE FROM accounts WHERE id = $1', params: [targetUserId] });
+
+      const results = await tenantTransaction(targetUserId, queries);
+      const deletedCount = results.reduce((s, r) => s + (r.rowCount || 0), 0);
+      return res.status(200).json({ success: true, message: `Business deleted. ${deletedCount} records removed.`, deletedCount });
+    } catch (e) {
+      console.error('[auth-pg] admin-delete-user error:', e.message);
+      return res.status(500).json({ error: 'Failed to delete business' });
     }
   }
 

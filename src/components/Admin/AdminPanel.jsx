@@ -288,7 +288,9 @@ export default function AdminPanel({ user }) {
     }
     setDeleteLoading(true);
     try {
-      const res = await fetch('/api/auth', {
+      // AUTH_API → /api/auth-pg on the PG stack, which hard-deletes the tenant
+      // rows + credentials + accounts row in Postgres (where the data lives).
+      const res = await fetch(AUTH_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
