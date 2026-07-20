@@ -816,10 +816,12 @@ export default function Quotations({ user, perms, ownerId, settings }) {
               {/* Totals & Notes */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginTop: 14 }}>
                 <div>
-                  <div className="fg">
-                    <label>Opening Note <span style={{ fontWeight: 400, color: 'var(--muted)', fontSize: 11 }}>(shown at the top of the "Formal Quote" template — leave blank for the default greeting)</span></label>
-                    <textarea value={form.quoteFor || ''} onChange={e => setForm(p => ({ ...p, quoteFor: e.target.value }))} style={{ minHeight: 55 }} placeholder={`Dear Mam/Sir,\nAs per the discussion we had, we are happy to provide our best quote for...`} />
-                  </div>
+                  {profile?.quotationTemplate === 'Formal' && (
+                    <div className="fg">
+                      <label>Opening Note <span style={{ fontWeight: 400, color: 'var(--muted)', fontSize: 11 }}>(shown at the top of the "Formal Quote" template — leave blank for the default greeting)</span></label>
+                      <textarea value={form.quoteFor || ''} onChange={e => setForm(p => ({ ...p, quoteFor: e.target.value }))} style={{ minHeight: 55 }} placeholder={`Dear Mam/Sir,\nAs per the discussion we had, we are happy to provide our best quote for...`} />
+                    </div>
+                  )}
                   <div className="fg"><label>Notes</label><textarea value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} style={{ minHeight: 60 }} placeholder="Customer notes..." /></div>
                   <div className="fg"><label>Terms & Conditions</label><textarea value={form.terms} onChange={e => setForm(p => ({ ...p, terms: e.target.value }))} style={{ minHeight: 120 }} /></div>
                 </div>
