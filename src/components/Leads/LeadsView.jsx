@@ -188,7 +188,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     }
   }, [savedDefaultPageSize]);
 
-  const allPossibleCols = ['Created', 'Phone', 'Source', 'Stage', 'Assigned', 'Follow Up', 'Requirement', 'Reminder', ...(showPartners ? ['Distributor', 'Retailer'] : []), ...customFields.map(c => c.name)];
+  const allPossibleCols = ['Created', 'Phone', 'Source', 'Stage', 'Assigned', 'Follow Up', 'Requirement', 'Product', 'Reminder', ...(showPartners ? ['Distributor', 'Retailer'] : []), ...customFields.map(c => c.name)];
   const activeCols = savedCols || allPossibleCols;
 
   // activeStages is for visual components (Kanban/List), should exclude deleted & disabled
@@ -958,6 +958,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     if (activeCols.includes('Assigned')) columnDefs.push({ header: 'Assigned', getValue: l => l.assign || '' });
     if (activeCols.includes('Follow Up')) columnDefs.push({ header: 'Follow Up', getValue: l => l.followup ? new Date(l.followup).toLocaleString() : '' });
     if (activeCols.includes('Requirement')) columnDefs.push({ header: 'Requirement', getValue: l => l.requirement || '' });
+    if (activeCols.includes('Product')) columnDefs.push({ header: 'Product', getValue: l => l.productName || '' });
     if (activeCols.includes('Reminder')) columnDefs.push({ header: 'Reminder', getValue: l => [l.remWA && 'WhatsApp', l.remEmail !== false && 'Email', l.remSMS && 'SMS'].filter(Boolean).join(', ') || '' });
     if (activeCols.includes('Distributor')) columnDefs.push({ header: 'Distributor', getValue: l => l.distributorId ? (partners.find(p => p.id === l.distributorId)?.companyName || partners.find(p => p.id === l.distributorId)?.name || '') : '' });
     if (activeCols.includes('Retailer')) columnDefs.push({ header: 'Retailer', getValue: l => l.retailerId ? (partners.find(p => p.id === l.retailerId)?.companyName || partners.find(p => p.id === l.retailerId)?.name || '') : '' });
@@ -1259,6 +1260,16 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
           <div className="tw" style={{ padding: 20 }}>
             <h3>Lead Details</h3>
             <div style={{ marginTop: 15, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>Product</span>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{l.productName || '-'}</span>
+              </div>
+              {(l.address || l.gstin || l.pincode) && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 8, gap: 12 }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>Address</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, textAlign: 'right' }}>{[l.address, l.pincode, l.gstin && `GSTIN: ${l.gstin}`].filter(Boolean).join(' · ') || '-'}</span>
+                </div>
+              )}
               {customFields.map(cf => (
                 <div key={cf.name} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>{cf.name}</span>
@@ -1779,6 +1790,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                     {activeCols.includes('Assigned') && <th>Assigned</th>}
                     {activeCols.includes('Follow Up') && <th>Follow Up</th>}
                     {activeCols.includes('Requirement') && <th>Requirement</th>}
+                    {activeCols.includes('Product') && <th>Product</th>}
                     {activeCols.includes('Reminder') && <th>Reminder</th>}
                     {activeCols.includes('Distributor') && <th>Distributor</th>}
                     {activeCols.includes('Retailer') && <th>Retailer</th>}
@@ -1824,6 +1836,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                     {activeCols.includes('Assigned') && <td style={{ fontSize: 12 }}>{l.assign || <span style={{ color: 'var(--muted)' }}>-</span>}</td>}
                     {activeCols.includes('Follow Up') && <td style={{ fontSize: 11 }}>{l.followup ? fmtDT(l.followup) : '-'}</td>}
                     {activeCols.includes('Requirement') && <td><span className="badge bg-gray" style={{ fontSize: 10 }}>{l.requirement || '-'}</span></td>}
+                    {activeCols.includes('Product') && <td>{l.productName || '-'}</td>}
                     {activeCols.includes('Reminder') && <td>
                       <div style={{ display: 'flex', gap: 3 }}>
                         {l.remWA && <span style={{ fontSize: 10, background: '#e8fdf0', color: '#25d366', borderRadius: 20, padding: '2px 6px', fontWeight: 700 }}>WA</span>}
