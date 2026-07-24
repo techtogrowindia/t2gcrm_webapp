@@ -63,6 +63,17 @@ export default async function handler(req, res) {
           email: l.email || '',
           phone: l.phone || '',
           address: l.address || '',
+          // Full field parity with the client convertToCustomer (#4) so an
+          // auto-synced Won lead keeps its address block, custom fields and
+          // linked product on the customer record.
+          state: l.state || '',
+          country: l.country || 'India',
+          pincode: l.pincode || '',
+          gstin: l.gstin || '',
+          productId: l.productId || '',
+          productName: l.productName || '',
+          custom: l.custom || {},
+          leadId: l.id,
           userId: ownerId,
           actorId: userId || '',
           createdAt: Date.now(),

@@ -1110,8 +1110,19 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
       const payload = {
         name: l.name,
+        companyName: l.companyName || '',
         email: l.email || '',
         phone: l.phone || '',
+        // Carry the full field set over so nothing entered on the lead is lost
+        // on the customer record (#4): address block, custom fields, product.
+        address: l.address || '',
+        state: l.state || '',
+        country: l.country || 'India',
+        pincode: l.pincode || '',
+        gstin: l.gstin || '',
+        productId: l.productId || '',
+        productName: l.productName || '',
+        custom: l.custom || {},
         userId: ownerId,
         leadId: l.id, // link back to source lead for dedup/reporting
         createdAt: Date.now(),
