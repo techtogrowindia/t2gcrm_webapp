@@ -59,7 +59,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   });
 
   // Deferred: subscription for non-leads tabs only; leads replaced by server fetch
-  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source', 'source-team', 'stage-team'].includes(tab);
+  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source', 'source-team', 'stage-team', 'product-team'].includes(tab);
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
   const needsStageLogs = tab === 'stage-transitions';
@@ -477,6 +477,35 @@ export default function Reports({ user, perms, ownerId, profile }) {
   }, [tab, filteredLeadsAtSource, teamMembers, fromDate, toDate, STAGE_ORDER.join()]);
 
   // ==================================================
+  // #2e LEADS BY PRODUCT & TEAM MEMBER — same pivot, grouped by the linked
+  // product (leads.productName). Leads with no product are grouped under
+  // "(No product)", sorted to the bottom.
+  // ==================================================
+  const productTeamMatrix = useMemo(() => {
+    if (tab !== 'product-team') return { matrix: {}, rows: [], cols: [], total: 0 };
+    const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
+    const teamNames = new Set(teamMembers.map(t => t.name).filter(Boolean));
+    const matrix = {};
+    const rowSet = new Set();
+    const colSet = new Set();
+    let total = 0;
+    inRangeLeads.forEach(l => {
+      const prod = l.productName || '(No product)';
+      const col = l.assign ? l.assign : 'Unassigned';
+      if (!matrix[prod]) matrix[prod] = {};
+      matrix[prod][col] = (matrix[prod][col] || 0) + 1;
+      rowSet.add(prod);
+      colSet.add(col);
+      total += 1;
+    });
+    const activeCols = [...teamNames].sort();
+    const strayCols = [...colSet].filter(c => c !== 'Unassigned' && !teamNames.has(c)).sort();
+    const cols = [...activeCols, ...(colSet.has('Unassigned') ? ['Unassigned'] : []), ...strayCols];
+    const rows = [...rowSet].sort((a, b) => a === '(No product)' ? 1 : b === '(No product)' ? -1 : a.localeCompare(b));
+    return { matrix, rows, cols, total };
+  }, [tab, filteredLeadsAtSource, teamMembers, fromDate, toDate]);
+
+  // ==================================================
   // #3 CUSTOMER PURCHASE REPORT — from paid invoice items, grouped by product
   // ==================================================
   const customerPurchase = useMemo(() => {
@@ -694,9 +723,9 @@ export default function Reports({ user, perms, ownerId, profile }) {
         return row;
       });
       exportCSV(headers, rows, `Stage_Transitions_${fromDate}_to_${toDate}`);
-    } else if (tab === 'source-team' || tab === 'stage-team') {
-      const m = tab === 'source-team' ? sourceTeamMatrix : stageTeamMatrix;
-      const rowLabel = tab === 'source-team' ? 'Source' : 'Stage';
+    } else if (tab === 'source-team' || tab === 'stage-team' || tab === 'product-team') {
+      const m = tab === 'source-team' ? sourceTeamMatrix : tab === 'stage-team' ? stageTeamMatrix : productTeamMatrix;
+      const rowLabel = tab === 'source-team' ? 'Source' : tab === 'stage-team' ? 'Stage' : 'Product';
       const headers = [rowLabel, ...m.cols, 'Total'];
       const rows = m.rows.map(r => {
         const row = [r];
@@ -783,6 +812,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
             ['lead-source', 'Leads by Source'],
             ['source-team', 'Leads by Source & Team'],
             ['stage-team', 'Leads by Stage & Team'],
+            ['product-team', 'Leads by Product & Team'],
             ['customer-purchase', 'Customer Purchases'],
             ['stage-transitions', 'Stage Transitions'],
             ['leads', 'Lead Pipeline'],
@@ -1452,9 +1482,9 @@ export default function Reports({ user, perms, ownerId, profile }) {
         </div>
       )}
 
-      {(tab === 'source-team' || tab === 'stage-team') && (() => {
-        const m = tab === 'source-team' ? sourceTeamMatrix : stageTeamMatrix;
-        const rowLabel = tab === 'source-team' ? 'Source' : 'Stage';
+      {(tab === 'source-team' || tab === 'stage-team' || tab === 'product-team') && (() => {
+        const m = tab === 'source-team' ? sourceTeamMatrix : tab === 'stage-team' ? stageTeamMatrix : productTeamMatrix;
+        const rowLabel = tab === 'source-team' ? 'Source' : tab === 'stage-team' ? 'Stage' : 'Product';
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             <div className="stat-grid">
