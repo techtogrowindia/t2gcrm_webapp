@@ -21,35 +21,16 @@ This file provides guidance to Google Gemini when working with code in this repo
 - **Email:** nodemailer (SMTP), EmailJS (frontend)
 - **Styling:** Plain CSS
 
-## 🐘 PostgreSQL Migration (IN PROGRESS)
+## 🐘 PostgreSQL Migration (PROD IS LIVE ON POSTGRES)
 
-Migrating to **self-hosted PostgreSQL 17** on Contabo VPS. Architecture: one DB per app (`t2gcrm_prod`, `t2gcrm_dev`), row-level multi-tenancy (RLS), owner(DDL)+app(DML) roles, no real-time (refetch-after-mutation).
+> ⚠️ This GEMINI.md has diverged — **CLAUDE.md is the authoritative, up-to-date reference.** Prefer it.
 
-**Migration scripts** live in `/root/crm-migration/` on VPS (not in this repo):
-`install-postgres.sh`, `create-crm-schema.sh`, `import.mjs`, `verify.mjs`, `05-add-write-triggers.sql`
+**Prod and dev both run on self-hosted PostgreSQL 17** (Contabo VPS); prod cutover is complete (`USE_PG_DATA`/`VITE_USE_PG_AUTH`/`VITE_USE_PG_DATA` all `true`). InstantDB is a dormant rollback-only target. One DB per app, RLS multi-tenancy, owner(DDL)+app(DML) roles.
 
-### Status
-- ✅ Postgres 17 installed, 4 DBs, owner/app roles, nightly backups
-- ✅ CRM schema (31 tables) + RLS + `login_codes` in prod & dev
-- ✅ `t2gcrm_dev` imported & verified (69,547 rows)
-- ✅ `api/db-pg.js` — pool + `tenantQuery`/`rawQuery`/`tenantTransaction`
-- ✅ `api/auth-pg.js` — password + magic-code + JWT (all 3 flows)
-- ✅ `api/data-pg.js` — generic upsert/delete/batch/query, all 31 tables
-- ✅ `api/_write-ops.js` — shared write router (InstantDB ↔ Postgres)
-- ✅ `api/_leads-cache.js` + `api/_call-logs-cache.js` — dual-path PG/InstantDB
-- ✅ All server endpoints: `api/data.js`, `team-stats.js`, `dashboard-stats.js` reads route to PG
-- ✅ Frontend: `db.useQuery` globally proxied in `src/instant.js`; `dbWrite` in `src/utils/dbWrite.js`
-- ✅ Dev CRM fully running on Postgres (auth + reads + writes)
-- ⬜ Prod cutover: run `import.mjs` + `05-add-write-triggers.sql` on `t2gcrm_prod`, set 3 env flags, build + restart
+### Auth/Admin routing — #1 PG gotcha
+Login reads Postgres. Any auth/admin action hardcoded to `/api/auth` writes to InstantDB (which login never reads) and silently no-ops. **Frontend must use `AUTH_API`** (`src/utils/authApi.js`) for every dual-backend action. Full auth + admin suite (register/verify-otp self-signup, password reset, admin-create/delete-user, business-analytics, cleanup-old-logs, orphan scan/cleanup) is implemented in `api/auth-pg.js`. New-business `accounts` rows are created ONLY by `auth-pg` `admin-create-user`/`verify-otp` (the `data-pg.js` userProfiles write is UPDATE-only). See CLAUDE.md for the full rules.
 
-### Prod Cutover Steps
-1. `git pull && pm2 restart t2gcrm` (pull bug fixes first)
-2. Run `05-add-write-triggers.sql` on `t2gcrm_prod` (owner role)
-3. Run `import.mjs` while app is live (pre-warm)
-4. `pm2 stop t2gcrm` → run `import.mjs` again (delta) → edit `.env` → `npm run build` → `pm2 start t2gcrm`
-5. Add to prod `.env`: `USE_PG_DATA=true`, `VITE_USE_PG_AUTH=true`, `VITE_USE_PG_DATA=true`, `DATABASE_URL` (app role), `JWT_SECRET` (openssl rand -hex 32)
-
-**Rollback:** remove those 5 env vars, `npm run build && pm2 restart t2gcrm`. Back on InstantDB in ~3 min.
+**Rollback:** remove the 3 `*PG*` env vars, `npm run build && pm2 restart t2gcrm` (emergency-only; InstantDB data is stale post-cutover).
 
 ### Write/Read Architecture
 - **Writes:** `dbWrite(dbOp.update/delete)` → `/api/data-pg` (JWT). MERGE-upsert (partial updates only touch provided fields). Cascade deletes via `CASCADE` map in `data-pg.js`.
