@@ -36,12 +36,22 @@ export function resolveLeadFormConfig(p = {}) {
   };
 }
 
-// Fetch the owner's profile and resolve the config (PG/InstantDB via readData).
+// Fetch the owner's profile + team and resolve the config (PG/InstantDB via
+// readData). `assignees` = this business's team member names, so the mobile
+// lead form gets a per-business assignee dropdown from the same call (the
+// dropdown lists here are ALL tenant-scoped by ownerId — nothing is shared
+// across businesses).
 export async function getLeadFormConfig(db, ownerId) {
-  const { userProfiles } = await readData(db, ownerId, {
+  const { userProfiles, teamMembers } = await readData(db, ownerId, {
     userProfiles: { $: { where: { userId: ownerId } } },
+    teamMembers: { $: { where: { userId: ownerId } } },
   });
-  return resolveLeadFormConfig(userProfiles?.[0] || {});
+  const cfg = resolveLeadFormConfig(userProfiles?.[0] || {});
+  cfg.assignees = (teamMembers || [])
+    .map(t => t.name)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  return cfg;
 }
 
 // Validate a lead payload's dropdown fields against the config. Returns an array
