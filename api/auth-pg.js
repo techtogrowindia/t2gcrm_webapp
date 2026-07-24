@@ -40,7 +40,7 @@ function signJwt(payload) {
   return `${header}.${body}.${sig}`;
 }
 
-function verifyJwt(token) {
+export function verifyJwt(token) {
   if (!JWT_SECRET) throw new Error('JWT_SECRET not set in environment');
   const parts = (token || '').split('.');
   if (parts.length !== 3) throw new Error('Invalid token');
