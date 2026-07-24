@@ -201,7 +201,19 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const openCreate = () => {
     fetchModalLeads();
     setEditData(null);
-    const nextNo = `INV/${new Date().getFullYear()}/${String(invoices.length + 1).padStart(3, '0')}`;
+    // Numbering from Settings > Financial: prefix + next sequence. The next
+    // sequence is the higher of the configured Starting Number and (highest
+    // existing invoice number + 1), so a fresh business honours its chosen
+    // start and an existing one continues without collisions — regardless of
+    // any past number format. (Previously this was hardcoded to
+    // `INV/<year>/<count>` and ignored the settings entirely.)
+    const iPrefix = profile?.iPrefix ?? 'INV-';
+    const iStart = parseInt(profile?.iNextNum) || 1;
+    const iMaxSeq = invoices.reduce((m, inv) => {
+      const match = String(inv.no || '').match(/(\d+)\s*$/);
+      return match ? Math.max(m, parseInt(match[1])) : m;
+    }, 0);
+    const nextNo = `${iPrefix}${String(Math.max(iStart, iMaxSeq + 1)).padStart(3, '0')}`;
     const defTax = profile?.defaultTaxRate || 0;
     
     // Default 14-day due date

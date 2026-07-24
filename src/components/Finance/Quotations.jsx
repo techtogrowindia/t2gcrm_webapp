@@ -177,7 +177,16 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   const openCreate = () => {
     fetchModalLeads();
     setEditData(null);
-    const nextNo = `QUOTE/${new Date().getFullYear()}/${String(quotes.length + 1).padStart(3, '0')}`;
+    // Numbering from Settings > Financial: prefix + next sequence (see the
+    // matching comment in Invoices.jsx). Honours the configured Starting
+    // Number, continues past the highest existing quote, any past format.
+    const qPrefix = profile?.qPrefix ?? 'QUO-';
+    const qStart = parseInt(profile?.qNextNum) || 1;
+    const qMaxSeq = quotes.reduce((m, q) => {
+      const match = String(q.no || '').match(/(\d+)\s*$/);
+      return match ? Math.max(m, parseInt(match[1])) : m;
+    }, 0);
+    const nextNo = `${qPrefix}${String(Math.max(qStart, qMaxSeq + 1)).padStart(3, '0')}`;
     const defTax = profile?.defaultTaxRate || 0;
     
     // Default 14-day validity
