@@ -519,7 +519,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // = some other activity happened; untouched = no activity at all.
   // ==================================================
   const followupStatus = useMemo(() => {
-    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 } };
+    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 }, noFollowup: 0 };
     const fromMs = new Date(fromDate).getTime();
     const toMs = new Date(toDate + 'T23:59:59').getTime();
 
@@ -541,9 +541,18 @@ export default function Reports({ user, perms, ownerId, profile }) {
       map[key][cat] += 1;
     };
 
+    // Leads with NO follow-up date scheduled — a gap worth surfacing. They have
+    // no follow-up date to filter by, so they're scoped by creation date within
+    // the selected range instead.
+    let noFollowup = 0;
     filteredLeadsAtSource.forEach(l => {
       const fu = l.followup ? new Date(l.followup).getTime() : null;
-      if (!fu || fu < fromMs || fu > toMs) return;
+      if (!fu) {
+        const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
+        if (cr && cr >= fromMs && cr <= toMs) noFollowup += 1;
+        return;
+      }
+      if (fu < fromMs || fu > toMs) return;
       const d = new Date(fu);
       const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       const leadLogs = logsByLead[l.id] || [];
@@ -566,7 +575,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       acc.attended += d.attended; acc.untouched += d.untouched;
       return acc;
     }, emptyCounts());
-    return { days, byMember, totals };
+    return { days, byMember, totals, noFollowup };
   }, [tab, filteredLeadsAtSource, stageLogs, fromDate, toDate, wonStage]);
 
   // ==================================================
@@ -1634,10 +1643,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
             <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
             <div className="stat-card sc-red"><div className="lbl">Untouched</div><div className="val">{followupStatus.totals.untouched}</div></div>
+            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">No Follow-up Date</div><div className="val" style={{ color: '#475569' }}>{followupStatus.noFollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>leads created in range</div></div>
           </div>
 
           <div className="tw">
-            <div className="tw-head"><h3>By Team Member — who hasn't acted</h3></div>
+            <div className="tw-head"><h3>By Team Member</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
               Sorted by Untouched (most unactioned follow-ups first). "Untouched" = assigned but no activity logged in this period.
             </div>
