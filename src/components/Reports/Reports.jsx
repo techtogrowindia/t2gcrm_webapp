@@ -59,10 +59,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
   });
 
   // Deferred: subscription for non-leads tabs only; leads replaced by server fetch
-  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source', 'source-team', 'stage-team', 'product-team'].includes(tab);
+  const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source', 'source-team', 'stage-team', 'product-team', 'followup-status'].includes(tab);
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
-  const needsStageLogs = tab === 'stage-transitions';
+  const needsStageLogs = ['stage-transitions', 'followup-status'].includes(tab);
   // Stage Transitions is fetched server-side (see below), NOT via this
   // subscription — db.useQuery({ activityLogs: limit:5000 }) returns
   // arbitrary (often oldest) rows with no ordering, dropping recent
@@ -106,7 +106,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const [stageLogsData, setStageLogsData] = useState([]);
   const [stageLogsLoading, setStageLogsLoading] = useState(false);
   useEffect(() => {
-    if (tab !== 'stage-transitions' || !ownerId) return;
+    if (!['stage-transitions', 'followup-status'].includes(tab) || !ownerId) return;
     const startMs = new Date(fromDate).getTime();
     const endMs = new Date(toDate + 'T23:59:59').getTime();
     setStageLogsLoading(true);
@@ -506,6 +506,57 @@ export default function Reports({ user, perms, ownerId, profile }) {
   }, [tab, filteredLeadsAtSource, teamMembers, fromDate, toDate]);
 
   // ==================================================
+  // #2f FOLLOW-UP STATUS REPORT — per-day disposition of follow-ups whose
+  // due date falls in the range, INFERRED from activity (no dedicated
+  // outcome field): converted = lead now in the Won stage; rescheduled =
+  // a "Follow Up changed" activity log exists for it in the range; attended
+  // = some other activity happened; untouched = no activity at all.
+  // ==================================================
+  const followupStatus = useMemo(() => {
+    if (tab !== 'followup-status') return { days: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 } };
+    const fromMs = new Date(fromDate).getTime();
+    const toMs = new Date(toDate + 'T23:59:59').getTime();
+
+    // Index activity logs by lead id (skip the synthetic 'bulk' entity).
+    const logsByLead = {};
+    stageLogs.forEach(log => {
+      const eid = log.entityId;
+      if (!eid || eid === 'bulk') return;
+      if (!logsByLead[eid]) logsByLead[eid] = [];
+      logsByLead[eid].push(log);
+    });
+
+    const dayMap = {};
+    const bump = (dayKey, cat) => {
+      if (!dayMap[dayKey]) dayMap[dayKey] = { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 };
+      dayMap[dayKey].total += 1;
+      dayMap[dayKey][cat] += 1;
+    };
+
+    filteredLeadsAtSource.forEach(l => {
+      const fu = l.followup ? new Date(l.followup).getTime() : null;
+      if (!fu || fu < fromMs || fu > toMs) return;
+      const d = new Date(fu);
+      const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const leadLogs = logsByLead[l.id] || [];
+      let cat;
+      if (l.stage === wonStage) cat = 'converted';
+      else if (leadLogs.some(lg => /follow\s*up changed/i.test(lg.text || ''))) cat = 'rescheduled';
+      else if (leadLogs.length > 0) cat = 'attended';
+      else cat = 'untouched';
+      bump(dayKey, cat);
+    });
+
+    const days = Object.entries(dayMap).map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
+    const totals = days.reduce((acc, d) => {
+      acc.total += d.total; acc.converted += d.converted; acc.rescheduled += d.rescheduled;
+      acc.attended += d.attended; acc.untouched += d.untouched;
+      return acc;
+    }, { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 });
+    return { days, totals };
+  }, [tab, filteredLeadsAtSource, stageLogs, fromDate, toDate, wonStage]);
+
+  // ==================================================
   // #3 CUSTOMER PURCHASE REPORT — from paid invoice items, grouped by product
   // ==================================================
   const customerPurchase = useMemo(() => {
@@ -737,6 +788,13 @@ export default function Reports({ user, perms, ownerId, profile }) {
       const totalsRow = ['Total', ...m.cols.map(c => m.rows.reduce((s, r) => s + (m.matrix[r]?.[c] || 0), 0)), m.total];
       rows.push(totalsRow);
       exportCSV(headers, rows, `Leads_By_${rowLabel}_And_Team_${fromDate}_to_${toDate}`);
+    } else if (tab === 'followup-status') {
+      const rows = [
+        ['Date', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched'],
+        ...followupStatus.days.map(d => [fmtD(d.date), d.total, d.converted, d.rescheduled, d.attended, d.untouched]),
+        ['Total', followupStatus.totals.total, followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched],
+      ];
+      exportCSV(rows[0], rows.slice(1), `Followup_Status_${fromDate}_to_${toDate}`);
     } else if (tab === 'leads') {
       exportCSV(['Stage', 'Count'], stageCount.map(s => [s.stage, s.count]), `Lead_Pipeline_${fromDate}_to_${toDate}`);
     } else if (tab === 'expenses' && expenseReport) {
@@ -813,6 +871,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
             ['source-team', 'Leads by Source & Team'],
             ['stage-team', 'Leads by Stage & Team'],
             ['product-team', 'Leads by Product & Team'],
+            ['followup-status', 'Follow-up Status'],
             ['customer-purchase', 'Customer Purchases'],
             ['stage-transitions', 'Stage Transitions'],
             ['leads', 'Lead Pipeline'],
@@ -1548,6 +1607,65 @@ export default function Reports({ user, perms, ownerId, profile }) {
           </div>
         );
       })()}
+
+      {tab === 'followup-status' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div className="stat-grid">
+            <div className="stat-card sc-blue"><div className="lbl">Total Follow-ups</div><div className="val">{followupStatus.totals.total}</div></div>
+            <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
+            <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
+            <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
+            <div className="stat-card sc-red"><div className="lbl">Untouched</div><div className="val">{followupStatus.totals.untouched}</div></div>
+          </div>
+
+          <div className="tw">
+            <div className="tw-head"><h3>Follow-up Status by Day</h3></div>
+            <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
+              Rows = follow-up due date · Inferred from activity — Converted = now in "{wonStage}"; Rescheduled = follow-up date was changed; Attended = other activity logged; Untouched = no activity.
+            </div>
+            <div className="tw-scroll">
+              {followupStatus.days.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>
+                  No follow-ups due in this period.
+                </div>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th style={{ textAlign: 'right' }}>Total</th>
+                      <th style={{ textAlign: 'right' }}>Converted</th>
+                      <th style={{ textAlign: 'right' }}>Rescheduled</th>
+                      <th style={{ textAlign: 'right' }}>Attended</th>
+                      <th style={{ textAlign: 'right' }}>Untouched</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {followupStatus.days.map(d => (
+                      <tr key={d.date}>
+                        <td><strong>{fmtD(d.date)}</strong></td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{d.total}</td>
+                        <td style={{ textAlign: 'right', color: '#16a34a', fontWeight: d.converted ? 700 : 400 }}>{d.converted || '-'}</td>
+                        <td style={{ textAlign: 'right', color: '#d97706', fontWeight: d.rescheduled ? 700 : 400 }}>{d.rescheduled || '-'}</td>
+                        <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: d.attended ? 700 : 400 }}>{d.attended || '-'}</td>
+                        <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: d.untouched ? 700 : 400 }}>{d.untouched || '-'}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background: '#f9fafb' }}>
+                      <td><strong>Total</strong></td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.converted}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.rescheduled}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.untouched}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {tab === 'products' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
