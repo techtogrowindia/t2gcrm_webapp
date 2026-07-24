@@ -14,7 +14,7 @@
 
 - **Frontend:** React 18 + Vite, hash-based routing
 - **Backend:** Node.js + Express.js
-- **Database:** InstantDB (real-time NoSQL) + PostgreSQL 17 (migration in progress)
+- **Database:** PostgreSQL 17 (live in prod & dev); InstantDB retained as dormant rollback target
 - **Auth:** InstantDB magic codes + password (bcrypt); PG path: JWT via `api/auth-pg.js`
 - **Email:** nodemailer (SMTP), EmailJS (frontend)
 - **Styling:** Plain CSS

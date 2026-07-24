@@ -16,26 +16,39 @@ This file provides guidance to Google Gemini when working with code in this repo
 
 - **Frontend:** React 18 + Vite, hash-based routing
 - **Backend:** Node.js + Express.js
-- **Database:** InstantDB (real-time NoSQL) + PostgreSQL 17 (migration in progress)
+- **Database:** PostgreSQL 17 (live in prod & dev); InstantDB retained as dormant rollback target
 - **Auth:** InstantDB magic codes + password (bcrypt); PG path: JWT via `api/auth-pg.js`
 - **Email:** nodemailer (SMTP), EmailJS (frontend)
 - **Styling:** Plain CSS
 
 ## 🐘 PostgreSQL Migration (PROD IS LIVE ON POSTGRES)
 
-> ⚠️ This GEMINI.md has diverged — **CLAUDE.md is the authoritative, up-to-date reference.** Prefer it.
+**Prod and dev both run on self-hosted PostgreSQL 17** (Contabo VPS). Prod cutover was completed — prod `.env` has `USE_PG_DATA=true`, `VITE_USE_PG_AUTH=true`, `VITE_USE_PG_DATA=true`. Architecture: one DB per app (`t2gcrm_prod`, `t2gcrm_dev`), row-level multi-tenancy (RLS), owner(DDL)+app(DML) roles, no real-time (refetch-after-mutation). InstantDB remains only as a dormant rollback target.
 
-**Prod and dev both run on self-hosted PostgreSQL 17** (Contabo VPS); prod cutover is complete (`USE_PG_DATA`/`VITE_USE_PG_AUTH`/`VITE_USE_PG_DATA` all `true`). InstantDB is a dormant rollback-only target. One DB per app, RLS multi-tenancy, owner(DDL)+app(DML) roles.
+**Migration scripts** live in `/root/crm-migration/` on VPS (not in this repo):
+`install-postgres.sh`, `create-crm-schema.sh`, `import.mjs`, `verify.mjs`, `05-add-write-triggers.sql`
 
-### Auth/Admin routing — #1 PG gotcha
-Login reads Postgres. Any auth/admin action hardcoded to `/api/auth` writes to InstantDB (which login never reads) and silently no-ops. **Frontend must use `AUTH_API`** (`src/utils/authApi.js`) for every dual-backend action. Full auth + admin suite (register/verify-otp self-signup, password reset, admin-create/delete-user, business-analytics, cleanup-old-logs, orphan scan/cleanup) is implemented in `api/auth-pg.js`. New-business `accounts` rows are created ONLY by `auth-pg` `admin-create-user`/`verify-otp` (the `data-pg.js` userProfiles write is UPDATE-only). See CLAUDE.md for the full rules.
+### Status — migration complete
+- ✅ Reads/writes on PG: `db.useQuery` proxied in `src/instant.js`, `dbWrite` in `src/utils/dbWrite.js`, all server endpoints via `_leads-cache`/`_call-logs-cache` (dual-path).
+- ✅ **Auth fully on PG** (`api/auth-pg.js`): password login, magic-code, **register + verify-otp (public self-signup)**, change/reset-password, set-team/partner-password, delete-partner-credentials.
+- ✅ **Admin fully on PG** (`api/auth-pg.js`): `admin-create-user`, `admin-delete-user`, `business-analytics`, `cleanup-old-logs`, `scan-orphans`, `cleanup-orphans`.
 
-**Rollback:** remove the 3 `*PG*` env vars, `npm run build && pm2 restart t2gcrm` (emergency-only; InstantDB data is stale post-cutover).
+**Rollback:** remove the 3 `*PG*` env vars from prod `.env`, `npm run build && pm2 restart t2gcrm`. Back on InstantDB in ~3 min. (InstantDB data is stale post-cutover — rollback is emergency-only.)
+
+### ⚠️ Auth/Admin routing — the #1 PG gotcha
+On the PG stack, **login reads Postgres**. Any auth/admin action hardcoded to `/api/auth` writes to **InstantDB**, which login never reads — so the change silently does nothing (this bit password reset, create-business, and delete-business).
+
+- **Frontend MUST use `AUTH_API`** (`src/utils/authApi.js`), NOT a hardcoded `/api/auth`, for every action implemented in both backends: login, register, verify-otp, change/reset-password, admin-create-user, admin-delete-user, business-analytics, cleanup-old-logs, orphan scan/cleanup, set-team/partner-password. `AUTH_API` → `/api/auth-pg` when `VITE_USE_PG_AUTH=true`.
+- **New-business creation (accounts row) happens ONLY via `auth-pg` `admin-create-user` / `verify-otp`.** The normal `userProfiles` write path in `data-pg.js` is **UPDATE-only** (`UPDATE accounts SET doc=… WHERE id=…`) — it NEVER inserts an accounts row. So a brand-new business with no accounts row can't log in (password or magic code) until one of those two actions creates the `accounts` + `credentials` rows.
+- **Duplicate credentials:** an email may wrongly have >1 credential row (owner + partner/team). PG login/magic-code prefer the **owner** (non-team/non-partner) credential and apply owner-priority (if the email owns an `accounts` row, treat as owner). Never `rows[0]` blindly.
+- **OTP emails** go through the shared `api/_email-otp.js` (`sendOtpEmail`). NEVER return the raw OTP in the API response (that let anyone reset any account by knowing the email). Unverified self-signups are blocked at login until verify-otp completes.
+- **Partner/team logout** must call `pgAuthSignOut()` (from `useAuthPg.js`) when `VITE_USE_PG_AUTH` — `db.auth.signOut()` is a no-op on PG and leaves the JWT in localStorage.
 
 ### Write/Read Architecture
-- **Writes:** `dbWrite(dbOp.update/delete)` → `/api/data-pg` (JWT). MERGE-upsert (partial updates only touch provided fields). Cascade deletes via `CASCADE` map in `data-pg.js`.
+- **Writes:** `dbWrite(dbOp.update/delete)` → `/api/data-pg` (JWT). MERGE-upsert (partial updates only touch provided fields). Cascade deletes via `CASCADE` map in `data-pg.js`. Promoted typed columns maintained by triggers, not the write path.
 - **Reads:** `data-pg action:'query'` returns `{ ...doc, id: r.id }` — id ALWAYS from PG column.
 - **Gotcha:** `id` lives in the PG column, not necessarily in `doc`. All mappers do `{ ...r.doc, id: r.id }`.
+- **Not in PG:** `memberStats`, task auto-numbering — skipped gracefully (`execOp` returns `[]`).
 
 ### Schema Mapping
 - `userId` → `tenant_id` on every tenant table. **Exception: `callLogSyncState` uses `ownerId`.**
@@ -113,7 +126,7 @@ server.mjs        # Express server (production) — ALL routes must be registere
 | `teamMembers` | `team_members` | |
 | `leads` | `leads` | hot table, promoted typed columns |
 | `customers` | `customers` | |
-| `quotes` | `quotes` | **NOT** `quotations` — COLLECTION_MAP handles the key translation |
+| `quotes` | `quotes` | **NOT** `quotations` |
 | `invoices` | `invoices` | |
 | `activityLogs` | `activity_logs` | hot table |
 | `callLogs` | `call_logs` | hot table |
@@ -138,11 +151,14 @@ server.mjs        # Express server (production) — ALL routes must be registere
 
 ## Authentication & Login Flow
 
-1. **Password:** POST `/api/auth` (InstantDB) or `/api/auth-pg` (PG) → JWT
-2. **Magic code:** `db.auth.sendMagicCode()` → `db.auth.signInWithMagicCode()` (InstantDB) or `login_codes` table (PG)
-3. **Discovery:** team member → restricted MainApp; partner → PartnerApp; owner → full MainApp
+Prod is on PG, so the live path is `/api/auth-pg`; route the frontend through `AUTH_API` (see the Auth/Admin routing gotcha above), never a hardcoded `/api/auth`.
 
-**Gotcha — Team/Partner passwords:** Must set `isVerified: true` on `userCredentials`. Without it, they get blocked at the OTP prompt (they have no `userProfiles` record to bypass it).
+1. **Password:** POST `/api/auth-pg` `action:'login'` → JWT. Login selects the owner credential among duplicates and blocks unverified self-signups.
+2. **Magic code:** `/api/auth-pg` `send-code` → `verify-code` (`login_codes` table on PG).
+3. **Self-signup:** `/api/auth-pg` `register` (creates unverified credential + emails OTP) → `verify-otp` (creates the `accounts` tenant row + marks verified + returns JWT).
+4. **Discovery:** team member → restricted MainApp; partner → PartnerApp; owner → full MainApp.
+
+**Gotcha — Team/Partner passwords:** Must set `is_verified: true` on the `credentials` row (PG). Without it, they get blocked at the OTP prompt (they have no `accounts`/`userProfiles` record to bypass it).
 
 ## Email Automation Engine
 
@@ -221,7 +237,33 @@ All integrations: field mapping (Column/Fixed), custom fields, enable/disable to
 7. Never add `leads` to a component's `db.useQuery` — hangs at 11k+ rows. Use server endpoints
 8. Server-paginated APIs (leads-page) only return ~25 rows client-side — dedup and search must go server-side
 9. Disabled stages are filtered in components but still exist in DB — don't delete them
-10. `quotes` not `quotations` — InstantDB collection is `quotes`; `COLLECTION_MAP` in `api/data.js` maps the `quotations` module key to it. Never create a `quotations` collection.
+10. **SYSTEM_SMTP_* env vars power both magic-code AND OTP emails** (`api/_email-otp.js`). If reset/verify emails don't arrive, check these on the VPS `.env` — the magic-code path working confirms SMTP is fine.
+
+## Finance — Documents, Numbering & Totals
+
+- **Invoice/quotation numbering comes from Settings > Financial**, not hardcoded. Next number = `<prefix>` + `max(startingNumber, highestExisting+1)`, padded to 3 (`iPrefix`/`iNextNum`, `qPrefix`/`qNextNum` on `userProfiles`). Never re-hardcode `INV/<year>/<count>`.
+- **GST is computed on the POST-discount taxable value.** `src/utils/docTotals.js` `computeDocTotals` is the single shared math for BOTH renderers (`DocumentTemplate.jsx` HTML/print + `DocumentPdf.jsx` react-pdf) — the document-level discount is apportioned across line items via a factor so per-rate CGST/SGST/IGST stays correct. Any total-derivation change happens HERE only. Reopening an existing discounted doc re-renders with the corrected (lower) GST.
+- **Templates:** "Formal Quote" is a distinct template (`profile.invoiceTemplate`/`quotationTemplate === 'Formal'`). The **Opening Note** field (`data.quoteFor`) only shows on the form when that template is active, and only the Formal template renders it. Terms render as-typed (no auto-numbering).
+- **Client picker** (`SearchableSelect`): searches by name AND phone (`searchKeys={['phone']}`), and type-ahead hits `/api/leads-page` server-side so it finds any lead, not just a preloaded page. Still stores the client by **name** (not id) — same-name disambiguation is a known limitation.
+
+## Leads — Products, Address Parity & Bulk
+
+- **Leads link ONE product** from the Products catalog: `productId` (the real link) + `productName` (denormalized, for display/reports). Shown on the lead form, detail view, table (Configure View "Product" column) and the "Leads by Product & Team" report.
+- **EMPTY_LEAD mirrors EMPTY_CUSTOMER's address block** (`address/state/country/pincode/gstin`) so `convertToCustomer` carries the full field set (address block + custom fields + product) onto the customer — kept in parity with the server auto-sync in `api/sync-won-leads.js`.
+- **Bulk multiselect toolbar** supports Assign / Change Stage / Change Requirement / **Assign Product** — all batched through `bulkApply` (200/batch, 4 in flight) with one summary activity-log row (`entityId:'bulk'`, an intentional synthetic id — NOT an orphan; exclude it from orphan scans).
+
+## Notifications (bell + toast) — two SEPARATE persisted sets
+
+`MainApp.jsx` keeps two per-tenant localStorage id sets (`usePersistedIdSet`), deliberately not shared:
+- `readNotifIds` (`tc_read_notifs_<tenant>`) — bell panel/badge; only changed by an explicit user action (click a notif or "Mark all read"). Panel shows only unread; each item has a ✕ to clear.
+- `toastedNotifIds` (`tc_toasted_notifs_<tenant>`) — toast dedup only; toasting must NEVER silently mark a notif read (that made "50 Overdue Follow-ups" vanish from the bell). Never prune ids by "not in current liveNotifs" — the overdue bucket loads async and would re-toast every refresh; use the size cap instead.
+- The **Follow-up Notification** setting (`profile.followupNotifyMinutes`, 0=Off) is the master switch for BOTH overdue and advance follow-up alerts.
+
+## Reports — team pivots & follow-up status
+
+- **Team-pivot reports** (Source×Team, Stage×Team, Product×Team) share one render/export block in `Reports.jsx`; rows built dynamically from data (don't hide orphaned values), Unassigned as its own column, respect the From/To date filter.
+- **Follow-up Status report** infers outcomes from activity (no dedicated field): Converted = now in Won stage; Rescheduled = a "Follow Up changed" activity log exists; Attended = other activity logged; Untouched = none. Plus "Total Leads" / "No Follow-up Date" (both by createdAt in range) and a per-team-member breakdown.
+- **wonStage fallback:** when `profile.wonStage` is unset, prefer a stage literally named "Won" before the last-stage fallback (the last stage is often "Competitors"/"Lost", which silently zeroed conversions).
 
 ## Environment Variables
 
@@ -287,7 +329,7 @@ Duplicate/orphaned records cause login bugs and data corruption (an orphaned `pa
 5. When changing user role: DELETE obsolete records, don't just update flags
 
 **High-risk orphan pairs:**
-- `userCredentials` ↔ `userProfiles` ↔ `partnerApplications` ↔ `teamMembers`
+- `userCredentials` ↔ `userProfiles` ↔ `partnerApplications` ↔ `teamMembers` ↔ `memberProfiles`
 - `leads` ↔ `customers` (via `leadId`)
 - `quotes` ↔ `invoices` (via `quotationId`)
 
@@ -466,8 +508,19 @@ Data-quality fixes are one-shot migration scripts in `/root/crm-migration/`, not
 ```bash
 window.DEBUG_PERMS = true      # Trace permission checks
 window.__INSTANT_DEBUG__ = true # InstantDB query debug
+# Check localStorage keys:
 Object.keys(localStorage).forEach(k => console.log(k, localStorage.getItem(k)))
 ```
+
+## Landing Page (t2g-landing)
+
+**Separate project** at `C:\Users\Gokul\Projects\t2g-landing` — completely independent from the CRM repo. No build step, no framework, no package.json.
+
+- **Files:** `index.html` (all markup) + `styles.css` (all styles)
+- **Preview:** configured in `.claude/launch.json` as `"landing"` — runs `npx http-server` on port 4187. Start with `preview_start("landing")`.
+- **CSS variables:** `--accent:#22c55e`, `--accent2:#16a34a`, `--accent-dark:#15803d`, `--border:#e2e8e4`
+- **Button classes:** `.btn-primary` (solid green fill) · `.btn-ghost` (transparent, outline only) · `.btn-white` · `.btn-outline-white`
+- **No git remote configured** in this folder — edits are local only unless pushed separately.
 
 ## Known Limitations
 - No test suite (manual QA)
