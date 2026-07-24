@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
-import { fmtD, fmtDT, stageBadgeClass, uid, normalizeName, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS } from '../../utils/helpers';
+import { fmtD, fmtDT, stageBadgeClass, uid, normalizeName, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS, INDIAN_STATES, COUNTRIES } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_LEAD } from '../../utils/constants';
 import { fireAutoNotifications } from '../../utils/messaging';
@@ -83,6 +83,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     teamMembers: { $: { where: { userId: ownerId } } },
     userProfiles: { $: { where: { userId: ownerId } } },
     partnerApplications: { $: { where: { userId: ownerId, status: 'Approved' } } },
+    products: { $: { where: { userId: ownerId } } },
   });
   // Drawer data: only loads when a lead detail is open — avoids fetching logs for the whole list
   const drawerLeadId = viewLead?.id || editData?.id || null;
@@ -118,6 +119,11 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const activeSources = data?.userProfiles?.[0]?.sources || DEFAULT_SOURCES;
   const activeRequirements = data?.userProfiles?.[0]?.requirements || DEFAULT_REQUIREMENTS;
   const productCats = data?.userProfiles?.[0]?.productCats || DEFAULT_PROD_CATS;
+  // Products catalog (Business > Products) — sorted for the lead product picker.
+  const products = useMemo(
+    () => (data?.products || []).slice().sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    [data?.products]
+  );
   const allStages = data?.userProfiles?.[0]?.stages || DEFAULT_STAGES;
   const partners = data?.partnerApplications || [];
   const partnerLeadSource = data?.userProfiles?.[0]?.partnerLeadSource || 'Channel Partners';
@@ -1366,6 +1372,21 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                       {productCats.map(c => <option key={c}>{c}</option>)}
                     </select>
                   </div>
+                  <div className="fg"><label>Product</label>
+                    <select value={form.productId || ''} onChange={e => { const p = products.find(pr => pr.id === e.target.value); setForm(prev => ({ ...prev, productId: e.target.value, productName: p?.name || '' })); }}>
+                      <option value="">None</option>
+                      {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="fg span2"><label>Address</label><textarea value={form.address || ''} onChange={f('address')} placeholder="Full address" style={{ minHeight: 50 }} /></div>
+                  <div className="fg"><label>Country</label>
+                    <select value={form.country || 'India'} onChange={f('country')}>{COUNTRIES.map(c => <option key={c}>{c}</option>)}</select>
+                  </div>
+                  <div className="fg"><label>State</label>
+                    <select value={form.state || ''} onChange={f('state')}><option value="">Select State...</option>{INDIAN_STATES.map(s => <option key={s}>{s}</option>)}</select>
+                  </div>
+                  <div className="fg"><label>Pincode</label><input value={form.pincode || ''} onChange={f('pincode')} placeholder="Postal code" /></div>
+                  <div className="fg"><label>GSTIN</label><input value={form.gstin || ''} onChange={f('gstin')} placeholder="GST Number" /></div>
                   <div className="fg span2"><label>Notes</label><textarea value={form.notes} onChange={f('notes')} /></div>
 
                   {showPartners && (
@@ -2016,6 +2037,21 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                     {activeRequirements.map(l => <option key={l}>{l}</option>)}
                   </select>
                 </div>
+                <div className="fg"><label>Product</label>
+                  <select value={form.productId || ''} onChange={e => { const p = products.find(pr => pr.id === e.target.value); setForm(prev => ({ ...prev, productId: e.target.value, productName: p?.name || '' })); }}>
+                    <option value="">None</option>
+                    {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div className="fg span2"><label>Address</label><textarea value={form.address || ''} onChange={f('address')} placeholder="Full address" style={{ minHeight: 50 }} /></div>
+                <div className="fg"><label>Country</label>
+                  <select value={form.country || 'India'} onChange={f('country')}>{COUNTRIES.map(c => <option key={c}>{c}</option>)}</select>
+                </div>
+                <div className="fg"><label>State</label>
+                  <select value={form.state || ''} onChange={f('state')}><option value="">Select State...</option>{INDIAN_STATES.map(s => <option key={s}>{s}</option>)}</select>
+                </div>
+                <div className="fg"><label>Pincode</label><input value={form.pincode || ''} onChange={f('pincode')} placeholder="Postal code" /></div>
+                <div className="fg"><label>GSTIN</label><input value={form.gstin || ''} onChange={f('gstin')} placeholder="GST Number" /></div>
                 <div className="fg span2"><label>Notes</label><textarea value={form.notes} onChange={f('notes')} /></div>
                 
                 {/* Dynamic Custom Fields */}

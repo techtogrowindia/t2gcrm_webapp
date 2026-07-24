@@ -25,6 +25,16 @@ export const EMPTY_LEAD = {
   requirement: '',
   notes: '',
   productCat: '',
+  // Address block — mirrors EMPTY_CUSTOMER so these carry over on conversion.
+  address: '',
+  state: '',
+  country: 'India',
+  pincode: '',
+  gstin: '',
+  // Linked product from the Products catalog (one per lead). productName is
+  // denormalized for display/reports; productId is the real link.
+  productId: '',
+  productName: '',
   remWA: false,
   remEmail: true,
   remSMS: false,
