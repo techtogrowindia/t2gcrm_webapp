@@ -258,7 +258,13 @@ export default function Reports({ user, perms, ownerId, profile }) {
     : (profile?.stages || DEFAULT_STAGES)
   ).filter(s => !(profile?.disabledStages || []).includes(s));
 
-  const wonStage = profile?.wonStage || STAGE_ORDER[STAGE_ORDER.length - 1];
+  // Prefer the tenant's configured Won stage. When unset, fall back to a stage
+  // literally named "Won" if one exists (common) rather than blindly taking the
+  // last stage in the list — the last stage is often something like
+  // "Competitors"/"Lost", which would make every "converted" check fail.
+  const wonStage = profile?.wonStage
+    || (STAGE_ORDER.find(s => /^won$/i.test(s)))
+    || STAGE_ORDER[STAGE_ORDER.length - 1];
   const lostStage = profile?.lostStage || 'Lost'; 
   const pipelineLeads = useMemo(() => {
     if (tab !== 'leads') return [];
@@ -513,7 +519,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // = some other activity happened; untouched = no activity at all.
   // ==================================================
   const followupStatus = useMemo(() => {
-    if (tab !== 'followup-status') return { days: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 } };
+    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 } };
     const fromMs = new Date(fromDate).getTime();
     const toMs = new Date(toDate + 'T23:59:59').getTime();
 
@@ -526,11 +532,13 @@ export default function Reports({ user, perms, ownerId, profile }) {
       logsByLead[eid].push(log);
     });
 
+    const emptyCounts = () => ({ total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 });
     const dayMap = {};
-    const bump = (dayKey, cat) => {
-      if (!dayMap[dayKey]) dayMap[dayKey] = { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 };
-      dayMap[dayKey].total += 1;
-      dayMap[dayKey][cat] += 1;
+    const memberMap = {}; // assigned member -> counts (who has/hasn't acted)
+    const bump = (map, key, cat) => {
+      if (!map[key]) map[key] = emptyCounts();
+      map[key].total += 1;
+      map[key][cat] += 1;
     };
 
     filteredLeadsAtSource.forEach(l => {
@@ -544,16 +552,21 @@ export default function Reports({ user, perms, ownerId, profile }) {
       else if (leadLogs.some(lg => /follow\s*up changed/i.test(lg.text || ''))) cat = 'rescheduled';
       else if (leadLogs.length > 0) cat = 'attended';
       else cat = 'untouched';
-      bump(dayKey, cat);
+      bump(dayMap, dayKey, cat);
+      bump(memberMap, l.assign ? l.assign : 'Unassigned', cat);
     });
 
     const days = Object.entries(dayMap).map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
+    // Members sorted by untouched-first (the key accountability metric — who
+    // has the most follow-ups they haven't acted on), then by total.
+    const byMember = Object.entries(memberMap).map(([member, v]) => ({ member, ...v }))
+      .sort((a, b) => (b.untouched - a.untouched) || (b.total - a.total));
     const totals = days.reduce((acc, d) => {
       acc.total += d.total; acc.converted += d.converted; acc.rescheduled += d.rescheduled;
       acc.attended += d.attended; acc.untouched += d.untouched;
       return acc;
-    }, { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 });
-    return { days, totals };
+    }, emptyCounts());
+    return { days, byMember, totals };
   }, [tab, filteredLeadsAtSource, stageLogs, fromDate, toDate, wonStage]);
 
   // ==================================================
@@ -790,6 +803,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
       exportCSV(headers, rows, `Leads_By_${rowLabel}_And_Team_${fromDate}_to_${toDate}`);
     } else if (tab === 'followup-status') {
       const rows = [
+        ['--- By Team Member (who has not acted) ---'],
+        ['Team Member', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched'],
+        ...followupStatus.byMember.map(m => [m.member, m.total, m.converted, m.rescheduled, m.attended, m.untouched]),
+        [''],
+        ['--- By Day ---'],
         ['Date', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched'],
         ...followupStatus.days.map(d => [fmtD(d.date), d.total, d.converted, d.rescheduled, d.attended, d.untouched]),
         ['Total', followupStatus.totals.total, followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched],
@@ -1616,6 +1634,51 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
             <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
             <div className="stat-card sc-red"><div className="lbl">Untouched</div><div className="val">{followupStatus.totals.untouched}</div></div>
+          </div>
+
+          <div className="tw">
+            <div className="tw-head"><h3>By Team Member — who hasn't acted</h3></div>
+            <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
+              Sorted by Untouched (most unactioned follow-ups first). "Untouched" = assigned but no activity logged in this period.
+            </div>
+            <div className="tw-scroll">
+              {followupStatus.byMember.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>No follow-ups due in this period.</div>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Team Member</th>
+                      <th style={{ textAlign: 'right' }}>Total</th>
+                      <th style={{ textAlign: 'right' }}>Converted</th>
+                      <th style={{ textAlign: 'right' }}>Rescheduled</th>
+                      <th style={{ textAlign: 'right' }}>Attended</th>
+                      <th style={{ textAlign: 'right', background: '#fef2f2' }}>Untouched</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {followupStatus.byMember.map(m => (
+                      <tr key={m.member}>
+                        <td><strong>{m.member}</strong></td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{m.total}</td>
+                        <td style={{ textAlign: 'right', color: '#16a34a', fontWeight: m.converted ? 700 : 400 }}>{m.converted || '-'}</td>
+                        <td style={{ textAlign: 'right', color: '#d97706', fontWeight: m.rescheduled ? 700 : 400 }}>{m.rescheduled || '-'}</td>
+                        <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: m.attended ? 700 : 400 }}>{m.attended || '-'}</td>
+                        <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: 700, background: m.untouched ? 'rgba(220,38,38,0.06)' : 'transparent' }}>{m.untouched || '-'}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background: '#f9fafb' }}>
+                      <td><strong>Total</strong></td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.converted}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.rescheduled}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700, background: '#fef2f2' }}>{followupStatus.totals.untouched}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
 
           <div className="tw">
