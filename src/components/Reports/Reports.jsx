@@ -519,7 +519,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // = some other activity happened; untouched = no activity at all.
   // ==================================================
   const followupStatus = useMemo(() => {
-    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 }, noFollowup: 0 };
+    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 }, noFollowup: 0, totalLeads: 0 };
     const fromMs = new Date(fromDate).getTime();
     const toMs = new Date(toDate + 'T23:59:59').getTime();
 
@@ -575,7 +575,12 @@ export default function Reports({ user, perms, ownerId, profile }) {
       acc.attended += d.attended; acc.untouched += d.untouched;
       return acc;
     }, emptyCounts());
-    return { days, byMember, totals, noFollowup };
+    // Total leads CREATED in the selected range (regardless of follow-up).
+    const totalLeads = filteredLeadsAtSource.filter(l => {
+      const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
+      return cr && cr >= fromMs && cr <= toMs;
+    }).length;
+    return { days, byMember, totals, noFollowup, totalLeads };
   }, [tab, filteredLeadsAtSource, stageLogs, fromDate, toDate, wonStage]);
 
   // ==================================================
@@ -1638,6 +1643,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       {tab === 'followup-status' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div className="stat-grid">
+            <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>created in range</div></div>
             <div className="stat-card sc-blue"><div className="lbl">Total Follow-ups</div><div className="val">{followupStatus.totals.total}</div></div>
             <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
             <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
