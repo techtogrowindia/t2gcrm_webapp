@@ -49,20 +49,40 @@ export default function Reports({ user, perms, ownerId, profile }) {
     setCatFilter('');
   }, [tab]);
 
-  // Core: always needed for pl, gst, rev-src, funnel tabs
-  const { data, isLoading: coreLoading } = db.useQuery({
-    invoices: { $: { where: { userId: ownerId } } },
-    expenses: { $: { where: { userId: ownerId } } },
+  // Small config/team data — cheap, and used by nearly every tab (stage & source
+  // config, team member names for the pivots). Always loaded.
+  const { data: baseData } = db.useQuery({
     userProfiles: { $: { where: { userId: ownerId } } },
-    partnerCommissions: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
   });
+
+  // Finance data (invoices/expenses/commissions) is UNBOUNDED and large, so it
+  // is fetched only for the tabs that actually aggregate it. Previously this ran
+  // on every tab — opening "Leads by Source" downloaded every invoice and
+  // expense for nothing.
+  // NOTE: this list is deliberately wider than `needsCore` below (which only
+  // drives the spinner). `products` (productPerf) and `customer-purchase`
+  // (customerPurchase) also read filteredInv — omitting them here would make
+  // those two reports silently render zeros.
+  const needsFinanceData = ['pl', 'gst', 'expenses', 'rev-src', 'products', 'customer-purchase'].includes(tab);
+  const { data: financeData, isLoading: financeLoadingRaw } = db.useQuery(needsFinanceData ? {
+    invoices: { $: { where: { userId: ownerId } } },
+    expenses: { $: { where: { userId: ownerId } } },
+    partnerCommissions: { $: { where: { userId: ownerId } } },
+  } : {});
+  const coreLoading = needsFinanceData && financeLoadingRaw;
+
+  // Merged so every existing `data?.x` reference keeps working unchanged.
+  const data = useMemo(
+    () => ({ ...(baseData || {}), ...(financeData || {}) }),
+    [baseData, financeData]
+  );
 
   // Deferred: subscription for non-leads tabs only; leads replaced by server fetch
   const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source', 'source-team', 'stage-team', 'product-team', 'followup-status'].includes(tab);
   const needsProductsData = tab === 'products';
   const needsCustomersData = tab === 'customer-purchase';
-  const needsStageLogs = ['stage-transitions', 'followup-status'].includes(tab);
+  const needsStageLogs = tab === 'followup-status';
   // Stage Transitions is fetched server-side (see below), NOT via this
   // subscription — db.useQuery({ activityLogs: limit:5000 }) returns
   // arbitrary (often oldest) rows with no ordering, dropping recent
@@ -106,7 +126,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const [stageLogsData, setStageLogsData] = useState([]);
   const [stageLogsLoading, setStageLogsLoading] = useState(false);
   useEffect(() => {
-    if (!['stage-transitions', 'followup-status'].includes(tab) || !ownerId) return;
+    if (tab !== 'followup-status' || !ownerId) return;
     const startMs = new Date(fromDate).getTime();
     const endMs = new Date(toDate + 'T23:59:59').getTime();
     setStageLogsLoading(true);
@@ -638,41 +658,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
     return { byProduct, byCustomer, totalCustomers: byCustomer.length };
   }, [tab, filteredInv]);
 
-  // ==================================================
-  // #4 STAGE TRANSITIONS REPORT — from activityLogs with action='stage-change'
-  // ==================================================
-  const stageTransitions = useMemo(() => {
-    if (tab !== 'stage-transitions') return { matrix: {}, fromStages: [], toStages: [], total: 0, avgTime: {} };
-    const fromMs = new Date(fromDate).getTime();
-    const toMs = new Date(toDate + 'T23:59:59').getTime();
-    const matrix = {}; // matrix[fromStage][toStage] = count
-    const fromSet = new Set();
-    const toSet = new Set();
-    let total = 0;
-    stageLogs.forEach(log => {
-      if (log.createdAt < fromMs || log.createdAt > toMs) return;
-      let from = null, to = null;
-      // Prefer structured fields
-      if (log.action === 'stage-change' && log.fromStage && log.toStage) {
-        from = log.fromStage;
-        to = log.toStage;
-      } else if (log.text) {
-        // Backward compat: parse text like: Stage changed from "X" to "Y"
-        const m = log.text.match(/Stage changed from "([^"]+)" to "([^"]+)"/i);
-        if (m) { from = m[1]; to = m[2]; }
-      }
-      if (!from || !to) return;
-      if (!matrix[from]) matrix[from] = {};
-      matrix[from][to] = (matrix[from][to] || 0) + 1;
-      fromSet.add(from);
-      toSet.add(to);
-      total += 1;
-    });
-    const fromStages = [...fromSet].sort();
-    const toStages = [...toSet].sort();
-    return { matrix, fromStages, toStages, total };
-  }, [tab, stageLogs, fromDate, toDate]);
-
   // Expense Report aggregates (category breakdown + month trend + status totals)
   const expenseReport = useMemo(() => {
     if (tab !== 'expenses') return null;
@@ -803,19 +788,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
         ...customerPurchase.byCustomer.map(c => [c.customer, c.orders, c.productCount, c.revenue]),
       ];
       exportCSV(rows[0], rows.slice(1), `Customer_Purchases_${fromDate}_to_${toDate}`);
-    } else if (tab === 'stage-transitions') {
-      const headers = ['From Stage', ...stageTransitions.toStages, 'Total Out'];
-      const rows = stageTransitions.fromStages.map(fs => {
-        const row = [fs];
-        let tot = 0;
-        stageTransitions.toStages.forEach(ts => {
-          const v = stageTransitions.matrix[fs]?.[ts] || 0;
-          row.push(v); tot += v;
-        });
-        row.push(tot);
-        return row;
-      });
-      exportCSV(headers, rows, `Stage_Transitions_${fromDate}_to_${toDate}`);
     } else if (tab === 'source-team' || tab === 'stage-team' || tab === 'product-team') {
       const m = tab === 'source-team' ? sourceTeamMatrix : tab === 'stage-team' ? stageTeamMatrix : productTeamMatrix;
       const rowLabel = tab === 'source-team' ? 'Source' : tab === 'stage-team' ? 'Stage' : 'Product';
@@ -920,7 +892,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
             ['product-team', 'Leads by Product & Team'],
             ['followup-status', 'Follow-up Status'],
             ['customer-purchase', 'Customer Purchases'],
-            ['stage-transitions', 'Stage Transitions'],
             ['leads', 'Lead Pipeline'],
             ['funnel', 'Sales Funnel'],
             ['rev-src', 'Revenue by Source'],
@@ -1490,101 +1461,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
               </table>
             </div>
           </div>
-        </div>
-      )}
-
-      {tab === 'stage-transitions' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <div className="stat-grid">
-            <div className="stat-card sc-blue"><div className="lbl">Total Transitions</div><div className="val">{stageTransitions.total}</div></div>
-            <div className="stat-card sc-green"><div className="lbl">Unique Stages (From)</div><div className="val">{stageTransitions.fromStages.length}</div></div>
-            <div className="stat-card sc-purple"><div className="lbl">Unique Stages (To)</div><div className="val">{stageTransitions.toStages.length}</div></div>
-          </div>
-
-          <div className="tw">
-            <div className="tw-head"><h3>Stage Transition Matrix (From → To)</h3></div>
-            <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Rows = From Stage · Columns = To Stage · Cell = # of leads that moved
-            </div>
-            <div className="tw-scroll">
-              {stageTransitions.total === 0 ? (
-                <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>
-                  No stage transitions recorded in this period.<br />
-                  <span style={{ fontSize: 11 }}>Tip: Stage changes made going forward will be captured automatically.</span>
-                </div>
-              ) : (
-                <table>
-                  <thead>
-                    <tr>
-                      <th style={{ background: '#f9fafb' }}>From \ To</th>
-                      {stageTransitions.toStages.map(ts => <th key={ts} style={{ textAlign: 'right' }}>{ts}</th>)}
-                      <th style={{ textAlign: 'right', background: '#f3f4f6' }}>Total Out</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stageTransitions.fromStages.map(fs => {
-                      const rowTotal = stageTransitions.toStages.reduce((s, ts) => s + (stageTransitions.matrix[fs]?.[ts] || 0), 0);
-                      const rowMax = Math.max(...stageTransitions.toStages.map(ts => stageTransitions.matrix[fs]?.[ts] || 0), 1);
-                      return (
-                        <tr key={fs}>
-                          <td><strong>{fs}</strong></td>
-                          {stageTransitions.toStages.map(ts => {
-                            const v = stageTransitions.matrix[fs]?.[ts] || 0;
-                            const intensity = v === 0 ? 0 : Math.max(0.15, v / rowMax);
-                            return (
-                              <td key={ts} style={{ textAlign: 'right', background: v > 0 ? `rgba(59, 130, 246, ${intensity * 0.3})` : 'transparent', fontWeight: v > 0 ? 700 : 400, color: v === 0 ? 'var(--muted)' : '#111' }}>
-                                {v || '-'}
-                              </td>
-                            );
-                          })}
-                          <td style={{ textAlign: 'right', fontWeight: 700, background: '#f9fafb' }}>{rowTotal}</td>
-                        </tr>
-                      );
-                    })}
-                    <tr style={{ background: '#f9fafb' }}>
-                      <td><strong>Total In</strong></td>
-                      {stageTransitions.toStages.map(ts => {
-                        const col = stageTransitions.fromStages.reduce((s, fs) => s + (stageTransitions.matrix[fs]?.[ts] || 0), 0);
-                        return <td key={ts} style={{ textAlign: 'right', fontWeight: 700 }}>{col}</td>;
-                      })}
-                      <td style={{ textAlign: 'right', fontWeight: 700, background: '#e5e7eb' }}>{stageTransitions.total}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-
-          {stageTransitions.total > 0 && (
-            <div className="tw">
-              <div className="tw-head"><h3>Top Transition Paths</h3></div>
-              <div style={{ padding: '16px 20px' }}>
-                {(() => {
-                  const flat = [];
-                  stageTransitions.fromStages.forEach(fs => {
-                    stageTransitions.toStages.forEach(ts => {
-                      const v = stageTransitions.matrix[fs]?.[ts] || 0;
-                      if (v > 0) flat.push({ from: fs, to: ts, count: v });
-                    });
-                  });
-                  flat.sort((a, b) => b.count - a.count);
-                  const top = flat.slice(0, 10);
-                  const maxV = Math.max(...top.map(t => t.count), 1);
-                  return top.map((t, i) => (
-                    <div key={i} className="chart-row" style={{ marginBottom: 10 }}>
-                      <div className="chart-label" style={{ width: 280, fontSize: 12, overflow: 'hidden' }} title={`${t.from} → ${t.to}`}>
-                        <span style={{ color: '#6b7280' }}>{t.from}</span> <span style={{ color: '#111', margin: '0 6px' }}>→</span> <strong>{t.to}</strong>
-                      </div>
-                      <div className="chart-bar-wrap" style={{ height: 14 }}>
-                        <div className="chart-bar" style={{ width: `${(t.count / maxV) * 100}%`, background: CHART_COLORS[i % CHART_COLORS.length] }} />
-                      </div>
-                      <div style={{ width: 80, fontSize: 12, marginLeft: 10, fontWeight: 700, textAlign: 'right' }}>{t.count} leads</div>
-                    </div>
-                  ));
-                })()}
-              </div>
-            </div>
-          )}
         </div>
       )}
 
