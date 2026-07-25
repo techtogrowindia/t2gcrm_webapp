@@ -83,7 +83,10 @@ export default function UserProfile({ user, profile, perms, memberProfile, owner
           <div className="fgrid">
             <div className="fg span2"><label>Full Name</label><input value={form.fullName} onChange={e => setForm(p => ({ ...p, fullName: e.target.value }))} /></div>
             <div className="fg"><label>Login Email</label><input value={form.email} disabled style={{ background: '#f8fafc', color: '#94a3b8' }} /></div>
-            <div className="fg"><label>Phone Number</label><input value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
+            {/* type/autoComplete are load-bearing: an untyped input here let the
+                browser autofill a saved *email* into the phone field, which a
+                stray Save Profile would then persist as the user's phone. */}
+            <div className="fg"><label>Phone Number</label><input type="tel" autoComplete="tel" inputMode="tel" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
           </div>
 
           <div style={{ marginTop: 40, paddingTop: 20, borderTop: '1px solid var(--border)' }}>

@@ -262,6 +262,25 @@ export default function MainApp({ user, settings }) {
     profile = safeProfile;
   }
   
+  // Repair a teamMemberId that doesn't match any team member. The PG login path
+  // used to store the credentials.id here, which is a different row from
+  // teamMembers.id, so every lookup keyed off it missed silently (the topbar
+  // showed the business name instead of the user's). The discovery effect above
+  // can't fix it — it only runs when teamInfo is absent, and login always writes
+  // it. Resolve by email (the same match usePermissions uses) and rewrite the
+  // stored value so existing sessions self-correct without a re-login.
+  useEffect(() => {
+    if (!teamInfo?.isTeamMember || !user.email || !teamMembers.length) return;
+    if (teamMembers.some(m => m.id === teamInfo.teamMemberId)) return;
+    const match = teamMembers.find(
+      m => m.email && m.email.toLowerCase() === String(user.email).toLowerCase()
+    );
+    if (!match || match.id === teamInfo.teamMemberId) return;
+    const repaired = { ...teamInfo, teamMemberId: match.id };
+    setTeamInfo(repaired);
+    localStorage.setItem('tc_team_member', JSON.stringify(repaired));
+  }, [teamInfo, teamMembers, user.email]);
+
   // Permissions hook
   const perms = usePermissions(user, profile, teamMembers);
 

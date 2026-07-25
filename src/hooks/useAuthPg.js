@@ -119,7 +119,10 @@ export function pgAuthSetSession(data) {
     localStorage.setItem('tc_team_member', JSON.stringify({
       isTeamMember: true,
       ownerUserId: data.accountId,
-      teamMemberId: data.credentialId,
+      // teamMembers.id — NOT credentialId. They are different rows, and every
+      // teamMembers.find(m => m.id === teamMemberId) in the app depends on this.
+      // Null is fine: MainApp reconciles it from the email match on mount.
+      teamMemberId: data.teamMemberId || null,
     }));
   } else {
     localStorage.removeItem('tc_team_member');

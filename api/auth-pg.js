@@ -121,6 +121,29 @@ async function classifyEmail(email) {
   };
 }
 
+// ── Team member identity ──────────────────────────────────────────
+// Resolves the caller's `team_members.id` — NOT their `credentials.id`. The two
+// are different rows; the client keys every `teamMembers.find(m => m.id === …)`
+// off this value (name in the topbar, role badge, Settings), so returning the
+// credential id makes all of those lookups miss and fall back to the business
+// name. `set-team-password` records the id in credentials.doc; fall back to an
+// email match for any credential written before that.
+async function resolveTeamMemberId(tenantId, cred) {
+  if (cred?.doc?.teamMemberId) return String(cred.doc.teamMemberId);
+  if (!tenantId || !cred?.email) return null;
+  try {
+    const { rows } = await tenantQuery(
+      tenantId,
+      "SELECT id FROM team_members WHERE tenant_id = $1 AND lower(doc->>'email') = lower($2) LIMIT 1",
+      [tenantId, cred.email]
+    );
+    return rows[0]?.id || null;
+  } catch (e) {
+    console.error('[auth-pg] resolveTeamMemberId failed:', e.message);
+    return null;
+  }
+}
+
 // ── Handler ───────────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -213,6 +236,7 @@ export default async function handler(req, res) {
         ok: true, token,
         accountId: tenantId,
         credentialId: cred.id,
+        teamMemberId: isTeam ? await resolveTeamMemberId(tenantId, cred) : null,
         email: cred.email,
         isOwner, isTeam, isPartner,
       });
@@ -313,7 +337,7 @@ export default async function handler(req, res) {
     // a stray partner credential lands in the partner portal after a magic-code
     // login too.
     const { rows: credRows } = await rawQuery(
-      'SELECT id, email, is_team, is_partner, account_id FROM credentials WHERE lower(email) = lower($1)',
+      'SELECT id, email, is_team, is_partner, account_id, doc FROM credentials WHERE lower(email) = lower($1)',
       [email]
     );
     if (!credRows.length) return res.status(404).json({ error: 'Account not found' });
@@ -344,6 +368,7 @@ export default async function handler(req, res) {
       ok: true, token,
       accountId: tenantId,
       credentialId: cred.id,
+      teamMemberId: isTeam ? await resolveTeamMemberId(tenantId, cred) : null,
       email: cred.email,
       isOwner, isTeam, isPartner,
     });

@@ -17,23 +17,30 @@ const VIEW_TITLES = {
 export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMembers }) {
   const { activeView, setActiveView, setSidebarExpanded, mobileSidebarOpen, setMobileSidebarOpen, setNotifOpen } = useApp();
 
+  // The logged-in team member. Matched on id, falling back to email: a session
+  // that logged in before the teamMemberId fix still has the credentials.id
+  // cached, which matches no team member. Without the fallback the lookup misses
+  // and displayName degrades to the *business* name — so every team member at
+  // ARS saw "ARS" in the topbar instead of their own name.
+  const member = useMemo(() => {
+    if (!teamInfo?.isTeamMember || !teamMembers?.length) return null;
+    const email = String(user?.email || '').toLowerCase();
+    return teamMembers.find(m => m.id === teamInfo.teamMemberId)
+      || (email && teamMembers.find(m => m.email?.toLowerCase() === email))
+      || null;
+  }, [teamInfo, teamMembers, user?.email]);
+
   // Find team member role if applicable
-  const roleName = useMemo(() => {
-    if (!teamInfo?.isTeamMember || !teamMembers) return null;
-    const member = teamMembers.find(m => m.id === teamInfo.teamMemberId);
-    return member?.role || 'Team';
-  }, [teamInfo, teamMembers]);
+  const roleName = teamInfo?.isTeamMember ? (member?.role || 'Team') : null;
 
   // Name of the logged-in user — team member's name, else owner's full /
   // business name, else the email. Shown next to the avatar so it's always
   // clear who is logged in.
-  const displayName = useMemo(() => {
-    if (teamInfo?.isTeamMember && teamMembers) {
-      const member = teamMembers.find(m => m.id === teamInfo.teamMemberId);
-      if (member?.name) return member.name;
-    }
-    return user?.profile?.fullName || user?.profile?.bizName || user?.email || 'User';
-  }, [teamInfo, teamMembers, user]);
+  const displayName = member?.name
+    || user?.profile?.fullName
+    || user?.profile?.bizName
+    || user?.email
+    || 'User';
 
   return (
     <div className="topbar">
