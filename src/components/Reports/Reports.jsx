@@ -520,7 +520,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // ==================================================
   const followupStatus = useMemo(() => {
     if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 }, noFollowup: 0, totalLeads: 0 };
-    const fromMs = new Date(fromDate).getTime();
+    // Parse both bounds as LOCAL midnight/end-of-day (not `new Date(fromDate)`,
+    // which parses "YYYY-MM-DD" as UTC and, in +05:30, shifts the window start
+    // to 05:30 local — dropping early-morning follow-ups). followup values are
+    // stored as local "YYYY-MM-DDThh:mm" strings, so the range must be local too.
+    const fromMs = new Date(fromDate + 'T00:00:00').getTime();
     const toMs = new Date(toDate + 'T23:59:59').getTime();
 
     // Index activity logs by lead id (skip the synthetic 'bulk' entity).
