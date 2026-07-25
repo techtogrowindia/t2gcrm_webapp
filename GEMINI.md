@@ -59,7 +59,7 @@ On the PG stack, **login reads Postgres**. Any auth/admin action hardcoded to `/
 
 ## Git Repository
 
-**Remote:** https://github.com/G0kulakrishnan/crm — **always push to `main`**
+**Remote:** https://github.com/techtogrowindia/t2gcrm_webapp — **always push to `main`** (moved here from `G0kulakrishnan/crm` to end credential conflicts; old repo is the `old-gk` remote, kept as backup)
 
 ```bash
 git add <files> && git commit -m "msg" && git pull origin main --rebase && git push origin main
