@@ -519,7 +519,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // = some other activity happened; untouched = no activity at all.
   // ==================================================
   const followupStatus = useMemo(() => {
-    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 }, noFollowup: 0, totalLeads: 0 };
+    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0, upcoming: 0 }, noFollowup: 0, totalLeads: 0 };
     // Parse both bounds as LOCAL midnight/end-of-day (not `new Date(fromDate)`,
     // which parses "YYYY-MM-DD" as UTC and, in +05:30, shifts the window start
     // to 05:30 local — dropping early-morning follow-ups). followup values are
@@ -536,7 +536,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       logsByLead[eid].push(log);
     });
 
-    const emptyCounts = () => ({ total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0 });
+    const emptyCounts = () => ({ total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0, upcoming: 0 });
     const dayMap = {};
     const memberMap = {}; // assigned member -> counts (who has/hasn't acted)
     const bump = (map, key, cat) => {
@@ -544,6 +544,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
       map[key].total += 1;
       map[key][cat] += 1;
     };
+
+    // Start of TODAY (local) — a follow-up due today or earlier is actionable;
+    // a follow-up dated in the future is "upcoming", not overdue.
+    const nowD = new Date();
+    const todayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate()).getTime();
 
     // Leads with NO follow-up date scheduled — a gap worth surfacing. They have
     // no follow-up date to filter by, so they're scoped by creation date within
@@ -559,12 +564,18 @@ export default function Reports({ user, perms, ownerId, profile }) {
       if (fu < fromMs || fu > toMs) return;
       const d = new Date(fu);
       const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const leadLogs = logsByLead[l.id] || [];
+      // Only activity that happened ON/AFTER the follow-up came due counts as
+      // "acting on it" — otherwise an old reschedule (that SET this date) would
+      // wrongly mark a now-overdue follow-up as handled, hiding it from
+      // "untouched" (the bug: everything showed as rescheduled, untouched=0).
+      const dueDayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      const logsSinceDue = (logsByLead[l.id] || []).filter(lg => (lg.createdAt || 0) >= dueDayStart);
       let cat;
       if (l.stage === wonStage) cat = 'converted';
-      else if (leadLogs.some(lg => /follow\s*up changed/i.test(lg.text || ''))) cat = 'rescheduled';
-      else if (leadLogs.length > 0) cat = 'attended';
-      else cat = 'untouched';
+      else if (logsSinceDue.some(lg => /follow\s*up changed/i.test(lg.text || ''))) cat = 'rescheduled';
+      else if (logsSinceDue.length > 0) cat = 'attended';
+      else if (dueDayStart > todayStart) cat = 'upcoming'; // not due yet
+      else cat = 'untouched'; // due/overdue, nothing done since it came due
       bump(dayMap, dayKey, cat);
       bump(memberMap, l.assign ? l.assign : 'Unassigned', cat);
     });
@@ -576,7 +587,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       .sort((a, b) => (b.untouched - a.untouched) || (b.total - a.total));
     const totals = days.reduce((acc, d) => {
       acc.total += d.total; acc.converted += d.converted; acc.rescheduled += d.rescheduled;
-      acc.attended += d.attended; acc.untouched += d.untouched;
+      acc.attended += d.attended; acc.untouched += d.untouched; acc.upcoming += d.upcoming;
       return acc;
     }, emptyCounts());
     // Total leads CREATED in the selected range (regardless of follow-up).
@@ -822,13 +833,13 @@ export default function Reports({ user, perms, ownerId, profile }) {
     } else if (tab === 'followup-status') {
       const rows = [
         ['--- By Team Member (who has not acted) ---'],
-        ['Team Member', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched'],
-        ...followupStatus.byMember.map(m => [m.member, m.total, m.converted, m.rescheduled, m.attended, m.untouched]),
+        ['Team Member', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming'],
+        ...followupStatus.byMember.map(m => [m.member, m.total, m.converted, m.rescheduled, m.attended, m.untouched, m.upcoming]),
         [''],
         ['--- By Day ---'],
-        ['Date', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched'],
-        ...followupStatus.days.map(d => [fmtD(d.date), d.total, d.converted, d.rescheduled, d.attended, d.untouched]),
-        ['Total', followupStatus.totals.total, followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched],
+        ['Date', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming'],
+        ...followupStatus.days.map(d => [fmtD(d.date), d.total, d.converted, d.rescheduled, d.attended, d.untouched, d.upcoming]),
+        ['Total', followupStatus.totals.total, followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched, followupStatus.totals.upcoming],
       ];
       exportCSV(rows[0], rows.slice(1), `Followup_Status_${fromDate}_to_${toDate}`);
     } else if (tab === 'leads') {
@@ -1652,14 +1663,15 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
             <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
             <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
-            <div className="stat-card sc-red"><div className="lbl">Untouched</div><div className="val">{followupStatus.totals.untouched}</div></div>
+            <div className="stat-card sc-red"><div className="lbl">Untouched (overdue)</div><div className="val">{followupStatus.totals.untouched}</div></div>
+            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Upcoming</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not due yet</div></div>
             <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">No Follow-up Date</div><div className="val" style={{ color: '#475569' }}>{followupStatus.noFollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>leads created in range</div></div>
           </div>
 
           <div className="tw">
             <div className="tw-head"><h3>By Team Member</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Sorted by Untouched (most unactioned follow-ups first). "Untouched" = assigned but no activity logged in this period.
+              Sorted by Untouched (most overdue-unactioned first). "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet.
             </div>
             <div className="tw-scroll">
               {followupStatus.byMember.length === 0 ? (
@@ -1674,6 +1686,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Rescheduled</th>
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right', background: '#fef2f2' }}>Untouched</th>
+                      <th style={{ textAlign: 'right' }}>Upcoming</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1685,6 +1698,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                         <td style={{ textAlign: 'right', color: '#d97706', fontWeight: m.rescheduled ? 700 : 400 }}>{m.rescheduled || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: m.attended ? 700 : 400 }}>{m.attended || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: 700, background: m.untouched ? 'rgba(220,38,38,0.06)' : 'transparent' }}>{m.untouched || '-'}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: m.upcoming ? 600 : 400 }}>{m.upcoming || '-'}</td>
                       </tr>
                     ))}
                     <tr style={{ background: '#f9fafb' }}>
@@ -1694,6 +1708,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.rescheduled}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700, background: '#fef2f2' }}>{followupStatus.totals.untouched}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.upcoming}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1704,7 +1719,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div className="tw">
             <div className="tw-head"><h3>Follow-up Status by Day</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Rows = follow-up due date · Inferred from activity — Converted = now in "{wonStage}"; Rescheduled = follow-up date was changed; Attended = other activity logged; Untouched = no activity.
+              Rows = follow-up due date · Converted = now in "{wonStage}"; Rescheduled/Attended = acted on at/after the due date; Untouched = due/overdue with no activity since; Upcoming = not due yet.
             </div>
             <div className="tw-scroll">
               {followupStatus.days.length === 0 ? (
@@ -1721,6 +1736,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Rescheduled</th>
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right' }}>Untouched</th>
+                      <th style={{ textAlign: 'right' }}>Upcoming</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1732,6 +1748,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                         <td style={{ textAlign: 'right', color: '#d97706', fontWeight: d.rescheduled ? 700 : 400 }}>{d.rescheduled || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: d.attended ? 700 : 400 }}>{d.attended || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: d.untouched ? 700 : 400 }}>{d.untouched || '-'}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: d.upcoming ? 600 : 400 }}>{d.upcoming || '-'}</td>
                       </tr>
                     ))}
                     <tr style={{ background: '#f9fafb' }}>
@@ -1741,6 +1758,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.rescheduled}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.untouched}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.upcoming}</td>
                     </tr>
                   </tbody>
                 </table>
