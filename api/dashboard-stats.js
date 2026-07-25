@@ -20,7 +20,10 @@ import { getLeadsForOwner, hasElevatedLeadsRole } from './_leads-cache.js';
 //     sourceCounts: [[source, n], ...],  // sorted desc
 //     recentLeads: [{ id, name, stage, source }, ...],  // last 5 by createdAt
 //     hotLeads: [{ id, name, source, phone, stage, followup, label }, ...],
-//     overdueReminders: [{ id, name }, ...],  // capped 50
+//     overdueReminders: [{ id, name, followup }, ...],  // 50 most overdue;
+//       the TRUE count is totals.overdue — don't report this array's length
+//     todayFollowups: [{ id, name, phone, stage, followup }, ...],  // due in
+//       the caller's local day, earliest first, capped 50; count = totals.today
 //     followupLeads: [{ id, name, phone, email, stage, assign, followup }, ...] // capped 2000, for calendar
 //   }
 export default async function handler(req, res) {
@@ -40,6 +43,11 @@ export default async function handler(req, res) {
       savedLeadStages = null,
       disabledStages = [],
       nowMs = Date.now(),
+      // Today's window, in the CALLER's local day. Sent by the client because
+      // the server's timezone is not the business's — deriving midnight here
+      // would put an IST user's "today" on the wrong day for part of the day.
+      dayStartMs = null,
+      dayEndMs = null,
     } = req.body || {};
 
     if (!ownerId) return res.status(400).json({ error: 'ownerId required' });
@@ -80,6 +88,8 @@ export default async function handler(req, res) {
     let overdue = 0;
     const sourceCounts = new Map();
     const overdueReminders = [];
+    const todayFollowups = [];
+    let todayCount = 0;
     const followupLeads = [];
     const hotCandidates = [];
 
@@ -92,9 +102,22 @@ export default async function handler(req, res) {
       if (fMs && !isNaN(fMs)) {
         if (fMs < nowMs) {
           overdue++;
-          if (overdueReminders.length < 50) {
-            overdueReminders.push({ id: l.id, name: l.name, followup: fMs });
-          }
+          // Collect ALL overdue here and cap AFTER sorting (below). Capping in
+          // this loop took an arbitrary 50 in row order, and row order is not
+          // stable between polls — so each poll returned a different 50, the
+          // notification's per-lead ack ids changed with it, and the alert the
+          // user had just dismissed came straight back with the next 50.
+          overdueReminders.push({ id: l.id, name: l.name, followup: fMs });
+        }
+        // Due today (caller's local day). Computed here rather than client-side
+        // off followupLeads, because that array is capped at the 2000
+        // furthest-future follow-ups — a tenant with more than that would have
+        // today's silently cut off the end.
+        if (dayStartMs != null && dayEndMs != null && fMs >= dayStartMs && fMs < dayEndMs) {
+          todayCount++;
+          todayFollowups.push({
+            id: l.id, name: l.name, phone: l.phone, stage: l.stage, followup: fMs,
+          });
         }
         followupLeads.push({
           id: l.id,
@@ -149,19 +172,37 @@ export default async function handler(req, res) {
     const sourceCountsArr = [...sourceCounts.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 
-    // Most-overdue first (earliest followup date); tiebreak by name.
-    overdueReminders.sort((a, b) => a.followup - b.followup || a.name.localeCompare(b.name));
+    // Most-overdue first (earliest followup date); tiebreak by name then id so
+    // the order is fully deterministic — two polls over the same data must
+    // produce the same 50, or the notification re-fires after being dismissed.
+    overdueReminders.sort((a, b) =>
+      a.followup - b.followup ||
+      String(a.name || '').localeCompare(String(b.name || '')) ||
+      String(a.id).localeCompare(String(b.id))
+    );
+    const cappedOverdue = overdueReminders.slice(0, 50);
+
+    // Earliest-first — the next one due today is the one to act on. Same
+    // deterministic tiebreak as above so the notification's ack ids are stable
+    // between polls and a dismissed alert stays dismissed.
+    todayFollowups.sort((a, b) =>
+      a.followup - b.followup ||
+      String(a.name || '').localeCompare(String(b.name || '')) ||
+      String(a.id).localeCompare(String(b.id))
+    );
 
     return res.status(200).json({
       totals: {
         total: leads.length,
         active,
         overdue,
+        today: todayCount,
       },
       sourceCounts: sourceCountsArr,
       recentLeads,
       hotLeads,
-      overdueReminders,
+      overdueReminders: cappedOverdue,
+      todayFollowups: todayFollowups.slice(0, 50),
       followupLeads: cappedFollowups,
     });
   } catch (err) {

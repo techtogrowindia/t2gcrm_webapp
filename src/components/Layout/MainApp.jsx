@@ -101,8 +101,8 @@ function playNotifSound() {
 // A set of ids persisted to localStorage under storageKey, with a size cap
 // (2000) so it can't grow unbounded over a long-lived tenant. We deliberately
 // do NOT prune ids just because they're absent from the current in-memory
-// data — that was the bug that made the overdue-follow-up toast reappear on
-// every refresh: liveNotifs starts without the overdue bucket (its data is
+// data — that was the bug that made the follow-up toast reappear on
+// every refresh: liveNotifs starts without the today's-follow-ups bucket (its data is
 // fetched async from /api/dashboard-stats), so any "prune ids not currently
 // present" step would wipe ids during the window before that fetch resolves,
 // making the bucket look brand-new again. A size cap achieves bounded growth
@@ -290,8 +290,24 @@ export default function MainApp({ user, settings }) {
   // 2. Load Automation Engine (for background checks)
   useAutomationEngine(user, targetUserId);
 
-  // Lightweight overdue-follow-up data for notifications (replaces 11k+ lead subscription)
-  const [notifLeadData, setNotifLeadData] = useState([]);
+  // Follow-ups due TODAY, from the server (replaces an 11k+ lead subscription).
+  // Deliberately not overdue: with hundreds of overdue leads that alert could
+  // never be cleared — it was permanently present, always read "50" (the cap,
+  // not the real count), and re-fired as the capped sample shifted. Today's
+  // list is small, finite and actionable, so clearing it means something.
+  const [todayLeadData, setTodayLeadData] = useState([]);
+  // True count of today's follow-ups; todayLeadData is capped at 50.
+  const [todayTotal, setTodayTotal] = useState(0);
+  // Notification popups muted (bell toggle). Popups only — the bell panel and
+  // badge keep working, so nothing is lost, it just stops interrupting.
+  const [notifMuted, setNotifMuted] = useState(() => {
+    try { return localStorage.getItem('tc_notif_muted') === '1'; } catch { return false; }
+  });
+  const toggleNotifMuted = () => setNotifMuted(v => {
+    const next = !v;
+    try { localStorage.setItem('tc_notif_muted', next ? '1' : '0'); } catch {}
+    return next;
+  });
   // Every lead with a follow-up set (past or future) — used to compute the
   // "due soon" advance-notice bucket per profile.followupNotifyMinutes.
   const [followupLeadsData, setFollowupLeadsData] = useState([]);
@@ -305,7 +321,7 @@ export default function MainApp({ user, settings }) {
   //     silently mark it read — that was a real bug: a persistent toast would
   //     fire, immediately mark itself "read", and the bell would show "No new
   //     notifications" for an item the user never actually acknowledged (e.g.
-  //     "50 Overdue Follow-ups" toasts, user hasn't dealt with any of them,
+  //     "12 Follow-ups Today" toasts, user hasn't dealt with any of them,
   //     but the bell panel is empty and the badge shows 0 — the toast was the
   //     ONLY chance to see it, with no way to bring it back except a data
   //     change). Keeping them separate means: toast fires once per distinct
@@ -315,11 +331,11 @@ export default function MainApp({ user, settings }) {
   const [toastedNotifIds, persistToastedNotifIds] = usePersistedIdSet(targetUserId ? `tc_toasted_notifs_${targetUserId}` : null);
 
   // Most notif types are 1 lead = 1 stable id, so ackIds is just [n.id]. The
-  // combined overdue-follow-up row is the exception: it represents an entire
+  // combined today's-follow-ups row is the exception: it represents an entire
   // BUCKET of leads under one display id, so it carries its own _ackIds (one
   // per lead in the bucket) — marking read acks each lead individually, so a
   // single new/resolved lead doesn't make the whole bucket look brand new
-  // again (see the comment above the overdue block in liveNotifs).
+  // again (see the comment above that block in liveNotifs).
   const ackIdsOf = (n) => n._ackIds || [n.id];
   const markNotifRead = (notif) => persistReadNotifIds(new Set([...readNotifIds, ...ackIdsOf(notif)]));
   const markAllNotifsRead = () => persistReadNotifIds(new Set([...readNotifIds, ...liveNotifs.flatMap(ackIdsOf)]));
@@ -327,6 +343,13 @@ export default function MainApp({ user, settings }) {
   useEffect(() => {
     if (!targetUserId || !profile) return;
     const fetchNotifs = () => {
+      // "Today" must be the user's local day, not the server's — compute the
+      // window here and send it, or an IST user gets the wrong day's list for
+      // part of the day. Recomputed per poll so a session left open overnight
+      // rolls over to the new day on its own.
+      const d0 = new Date();
+      const dayStartMs = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime();
+      const dayEndMs = dayStartMs + 86400000;
       fetch('/api/dashboard-stats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -335,6 +358,8 @@ export default function MainApp({ user, settings }) {
           savedLeadStages: profile?.leadStages || null,
           disabledStages: profile?.disabledStages || [],
           nowMs: Date.now(),
+          dayStartMs,
+          dayEndMs,
           isOwner: !isTeamMember,
           userEmail: user.email || '',
           myName: perms?.name || '',
@@ -343,7 +368,8 @@ export default function MainApp({ user, settings }) {
       })
         .then(r => r.json())
         .then(d => {
-          setNotifLeadData(d?.overdueReminders || []);
+          setTodayLeadData(d?.todayFollowups || []);
+          setTodayTotal(d?.totals?.today || 0);
           setFollowupLeadsData(d?.followupLeads || []);
         })
         .catch(() => {});
@@ -492,29 +518,42 @@ export default function MainApp({ user, settings }) {
     });
 
     // The Settings > Business > "Follow-up Notification" interval is the master
-    // switch for BOTH follow-up notifications below (overdue + advance "due
+    // switch for BOTH follow-up notifications below (today's + advance "due
     // soon"). 0 = Off silences both — turning it off means the user wants no
     // follow-up alerts at all, not just the advance ones.
     const lookaheadMin = profile?.followupNotifyMinutes || 0;
 
-    // Overdue follow-ups — sourced from server to avoid 11k+ lead subscription.
-    // Sorted ascending (most overdue first) by dashboard-stats.js already, so
-    // [0] is the earliest/most-overdue — use it to rank this entry among others.
-    // This is ONE combined row for display, but tracks read-state PER LEAD via
-    // _ackIds — hashing the whole set into a single id meant that whenever any
-    // one lead entered/left the overdue bucket (which happens constantly as
-    // leads get worked), the entire combined notification looked brand new
-    // and re-toasted, even though most of its leads were already acknowledged.
-    // Per-lead ack ids mean only the genuinely new lead(s) trigger a fresh
-    // toast, and already-seen leads staying overdue don't re-trigger it.
-    if (lookaheadMin > 0 && notifLeadData.length > 0) {
-      const ackIds = notifLeadData.map(l => 'fu-overdue-lead-' + l.id);
-      notifs.push({ id: 'fu-overdue-bucket', _ackIds: ackIds, unread: ackIds.some(aid => !readNotifIds.has(aid)), title: `⏰ ${notifLeadData.length} Overdue Follow-up${notifLeadData.length > 1 ? 's' : ''}`, desc: `Leads: ${notifLeadData.slice(0, 10).map(l => l.name).join(', ')}${notifLeadData.length > 10 ? '...' : ''}`, time: new Date().toLocaleString(), _sortKey: notifLeadData[0].followup });
+    // Today's follow-ups — sourced from server to avoid an 11k+ lead
+    // subscription. Overdue leads are deliberately NOT notified: a business
+    // carrying hundreds of them got an alert it could never clear, so it became
+    // noise and hid the alerts that mattered. Overdue is still visible on the
+    // Dashboard and in the Leads "Overdue" filter, where it belongs.
+    //
+    // ONE combined row for display, but read-state is tracked PER LEAD via
+    // _ackIds — a single id hashed from the whole set would look brand new
+    // (and re-toast) the moment any one lead entered or left the bucket, which
+    // happens all day as follow-ups get worked. Per-lead ids mean only a
+    // genuinely new lead re-alerts; the ones already seen stay quiet.
+    // The list is ordered deterministically server-side, so the ack ids don't
+    // churn between polls and a dismissed alert stays dismissed.
+    if (lookaheadMin > 0 && todayLeadData.length > 0) {
+      const ackIds = todayLeadData.map(l => 'fu-today-lead-' + l.id);
+      // todayLeadData is capped at 50; todayTotal is the real number.
+      const total = todayTotal || todayLeadData.length;
+      notifs.push({
+        id: 'fu-today-bucket',
+        _ackIds: ackIds,
+        unread: ackIds.some(aid => !readNotifIds.has(aid)),
+        title: `📅 ${total} Follow-up${total > 1 ? 's' : ''} Today`,
+        desc: `Leads: ${todayLeadData.slice(0, 10).map(l => l.name).join(', ')}${todayLeadData.length > 10 ? '...' : ''}`,
+        time: new Date().toLocaleString(),
+        _sortKey: todayLeadData[0].followup,
+      });
     }
 
     // Advance-notice follow-ups — "due soon" within the same interval.
     // followupLeadsData already includes both past and future follow-ups,
-    // pre-filtered server-side for team visibility (same as overdue above).
+    // pre-filtered server-side for team visibility (same as today's above).
     // One notification PER LEAD (not a combined line) so the follow-up time
     // and phone number are visible for each.
     if (lookaheadMin > 0) {
@@ -542,7 +581,7 @@ export default function MainApp({ user, settings }) {
     // follow-up) — matches what the user should act on next.
     notifs.sort((a, b) => (a._sortKey ?? Infinity) - (b._sortKey ?? Infinity));
     return notifs;
-  }, [amc, subs, notifLeadData, followupLeadsData, profile?.followupNotifyMinutes, perms, user, readNotifIds]);
+  }, [amc, subs, todayLeadData, todayTotal, followupLeadsData, profile?.followupNotifyMinutes, perms, user, readNotifIds]);
 
   // Proactive alert (toast + sound) the moment a notification FIRST appears —
   // not just when the bell is manually opened. Dedup uses the persisted
@@ -551,17 +590,25 @@ export default function MainApp({ user, settings }) {
   // bell. Marking it read too was a real bug: the bell would show "No new
   // notifications" for something the user never actually acknowledged there
   // (only saw a toast for, possibly closed without reading everything — e.g.
-  // "50 Overdue Follow-ups").
+  // "12 Follow-ups Today").
   //
   // Reading from localStorage (not the in-flight liveNotifs snapshot) also
-  // avoids a race: notifLeadData/followupLeadsData start empty and only
+  // avoids a race: todayLeadData/followupLeadsData start empty and only
   // populate after the async /api/dashboard-stats fetch resolves, so seeding
   // an in-memory ref from liveNotifs on first run would miss the
-  // overdue-follow-up entry and re-toast it once the fetch completed — on
+  // today's-follow-ups entry and re-toast it once the fetch completed — on
   // every single page refresh.
   useEffect(() => {
     const newOnes = liveNotifs.filter(n => ackIdsOf(n).some(aid => !toastedNotifIds.has(aid)));
     if (newOnes.length === 0) return; // nothing genuinely new — never re-toast
+
+    // Muted: skip the popup and the sound, but still record these as toasted so
+    // un-muting doesn't dump the entire backlog that piled up while muted. They
+    // stay unread in the bell, so muting hides the interruption, not the news.
+    if (notifMuted) {
+      persistToastedNotifIds(new Set([...toastedNotifIds, ...newOnes.flatMap(ackIdsOf)]));
+      return;
+    }
 
     newOnes.forEach(n => {
       // persistent: stays on screen until manually closed — a 3.5s
@@ -597,10 +644,10 @@ export default function MainApp({ user, settings }) {
     // Mark the new ones TOASTED (not read) so they can't re-toast on the next
     // refresh, while staying unread/visible in the bell until the user
     // actually clears them there. No pruning of old ids here — that raced the
-    // async overdue fetch and wiped acked ids; bounded growth is handled by
+    // async follow-up fetch and wiped acked ids; bounded growth is handled by
     // the size cap in usePersistedIdSet instead.
     persistToastedNotifIds(new Set([...toastedNotifIds, ...newOnes.flatMap(ackIdsOf)]));
-  }, [liveNotifs, toast, toastedNotifIds]);
+  }, [liveNotifs, toast, toastedNotifIds, notifMuted]);
 
   const amcExpiringCount = amc.filter(a => {
     const isTeam = perms && !perms.isOwner;
@@ -776,7 +823,7 @@ export default function MainApp({ user, settings }) {
         planEnforcement={planEnforcement}
       />
       <div className="main">
-        <Topbar user={{ ...user, profile }} notifCount={liveNotifs.filter(n => n.unread).length} isExpired={isExpired} teamInfo={teamInfo} teamMembers={teamMembers} />
+        <Topbar user={{ ...user, profile }} notifCount={liveNotifs.filter(n => n.unread).length} isExpired={isExpired} teamInfo={teamInfo} teamMembers={teamMembers} notifMuted={notifMuted} onToggleNotifMuted={toggleNotifMuted} />
         <div className="content">
           <Suspense fallback={<LazyFallback />}>
             {currentView.component ? React.cloneElement(currentView.component, { perms, planEnforcement }) : <div className="p-xl">View not found or access denied</div>}

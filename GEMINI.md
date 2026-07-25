@@ -431,6 +431,30 @@ Production has 11k+ leads, 27k+ call logs. Never subscribe to large collections 
 
 **Modal-lazy-fetch pattern** — components that only need leads in a "Select client" dropdown: fetch once on modal open via `/api/leads-page`, cache in `useState`. Don't subscribe.
 
+## Notifications (bell + pop-ups)
+
+Built in `MainApp.jsx` (`liveNotifs`), rendered by `NotifPanel.jsx` + toasts.
+
+- **Follow-up alerts cover TODAY only, never overdue.** A business carrying
+  hundreds of overdue leads got a permanent alert it could never clear, so it
+  became noise. Overdue stays on the Dashboard and the Leads "Overdue" filter.
+- **"Today" is the caller's local day.** The client sends `dayStartMs`/`dayEndMs`
+  to `/api/dashboard-stats`; never derive midnight server-side (VPS TZ != IST).
+- **Server lists must be deterministically ordered before capping.** Sort, then
+  `slice(50)` — never cap inside the scan loop. Combined notifications ack
+  per-lead via `_ackIds`, so an unstable order changes the ids every poll and a
+  dismissed alert comes straight back. This was a real bug.
+- **Report the true count, not the sample length** — `totals.today` /
+  `totals.overdue`, not `array.length` (which is just the cap, hence the
+  perpetual "50 Overdue Follow-ups").
+- **Two separate persisted id sets**, deliberately not shared:
+  `tc_read_notifs_<tenant>` (bell/badge, only user actions) and
+  `tc_toasted_notifs_<tenant>` (pop-up dedup). Toasting must never mark read.
+- **Mute toggle** (`tc_notif_muted`, bell-off icon in Topbar) suppresses pop-ups
+  only — the bell still counts and lists everything. While muted, new items are
+  still marked toasted so un-muting doesn't dump the whole backlog.
+- `profile.followupNotifyMinutes` = 0 silences ALL follow-up alerts.
+
 ### Reports Must Aggregate Over the Full Dataset
 
 Reports are only correct if they see ALL records, then date-filter client-side. Never use a capped/paginated fetch for report data.

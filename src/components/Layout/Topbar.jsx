@@ -14,7 +14,7 @@ const VIEW_TITLES = {
   admin: 'Admin Panel', pos: 'POS Billing',
 };
 
-export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMembers }) {
+export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMembers, notifMuted, onToggleNotifMuted }) {
   const { activeView, setActiveView, setSidebarExpanded, mobileSidebarOpen, setMobileSidebarOpen, setNotifOpen } = useApp();
 
   // The logged-in team member. Matched on id, falling back to email: a session
@@ -69,7 +69,7 @@ export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMemb
 
         {/* Notification Bell */}
         <div className="notif-btn-wrap">
-          <button className="btn-icon" onClick={() => setNotifOpen(v => !v)}>
+          <button className="btn-icon" onClick={() => setNotifOpen(v => !v)} title="Notifications">
             <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
               <path d="M13.73 21a2 2 0 0 1-3.46 0" />
@@ -77,6 +77,38 @@ export default function Topbar({ user, notifCount, isExpired, teamInfo, teamMemb
           </button>
           {notifCount > 0 && <span className="notif-dot" />}
         </div>
+
+        {/* Mute popups. Silences the pop-up only — the bell above still counts
+            and lists everything, so muting hides the interruption, not the news. */}
+        {onToggleNotifMuted && (
+          <button
+            className="btn-icon"
+            onClick={onToggleNotifMuted}
+            aria-pressed={!!notifMuted}
+            title={notifMuted
+              ? 'Notification pop-ups are OFF — click to turn them back on'
+              : 'Turn OFF notification pop-ups (the bell keeps working)'}
+            style={notifMuted ? { color: 'var(--danger)' } : undefined}
+          >
+            <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              {notifMuted ? (
+                <>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  <path d="M18.63 13A17.9 17.9 0 0 1 18 8" />
+                  <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
+                  <path d="M18 8a6 6 0 0 0-9.33-5" />
+                  <line x1="2" y1="2" x2="22" y2="22" />
+                </>
+              ) : (
+                <>
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  <line x1="2" y1="2" x2="22" y2="22" />
+                </>
+              )}
+            </svg>
+          </button>
+        )}
 
         {/* Expiry Notification */}
         {isExpired && (
