@@ -28,6 +28,7 @@ export default async function handler(req, res) {
       srcFilter = '',
       stgFilter = '',
       reqFilter = '',
+      prodFilter = '',   // linked product id, or '__none__' for leads with no product
       search = '',
       visibleStages = null, // null = all stages allowed
       disabledStages = [],
@@ -83,6 +84,11 @@ export default async function handler(req, res) {
       if (srcFilter && l.source !== srcFilter) return false;
       if (stgFilter && l.stage !== stgFilter) return false;
       if (reqFilter && l.requirement !== reqFilter) return false;
+      if (prodFilter) {
+        // '__none__' = leads with no linked product; otherwise match the product id
+        if (prodFilter === '__none__') { if (l.productId) return false; }
+        else if (l.productId !== prodFilter) return false;
+      }
       if (staffFilter) {
         if (staffFilter === 'unassigned') {
           if (l.assign) return false;

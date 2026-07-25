@@ -43,6 +43,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [srcFilter, setSrcFilter] = useState('');
   const [stgFilter, setStgFilter] = useState('');
   const [reqFilter, setReqFilter] = useState('');
+  const [prodFilter, setProdFilter] = useState(''); // linked product id
   // Owners see all leads by default; team members default to their own leads.
   const [staffFilter, setStaffFilter] = useState(() => perms?.isOwner ? '' : 'my');
   const [modal, setModal] = useState(false);
@@ -222,7 +223,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const paginated = leads;
   const filtered = leads; // kept for export/bulk-select; export now uses current page only
 
-  useEffect(() => { setCurrentPage(1); }, [tab, debouncedSearch, srcFilter, stgFilter, reqFilter, staffFilter, pageSize]);
+  useEffect(() => { setCurrentPage(1); }, [tab, debouncedSearch, srcFilter, stgFilter, reqFilter, prodFilter, staffFilter, pageSize]);
 
   // Build the /api/leads-page request body. Extracted so mutations can re-use it.
   const buildPageBody = () => {
@@ -256,6 +257,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       srcFilter,
       stgFilter,
       reqFilter,
+      prodFilter,
       search: debouncedSearch,
       visibleStages: (savedLeadStages && savedLeadStages.length > 0) ? savedLeadStages : null,
       disabledStages,
@@ -300,7 +302,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     ownerId, view, tab, dateMode, sortOrder, customFrom, customTo,
-    debouncedSearch, srcFilter, stgFilter, reqFilter, staffFilter,
+    debouncedSearch, srcFilter, stgFilter, reqFilter, prodFilter, staffFilter,
     currentPage, pageSize, myName, teamCanSeeAllLeads, perms?.isOwner,
     // savedLeadStages is serialised to detect changes
     JSON.stringify(savedLeadStages || []),
@@ -1694,6 +1696,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                     <option value="">All Requirements</option>
                     {activeRequirements.map(r => <option key={r}>{r}</option>)}
                   </select>
+                  {products.length > 0 && (
+                    <select className="si" style={{ width: 150 }} value={prodFilter} onChange={e => setProdFilter(e.target.value)}>
+                      <option value="">All Products</option>
+                      <option value="__none__">— No product —</option>
+                      {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  )}
                   <select className="si" style={{ width: 130 }} value={staffFilter} onChange={e => setStaffFilter(e.target.value)}>
                     {(perms?.isOwner || teamCanSeeAllLeads) ? (
                       <>
@@ -1937,6 +1946,13 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                 <option value="">All Requirements</option>
                 {activeRequirements.map(r => <option key={r}>{r}</option>)}
               </select>
+              {products.length > 0 && (
+                <select className="si" style={{ width: 145, padding: '4px 8px' }} value={prodFilter} onChange={e => setProdFilter(e.target.value)}>
+                  <option value="">All Products</option>
+                  <option value="__none__">— No product —</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              )}
               <select className="si" style={{ width: 120, padding: '4px 8px' }} value={staffFilter} onChange={e => setStaffFilter(e.target.value)}>
                 {(perms?.isOwner || teamCanSeeAllLeads) ? (
                   <>
