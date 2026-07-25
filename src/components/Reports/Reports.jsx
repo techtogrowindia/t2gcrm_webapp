@@ -6,9 +6,18 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const canExport = (perms?.can('Reports', 'create') === true) || (perms?.can('Reports', 'edit') === true);
 
   const [tab, setTab] = useState('pl');
-  const [dateFilter, setDateFilter] = useState('This Month');
-  const [fromDate, setFromDate] = useState(() => { const d = new Date(); d.setMonth(0, 1); return d.toISOString().split('T')[0]; });
-  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0]);
+  // Default to Today — the narrowest useful range, so a report opens fast and
+  // the user widens deliberately. from/to are seeded to today as well (rather
+  // than Jan 1) so the first render already matches the filter: otherwise the
+  // date-dependent fetches fire once for a year-wide range before the effect
+  // corrects them.
+  const todayStr = () => {
+    const d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+  };
+  const [dateFilter, setDateFilter] = useState('Today');
+  const [fromDate, setFromDate] = useState(todayStr);
+  const [toDate, setToDate] = useState(todayStr);
   const [prodPage, setProdPage] = useState(1);
   const [prodSearch, setProdSearch] = useState('');
   const [prodSortBy, setProdSortBy] = useState('revenue'); // revenue | units | name
