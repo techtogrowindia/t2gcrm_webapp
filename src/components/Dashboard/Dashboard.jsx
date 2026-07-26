@@ -395,7 +395,9 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
             {items.length > 0 && <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>{d.total} item{d.total !== 1 ? 's' : ''}</span>}
           </div>
           <div style={{ padding: '4px 0', maxHeight: 320, overflowY: 'auto' }}>
-            {items.length === 0 ? (
+            {!d ? (
+              <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>Loading…</div>
+            ) : items.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>✓ Nothing scheduled for today</div>
             ) : items.map(it => (
               <div
@@ -448,7 +450,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     },
 
     'team-leaderboard': () => {
-      const rows = widgetData['team-leaderboard']?.rows || [];
+      const lb = widgetData['team-leaderboard'];
+      const rows = lb?.rows || [];
       return (
         <div className="tw">
           <div className="tw-head"><h3>🏆 Team Leaderboard</h3><span style={{ fontSize: 11, color: 'var(--muted)' }}>Last 30 days</span></div>
@@ -462,7 +465,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
                   <td>{r.leads}</td>
                 </tr>
               ))}
-              {rows.length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No team activity yet</td></tr>}
+              {!lb && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>Loading…</td></tr>}
+              {lb && rows.length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No team activity yet</td></tr>}
             </tbody>
           </table>
         </div>
@@ -514,7 +518,9 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           <div className="tw">
             <div className="tw-head"><h3>Leads by Source</h3></div>
             <div style={{ padding: '14px 16px' }}>
-              {srcData.length === 0 ? (
+              {!leadStats ? (
+                <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)', fontSize: 12 }}>Loading…</div>
+              ) : srcData.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)', fontSize: 12 }}>No leads yet</div>
               ) : srcData.map(([k, v], i) => (
                 <div key={k} className="chart-row">
@@ -557,7 +563,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
                       <td style={{ color: 'var(--muted)' }}>{l.source}</td>
                     </tr>
                   ))}
-                  {(leadStats?.recentLeads || []).length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No leads yet</td></tr>}
+                  {!leadStats && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>Loading…</td></tr>}
+                  {leadStats && (leadStats.recentLeads || []).length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No leads yet</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -567,8 +574,10 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
             <div className="tw">
               <div className="tw-head"><h3>🔥 Hot Leads (Top Priority)</h3></div>
               <div style={{ padding: '0' }}>
-                {hotLeads.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>Check your active leads</div>
+                {!leadStats ? (
+                  <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>Loading…</div>
+                ) : hotLeads.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>No hot leads right now</div>
                 ) : hotLeads.map(l => (
                   <div key={l.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
                     <div>
@@ -705,7 +714,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
                     <td style={{ fontWeight: 700 }}>{fmt(o.total)}</td>
                   </tr>
                 ))}
-                {ecomStats.recent.length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No recent orders</td></tr>}
+                {!deferredData && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>Loading…</td></tr>}
+                {deferredData && ecomStats.recent.length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No recent orders</td></tr>}
               </tbody>
             </table>
           </div>
@@ -714,7 +724,9 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           <div className="tw">
             <div className="tw-head"><h3>Appointments Today</h3></div>
             <div style={{ padding: 0 }}>
-              {apptStats.todayAppts.length === 0 ? (
+              {!deferredData ? (
+                <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>Loading…</div>
+              ) : apptStats.todayAppts.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>No appointments scheduled for today</div>
               ) : apptStats.todayAppts.sort((a, b) => a.time.localeCompare(b.time)).map(a => (
                 <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
