@@ -5,26 +5,57 @@ import { fmt, fmtD, fmtDT, daysLeft, stageBadgeClass } from '../../utils/helpers
 
 export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const { setActiveView } = useApp();
+
+  // Permission + plan gates, declared before the queries so they drive BOTH what
+  // gets fetched and what gets rendered. Previously every collection was fetched
+  // unconditionally and only the rendering was gated, so a member with no
+  // Invoices permission still downloaded all 5000 invoices into their browser —
+  // invisible in the UI, plainly visible in devtools. Gating the query fixes the
+  // exposure and cuts the payload for restricted members at the same time.
+  // `perms` is null until MainApp resolves it; `=== true` fails closed, so
+  // nothing is fetched until we positively know the caller is allowed.
+  const mod = (key) => planEnforcement?.isModuleEnabled(key) !== false;
+  const allow = (module, planKey) => perms?.can(module, 'list') === true && mod(planKey);
+
+  const gLeads    = allow('Leads', 'leads');
+  const gInvoices = allow('Invoices', 'invoices');
+  const gQuotes   = allow('Quotations', 'quotations');
+  const gProjects = allow('Projects', 'projects');
+  const gAmc      = allow('AMC', 'amc');
+  const gProducts = allow('Products', 'products');
+  const gExpenses = allow('Expenses', 'expenses');
+  const gOrders   = allow('Ecommerce', 'ecommerce');
+  const gAppts    = allow('Appointments', 'appointments');
+  const gPartners = mod('distributors');
+  // P&L needs all three inputs to be TRUE, not just permitted-to-see-invoices.
+  // It renders Expenses and Commissions line items, so gating it on Invoices
+  // alone leaked expense totals to anyone with invoice access. Worse, a missing
+  // input doesn't blank the card — it silently computes as 0, so a member
+  // without Products would see COGS 0 and an inflated Gross Profit. Partial
+  // data here produces confidently wrong numbers, so require the full set.
+  const gPnl = gInvoices && gExpenses && gProducts;
+
   // Core: needed immediately for KPI cards, calendar, recent leads.
   // NOTE: `leads` is NOT subscribed here — at >10k leads the InstantDB
   // subscription silently truncates/times out (symptom: TOTAL LEADS = 0 or
   // 9999). Lead-derived aggregates now come from /api/dashboard-stats below.
   const { data: coreData } = db.useQuery({
-    invoices: { $: { where: { userId: ownerId }, limit: 5000 } },
-    projects: { $: { where: { userId: ownerId }, limit: 2000 } },
-    amc: { $: { where: { userId: ownerId }, limit: 2000 } },
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
+    ...(gInvoices ? { invoices: { $: { where: { userId: ownerId }, limit: 5000 } } } : {}),
+    ...(gProjects ? { projects: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
+    ...(gAmc ? { amc: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
   });
-  // Deferred: charts, ecom, appointments, tasks — non-blocking
+  // Deferred: charts, ecom, appointments — non-blocking.
+  // `tasks` used to be fetched here and was never read by anything in this
+  // component — 2000 rows per dashboard load, for every user, discarded.
   const { data: deferredData } = db.useQuery({
-    quotes: { $: { where: { userId: ownerId }, limit: 5000 } },
-    tasks: { $: { where: { userId: ownerId }, limit: 2000 } },
-    products: { $: { where: { userId: ownerId }, limit: 2000 } },
-    expenses: { $: { where: { userId: ownerId }, limit: 2000 } },
-    orders: { $: { where: { userId: ownerId }, limit: 5000 } },
-    appointments: { $: { where: { userId: ownerId }, limit: 2000 } },
-    partnerCommissions: { $: { where: { userId: ownerId }, limit: 2000 } },
+    ...(gQuotes ? { quotes: { $: { where: { userId: ownerId }, limit: 5000 } } } : {}),
+    ...(gProducts ? { products: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
+    ...(gExpenses ? { expenses: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
+    ...(gOrders ? { orders: { $: { where: { userId: ownerId }, limit: 5000 } } } : {}),
+    ...(gAppts ? { appointments: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
+    ...(gPartners ? { partnerCommissions: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
   });
 
   const profile = coreData?.userProfiles?.[0] || {};
@@ -33,7 +64,6 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const quotesRaw = deferredData?.quotes || [];
   const invoicesRaw = coreData?.invoices || [];
   const projectsRaw = coreData?.projects || [];
-  const tasksRaw = deferredData?.tasks || [];
   const amcRaw = coreData?.amc || [];
   const ordersRaw = deferredData?.orders || [];
   const apptsRaw = deferredData?.appointments || [];
@@ -227,7 +257,6 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
   }, []);
 
-  const mod = (key) => planEnforcement?.isModuleEnabled(key) !== false;
 
   const handleReminderClick = (info) => {
     if (!info) return;
@@ -257,32 +286,32 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
       {/* Stats */}
       <div className="stat-grid">
-        {perms?.can('Leads', 'list') === true && mod('leads') && (
+        {gLeads && (
           <>
             <div className="stat-card sc-green"><div className="lbl">Total Leads</div><div className="val">{stats.total}</div></div>
             <div className="stat-card sc-blue"><div className="lbl">Active</div><div className="val">{stats.active}</div></div>
             <div className="stat-card sc-red"><div className="lbl">Overdue Follow</div><div className="val">{stats.overdue}</div></div>
           </>
         )}
-        {perms?.can('Quotations', 'list') === true && mod('quotations') && (
+        {gQuotes && (
           <div className="stat-card sc-yellow"><div className="lbl">Quotations</div><div className="val">{quotes.length}</div></div>
         )}
-        {perms?.can('Invoices', 'list') === true && mod('invoices') && (
+        {gInvoices && (
           <div className="stat-card sc-purple"><div className="lbl">Invoices</div><div className="val">{invoices.length}</div></div>
         )}
-        {perms?.can('Projects', 'list') === true && mod('projects') && (
+        {gProjects && (
           <div className="stat-card sc-teal"><div className="lbl">Projects</div><div className="val">{stats.inProgress}</div></div>
         )}
-        {perms?.can('AMC', 'list') === true && mod('amc') && (
+        {gAmc && (
           <div className="stat-card sc-red"><div className="lbl">AMC Expiring</div><div className="val">{stats.amcExp}</div></div>
         )}
-        {perms?.can('Products', 'list') === true && mod('products') && (
+        {gProducts && (
           <>
             <div className="stat-card sc-red" style={{ background: '#fff5f5', borderColor: '#feb2b2' }}><div className="lbl" style={{ color: '#c53030' }}>Out of Stock</div><div className="val" style={{ color: '#c53030' }}>{stats.outOfStock}</div></div>
             <div className="stat-card sc-yellow" style={{ background: '#fffff0', borderColor: '#faf089' }}><div className="lbl" style={{ color: '#b7791f' }}>Low Stock</div><div className="val" style={{ color: '#b7791f' }}>{stats.lowStock}</div></div>
           </>
         )}
-        {perms?.can('Ecommerce', 'list') === true && mod('ecommerce') && (
+        {gOrders && (
           <>
             <div className="stat-card sc-blue" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}><div className="lbl" style={{ color: '#1d4ed8' }}>Store Orders</div><div className="val" style={{ color: '#1d4ed8' }}>{ecomStats.total}</div></div>
             <div className="stat-card sc-green" style={{ background: '#f0fdf4', borderColor: '#bbf7d0' }}><div className="lbl" style={{ color: '#15803d' }}>Store Revenue</div><div className="val" style={{ color: '#15803d' }}>{fmt(ecomStats.revenue)}</div></div>
@@ -293,7 +322,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
       {/* Charts Row */}
       <div className="dash-grid-2">
         {/* Source Chart */}
-        {perms?.can('Leads', 'list') === true && mod('leads') && (
+        {gLeads && (
           <div className="tw">
             <div className="tw-head"><h3>Leads by Source</h3></div>
             <div style={{ padding: '14px 16px' }}>
@@ -311,7 +340,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* Reminders */}
-        {((perms?.can('Leads', 'list') === true && mod('leads')) || (perms?.can('AMC', 'list') === true && mod('amc'))) && (
+        {((gLeads) || (gAmc)) && (
           <div className="tw">
             <div className="tw-head">
               <h3>⏰ Upcoming Reminders</h3>
@@ -333,7 +362,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
       {/* Recent Leads + Calendar */}
       <div className="dash-grid-2">
-        {perms?.can('Leads', 'list') === true && mod('leads') && (
+        {gLeads && (
           <>
             <div className="tw">
               <div className="tw-head"><h3>Recent Leads</h3></div>
@@ -378,7 +407,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* P&L Summary */}
-        {perms?.can('Invoices', 'list') === true && mod('invoices') && (
+        {gPnl && (
           <div className="tw">
             <div className="tw-head"><h3>💰 Profit &amp; Loss Summary</h3><span style={{ fontSize: 11, color: 'var(--muted)' }}>Based on Paid Invoices</span></div>
             <div className="pnl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
@@ -401,7 +430,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* Revenue Trend */}
-        {perms?.can('Invoices', 'list') === true && mod('invoices') && (
+        {gInvoices && (
           <div className="tw">
             <div className="tw-head"><h3>📈 Monthly Revenue Trend</h3></div>
             <div style={{ padding: '24px 20px', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10, height: 160 }}>
@@ -420,7 +449,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         )}
 
         {/* Calendar */}
-        {perms?.can('Leads', 'list') === true && mod('leads') && (
+        {gLeads && (
           <div className="tw">
             <div className="tw-head">
               <h3>Follow-Up Calendar</h3>
@@ -489,7 +518,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
       {/* Ecom & Appointments Row */}
       <div className="dash-grid-2" style={{ marginTop: 18 }}>
-        {perms?.can('Ecommerce', 'list') === true && mod('ecommerce') && (
+        {gOrders && (
           <div className="tw">
             <div className="tw-head"><h3>Recent Store Orders</h3></div>
             <table>
@@ -511,7 +540,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           </div>
         )}
 
-        {perms?.can('Appointments', 'list') === true && mod('appointments') && (
+        {gAppts && (
           <div className="tw">
             <div className="tw-head"><h3>Appointments Today</h3></div>
             <div style={{ padding: 0 }}>
