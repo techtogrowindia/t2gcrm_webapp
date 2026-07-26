@@ -153,7 +153,15 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       const r = await fetch(`/api/data/leads?id=${encodeURIComponent(openId)}`, { method: 'GET' });
       if (!r.ok) return;
       const json = await r.json();
-      const found = Array.isArray(json?.items) ? json.items.find(l => l.id === openId) : (json?.item || null);
+      // /api/data returns { success, data: [...] } — this used to look for
+      // `items`/`item`, which never exist, so `found` was always null and the
+      // lead silently never opened. That broke every tc_open_lead deep link,
+      // including notification click-through. Keep the old keys as fallbacks
+      // in case another caller ever returns that shape.
+      const list = Array.isArray(json?.data) ? json.data
+        : Array.isArray(json?.items) ? json.items
+        : (json?.item ? [json.item] : []);
+      const found = list.find(l => l.id === openId) || null;
       if (found) {
         setViewLead(found);
         localStorage.removeItem('tc_open_lead');

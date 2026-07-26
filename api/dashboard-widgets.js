@@ -147,7 +147,7 @@ export default async function handler(req, res) {
         const f = typeof l.followup === 'number' ? l.followup : Date.parse(l.followup);
         if (!f || isNaN(f) || f < dayStartMs || f >= dayEndMs) continue;
         if (!mine(l.assign)) continue;
-        items.push({ at: f, kind: 'followup', id: l.id, title: l.name, sub: l.phone || '', tag: l.stage || '' });
+        items.push({ at: f, kind: 'followup', id: l.id, title: l.name, phone: l.phone || '', email: l.email || '', sub: l.phone || '', tag: l.stage || '' });
       }
       for (const t of (other.tasks || [])) {
         const due = typeof t.dueDate === 'number' ? t.dueDate : Date.parse(t.dueDate);
@@ -161,7 +161,7 @@ export default async function handler(req, res) {
         // instant in the same local frame the caller's day window came from.
         const at = Date.parse(`${a.date}T${(a.time || '00:00')}:00`);
         if (!at || isNaN(at) || at < dayStartMs || at >= dayEndMs) continue;
-        items.push({ at, kind: 'appointment', id: a.id, title: a.customerName || 'Appointment', sub: a.service || '', tag: a.customerPhone || '' });
+        items.push({ at, kind: 'appointment', id: a.id, title: a.customerName || 'Appointment', phone: a.customerPhone || '', sub: a.service || '', tag: a.customerPhone || '' });
       }
       items.sort((x, y) => x.at - y.at);
       out['my-day'] = { items: items.slice(0, 40), total: items.length };

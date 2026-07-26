@@ -346,6 +346,17 @@ export default async function handler(req, res) {
 
         const counts = { all: result.length, today: cToday, tomorrow: cTomorrow };
 
+        // Single-lead lookup, used by deep links (notification click-through,
+        // My Day, dashboard tiles). Filtered here so opening one lead doesn't
+        // ship the whole 11k-row list to the browser to find it. Runs AFTER
+        // the visibility filters above, so it can't be used to fetch a lead
+        // the caller isn't allowed to see.
+        const singleId = req.query.id ? String(req.query.id) : null;
+        if (singleId) {
+          const one = result.filter(l => l.id === singleId);
+          return res.status(200).json({ success: true, data: one, count: one.length, counts });
+        }
+
         return res.status(200).json({
           success: true,
           data: result,
