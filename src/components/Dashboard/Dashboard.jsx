@@ -844,6 +844,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           layout={layout}
           ctx={permCtx}
           onAdd={addWidget}
+          onRemove={removeWidget}
           onReset={resetLayout}
           onClose={() => setEditing(false)}
         />

@@ -1,106 +1,142 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { WIDGETS, isWidgetAllowed } from '../../../api/_shared-dashboard-widgets';
 
-// The "Add widget" catalogue, shown while the dashboard is in edit mode.
+// Compact widget chooser: one small button that opens a multi-select dropdown.
 //
-// Numbers and panels are split into their own labelled rows and drawn
-// differently. They used to sit in one flat list separated only by a small
-// grey "· section" suffix, which meant you couldn't tell whether you were
-// adding a single figure or a whole scrolling table until you'd added it.
+// This was previously a flat wall of chips — every widget in every group, always
+// on screen, pushing the actual dashboard below the fold while editing. The
+// catalogue is reference material, not something you stare at, so it collapses.
 //
-// Widgets the viewer isn't entitled to are rendered LOCKED rather than hidden.
-// Hiding them makes the catalogue look arbitrary ("why does Bhavya have a
-// revenue tile and I don't?"); showing them greyed explains the gap and gives
-// the owner an obvious place to grant access. The lock is cosmetic — the real
-// enforcement is in the widget endpoint, which refuses to compute anything the
-// caller can't see even if they hand-edit their saved layout.
-export default function WidgetPicker({ layout, ctx, onAdd, onReset, onClose }) {
-  const groups = useMemo(() => {
-    const out = new Map();
-    for (const [id, w] of Object.entries(WIDGETS)) {
-      if (!out.has(w.group)) out.set(w.group, { tile: [], section: [] });
-      out.get(w.group)[w.kind].push({ id, ...w, allowed: isWidgetAllowed(id, ctx) });
-    }
-    // Groups where the viewer can't use a single widget are noise — drop them.
-    return [...out.entries()].filter(([, g]) => [...g.tile, ...g.section].some(i => i.allowed));
-  }, [ctx]);
+// Ticking adds, unticking removes: the dropdown is the single place to manage
+// what's on the dashboard, rather than "add here, remove over there".
+//
+// NOT wrapped in .tw — that class sets `overflow: hidden`, which would clip the
+// absolutely positioned menu.
+//
+// Widgets the viewer isn't entitled to stay listed but locked. Hiding them makes
+// the catalogue look arbitrary ("why does Bhavya have a revenue tile?"); showing
+// them explains the gap and gives the owner somewhere to grant access from. The
+// lock is cosmetic — the widget endpoint refuses to compute anything the caller
+// can't see, even if they hand-edit their saved layout.
+export default function WidgetPicker({ layout, ctx, onAdd, onRemove, onReset, onClose }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    const onEsc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDocDown);
+    document.addEventListener('keydown', onEsc);
+    return () => { document.removeEventListener('mousedown', onDocDown); document.removeEventListener('keydown', onEsc); };
+  }, [open]);
 
   const active = useMemo(
     () => new Set([...(layout?.tiles || []), ...(layout?.sections || [])]),
     [layout]
   );
 
-  const Chip = ({ w }) => {
-    const on = active.has(w.id);
-    const isTile = w.kind === 'tile';
-    const base = {
-      textAlign: 'left', borderRadius: 8, padding: isTile ? '7px 11px' : '9px 12px',
-      display: 'flex', flexDirection: 'column', gap: 2,
-      width: isTile ? 'auto' : 230, minWidth: isTile ? 118 : 230,
-    };
-    if (!w.allowed) {
-      return (
-        <span title="Not available with your role or plan"
-          style={{ ...base, border: '1px dashed var(--border)', background: 'var(--bg)', color: 'var(--muted)', opacity: 0.7 }}>
-          <span style={{ fontSize: 11.5, fontWeight: 600 }}>🔒 {w.label}</span>
-          {!isTile && <span style={{ fontSize: 10.5, lineHeight: 1.4 }}>{w.desc}</span>}
-        </span>
-      );
+  const groups = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const out = new Map();
+    for (const [id, w] of Object.entries(WIDGETS)) {
+      if (needle && !(`${w.label} ${w.desc}`.toLowerCase().includes(needle))) continue;
+      if (!out.has(w.group)) out.set(w.group, { tile: [], section: [] });
+      out.get(w.group)[w.kind].push({ id, ...w, allowed: isWidgetAllowed(id, ctx) });
     }
+    // Groups with nothing the viewer can use are noise.
+    return [...out.entries()].filter(([, g]) => [...g.tile, ...g.section].some(i => i.allowed));
+  }, [ctx, q]);
+
+  const allowedCount = useMemo(
+    () => Object.keys(WIDGETS).filter(id => isWidgetAllowed(id, ctx)).length, [ctx]
+  );
+
+  const Row = ({ w }) => {
+    const on = active.has(w.id);
     return (
-      <button
-        onClick={() => !on && onAdd(w.id, w.kind)}
-        disabled={on}
-        title={on ? 'Already on your dashboard' : w.desc}
+      <label
+        title={w.allowed ? w.desc : 'Not available with your role or plan'}
         style={{
-          ...base,
-          cursor: on ? 'default' : 'pointer',
-          border: '1px solid ' + (on ? 'var(--border)' : 'var(--accent)'),
-          background: on ? 'var(--bg)' : 'transparent',
-          color: on ? 'var(--muted)' : 'var(--accent)',
+          display: 'flex', gap: 9, alignItems: 'flex-start', padding: '6px 12px',
+          cursor: w.allowed ? 'pointer' : 'default', opacity: w.allowed ? 1 : 0.5,
         }}
+        onMouseEnter={e => { if (w.allowed) e.currentTarget.style.background = 'var(--bg)'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
       >
-        <span style={{ fontSize: 11.5, fontWeight: 700 }}>{on ? '✓ ' : '+ '}{w.label}</span>
-        <span style={{ fontSize: 10.5, lineHeight: 1.4, color: on ? 'var(--muted)' : 'var(--text)', opacity: on ? 1 : 0.75, fontWeight: 400 }}>
-          {w.desc}
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={!w.allowed}
+          onChange={() => (on ? onRemove(w.id, w.kind) : onAdd(w.id, w.kind))}
+          style={{ marginTop: 3, flexShrink: 0 }}
+        />
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>{!w.allowed && '🔒 '}{w.label}</span>
+          <span style={{ display: 'block', fontSize: 10.5, color: 'var(--muted)', lineHeight: 1.35 }}>{w.desc}</span>
         </span>
-      </button>
+      </label>
     );
   };
 
-  const Row = ({ title, hint, items }) => items.length === 0 ? null : (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginBottom: 6 }}>
-        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: 'var(--text)' }}>{title}</span>
-        <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>{hint}</span>
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
-        {items.map(w => <Chip key={w.id} w={w} />)}
-      </div>
+  const SubHead = ({ children }) => (
+    <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: 'var(--muted)', padding: '5px 12px 2px' }}>
+      {children}
     </div>
   );
 
   return (
-    <div className="tw" style={{ marginBottom: 18 }}>
-      <div className="tw-head">
-        <h3>Add widget</h3>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="btn btn-secondary btn-sm" onClick={onReset}>Reset to default</button>
-          <button className="btn btn-primary btn-sm" onClick={onClose}>Done</button>
-        </div>
-      </div>
-      <div style={{ padding: '12px 16px 16px' }}>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 14 }}>
-          Your layout only — nobody else's dashboard changes. Drag widgets to reorder them.
-        </div>
-        {groups.map(([group, g], gi) => (
-          <div key={group} style={{ marginBottom: 18, paddingTop: gi === 0 ? 0 : 14, borderTop: gi === 0 ? 'none' : '1px solid var(--border)' }}>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 10 }}>{group}</div>
-            <Row title="Numbers" hint="one figure, click it to open the full list" items={g.tile} />
-            <Row title="Panels" hint="a list, table or chart" items={g.section} />
+    <div ref={wrapRef} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16, position: 'relative', zIndex: 30 }}>
+      <div style={{ position: 'relative' }}>
+        <button className="btn btn-secondary btn-sm" onClick={() => setOpen(o => !o)}>
+          ⊞ Widgets ({active.size}/{allowedCount}) ▾
+        </button>
+
+        {open && (
+          <div
+            style={{
+              position: 'absolute', top: 'calc(100% + 6px)', left: 0, width: 330,
+              maxHeight: 420, overflowY: 'auto', background: 'var(--surface)',
+              border: '1px solid var(--border)', borderRadius: 10,
+              boxShadow: '0 10px 28px rgba(0,0,0,.14)', zIndex: 60, paddingBottom: 6,
+            }}
+          >
+            <div style={{ position: 'sticky', top: 0, background: 'var(--surface)', padding: '10px 12px 8px', borderBottom: '1px solid var(--border)', zIndex: 1 }}>
+              <input
+                autoFocus
+                value={q}
+                onChange={e => setQ(e.target.value)}
+                placeholder="Search widgets…"
+                style={{ width: '100%', boxSizing: 'border-box', fontSize: 12, padding: '6px 9px' }}
+              />
+              <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>
+                Tick to add, untick to remove. Your layout only.
+              </div>
+            </div>
+
+            {groups.length === 0 && (
+              <div style={{ padding: '18px 12px', textAlign: 'center', color: 'var(--muted)', fontSize: 12 }}>
+                No widgets match “{q}”
+              </div>
+            )}
+
+            {groups.map(([group, g]) => (
+              <div key={group} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 4 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, padding: '9px 12px 3px' }}>{group}</div>
+                {g.tile.length > 0 && <SubHead>Numbers · single figure</SubHead>}
+                {g.tile.map(w => <Row key={w.id} w={w} />)}
+                {g.section.length > 0 && <SubHead>Panels · list, table or chart</SubHead>}
+                {g.section.map(w => <Row key={w.id} w={w} />)}
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
+
+      <button className="btn btn-secondary btn-sm" onClick={onReset}>Reset to default</button>
+      <button className="btn btn-primary btn-sm" onClick={onClose}>Done</button>
+      <span style={{ fontSize: 11, color: 'var(--muted)' }}>Drag a widget to reorder · ⇤⇥ sets panel width</span>
     </div>
   );
 }
