@@ -429,6 +429,44 @@ Production has 11k+ leads, 27k+ call logs. Never subscribe to large collections 
 
 **Modal-lazy-fetch pattern** — components that only need leads in a "Select client" dropdown: fetch once on modal open via `/api/leads-page`, cache in `useState`. Don't subscribe.
 
+## Customizable Dashboard
+
+Each person arranges their own dashboard; nobody else's changes.
+
+- **Catalogue:** `api/_shared-dashboard-widgets.js` — imported by BOTH browser
+  and server. Every widget carries its `requires: ['Module:planKey']` gate
+  (`match:'any'` for either-or). **Never fork this list** — two copies drift,
+  and the drift always fails open.
+- **Layout storage:** `userProfiles.dashboardLayout` (owner) /
+  `memberProfiles.dashboardLayout` (member, keyed by `doc.userId`). Both are
+  `doc jsonb` — no migration. localStorage mirrors it so a layout survives a
+  failed write. Presets are COPIED on first login, never linked.
+- **Data:** original widgets use Dashboard.jsx's own queries (permission-gated
+  at the QUERY, not just the render). Widgets marked `server:true` come from
+  `POST /api/dashboard-widgets` — one batched request, identity from the
+  verified bearer token, permissions resolved by `api/_shared-perms.js`.
+- **`_shared-perms.js` mirrors `usePermissions` + `usePlanEnforcement`** —
+  including the legacy `string[]` perms format and "missing plan key =
+  disabled". Fails closed. Keep it in step when either hook changes.
+
+**Adding a widget:** (1) entry in `_shared-dashboard-widgets.js`, (2) renderer
+in Dashboard.jsx `TILES`/`SECTIONS` (id must match exactly), (3) if
+`server:true`, compute it in `dashboard-widgets.js` AND add it to the `need`
+map — a widget missing from `need` silently reports zeros. (4) `to:` must be a
+real view id from MainApp's `views`.
+
+**Gotchas hit building this:**
+- `shell()` is a plain function, not a component. A component declared in a
+  render body remounts its children every pass — the calendar reset its month.
+- Widgets are only wrapped while editing: `.stat-grid`/`.dash-grid-2` style
+  DIRECT children, so an always-on wrapper changes the layout.
+- Drill-down clones the element instead of wrapping, for the same reason.
+
+⚠️ **Not enforced anywhere:** `api/data-pg.js` applies tenant isolation (RLS)
+only — no per-module role check. A team member can read any collection in
+their own tenant by calling it directly. App-wide gap; the widget gate does
+not close it.
+
 ## Notifications (bell + pop-ups)
 
 Built in `MainApp.jsx` (`liveNotifs`), rendered by `NotifPanel.jsx` + toasts.
