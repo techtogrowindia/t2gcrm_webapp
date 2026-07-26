@@ -115,9 +115,24 @@ export function useDashboardLayout({ userId, isOwner, role, profile, memberProfi
     });
   }, [persist]);
 
+  /**
+   * Toggle a section between half width (default) and full width. Stored as a
+   * sparse map so the common case costs nothing and an unknown id can't leave
+   * a stale entry behind.
+   */
+  const toggleSpan = useCallback((id) => {
+    setLayoutState(cur => {
+      const spans = { ...(cur?.spans || {}) };
+      if (spans[id] === 2) delete spans[id]; else spans[id] = 2;
+      const next = { ...cur, spans };
+      persist(next);
+      return next;
+    });
+  }, [persist]);
+
   const resetLayout = useCallback(() => {
     persist(presetFor({ isOwner, role }));
   }, [persist, isOwner, role]);
 
-  return { layout, addWidget, removeWidget, moveWidget, reorderWidget, resetLayout, saveError };
+  return { layout, addWidget, removeWidget, moveWidget, reorderWidget, toggleSpan, resetLayout, saveError };
 }

@@ -19,10 +19,10 @@
 //   match 'any'           — at least one pair must pass
 export const WIDGETS = {
   // ── Tiles ────────────────────────────────────────────────────────
-  'leads-total':    { label: 'Total leads',      kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
+  'leads-total':    { label: 'Total leads',      kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads', filter: { tab: 'all' } },
   'leads-active':   { label: 'Active leads',     kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
-  'leads-overdue':  { label: 'Overdue follow-ups', kind: 'tile', group: 'Leads',  requires: ['Leads:leads'], to: 'leads' },
-  'leads-today':    { label: 'Follow-ups today', kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
+  'leads-overdue':  { label: 'Overdue follow-ups', kind: 'tile', group: 'Leads',  requires: ['Leads:leads'], to: 'leads', filter: { tab: 'overdue', dateMode: 'followup' } },
+  'leads-today':    { label: 'Follow-ups today', kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads', filter: { tab: 'today', dateMode: 'followup' } },
   'quotes-count':   { label: 'Quotations',       kind: 'tile', group: 'Finance',  requires: ['Quotations:quotations'], to: 'quotations' },
   'invoices-count': { label: 'Invoices',         kind: 'tile', group: 'Finance',  requires: ['Invoices:invoices'], to: 'invoices' },
   'projects-active':{ label: 'Projects running', kind: 'tile', group: 'Work',     requires: ['Projects:projects'], to: 'projects' },
@@ -98,10 +98,13 @@ export const PRESETS = {
   sales: {
     tiles: ['leads-today', 'leads-overdue', 'calls-today', 'target-progress'],
     sections: ['my-day', 'reminders', 'followup-calendar', 'leads-hot'],
+    // My day is the widget people actually work from — give it the full width.
+    spans: { 'my-day': 2 },
   },
   manager: {
     tiles: ['leads-total', 'leads-active', 'leads-overdue', 'leads-today', 'calls-today', 'leads-untouched'],
     sections: ['my-day', 'team-leaderboard', 'leads-source', 'reminders', 'revenue-trend', 'call-heatmap'],
+    spans: { 'my-day': 2, 'call-heatmap': 2 },
   },
 };
 

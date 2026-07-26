@@ -97,7 +97,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
 
   // Per-user layout. `ready` waits for both the source record and perms so the
   // saved layout isn't briefly replaced by a preset on first paint.
-  const { layout, addWidget, removeWidget, moveWidget, reorderWidget, resetLayout, saveError } = useDashboardLayout({
+  const { layout, addWidget, removeWidget, moveWidget, reorderWidget, toggleSpan, resetLayout, saveError } = useDashboardLayout({
     userId: user?.id,
     isOwner: perms?.isOwner === true,
     role: perms?.role,
@@ -750,7 +750,15 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     const to = WIDGETS[id]?.to;
     if (!to || editing) return node;
     return React.cloneElement(node, {
-      onClick: () => setActiveView(to),
+      onClick: () => {
+        // Carry the tile's filter across so the list you land on matches the
+        // number you clicked. Without this the Overdue tile opened Leads on
+        // the default "All" tab — which looks like a filter that didn't work.
+        const f = WIDGETS[id].filter;
+        if (f?.tab) localStorage.setItem('tc_leads_tab', f.tab);
+        if (f?.dateMode) localStorage.setItem('tc_leads_date_mode', f.dateMode);
+        setActiveView(to);
+      },
       title: `Open ${WIDGETS[id].label}`,
       style: { ...(node.props.style || {}), cursor: 'pointer' },
     });
@@ -763,8 +771,20 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   // When not editing it returns the node untouched, so the normal dashboard is
   // pixel-identical to before (.stat-grid and .dash-grid-2 style their DIRECT
   // children, so an always-on wrapper would change the layout).
+  // `node` must be the real element (not a Fragment) — cloneElement can't put
+  // style or key handling on a Fragment, and both are needed here.
   const shell = (id, kind, node) => {
-    if (!editing) return node;
+    const full = kind === 'section' && layout?.spans?.[id] === 2;
+    const spanStyle = full ? { gridColumn: '1 / -1' } : null;
+    // Full-width sections span both columns. Applied by cloning (not wrapping)
+    // when idle, so .tw stays the direct child of .dash-grid-2; while editing
+    // the wrapper IS the grid child, so it carries the span instead.
+    if (!editing) {
+      return React.cloneElement(node, {
+        key: id,
+        ...(spanStyle ? { style: { ...(node.props.style || {}), ...spanStyle } } : {}),
+      });
+    }
     const list = kind === 'tile' ? shownTiles : shownSections;
     const i = list.indexOf(id);
     const btn = { border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--muted)', cursor: 'pointer', borderRadius: 5, fontSize: 12, lineHeight: 1, padding: '3px 6px' };
@@ -782,12 +802,15 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           reorderWidget(d.id, kind, list.indexOf(id));
           dragRef.current = null;
         }}
-        style={{ position: 'relative', outline: '1px dashed var(--border)', outlineOffset: 2, borderRadius: 12, cursor: 'grab' }}
+        style={{ position: 'relative', outline: '1px dashed var(--border)', outlineOffset: 2, borderRadius: 12, cursor: 'grab', ...(spanStyle || {}) }}
       >
         {node}
         <div style={{ position: 'absolute', top: 6, right: 6, display: 'flex', gap: 3, zIndex: 3 }}>
           <button style={{ ...btn, opacity: i <= 0 ? 0.4 : 1 }} disabled={i <= 0} title="Move earlier" onClick={() => moveWidget(id, kind, -1)}>←</button>
           <button style={{ ...btn, opacity: i >= list.length - 1 ? 0.4 : 1 }} disabled={i >= list.length - 1} title="Move later" onClick={() => moveWidget(id, kind, 1)}>→</button>
+          {kind === 'section' && (
+            <button style={btn} title={full ? 'Make half width' : 'Make full width'} onClick={() => toggleSpan(id)}>{full ? '⇥' : '⇤⇥'}</button>
+          )}
           <button style={{ ...btn, color: 'var(--danger, #dc2626)' }} title="Remove from my dashboard" onClick={() => removeWidget(id, kind)}>✕</button>
         </div>
       </div>
@@ -829,14 +852,14 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
       {/* Tiles */}
       {shownTiles.length > 0 && (
         <div className="stat-grid">
-          {shownTiles.map(id => shell(id, 'tile', <React.Fragment key={id}>{tileNode(id)}</React.Fragment>))}
+          {shownTiles.map(id => shell(id, 'tile', tileNode(id)))}
         </div>
       )}
 
       {/* Sections */}
       {shownSections.length > 0 && (
         <div className="dash-grid-2">
-          {shownSections.map(id => shell(id, 'section', <React.Fragment key={id}>{SECTIONS[id]()}</React.Fragment>))}
+          {shownSections.map(id => shell(id, 'section', SECTIONS[id]()))}
         </div>
       )}
 

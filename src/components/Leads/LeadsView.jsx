@@ -31,7 +31,16 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const showPartners = planEnforcement?.isModuleEnabled('distributors') !== false;
 
   const [view, setView] = useState('list'); // 'list' | 'kanban'
-  const [tab, setTab] = useState('all');
+  // A dashboard tile can hand us the filter it was summarising, so the list
+  // matches the number that was clicked. Consumed once then cleared — leaving
+  // it set would pin the tab on every later visit.
+  const [tab, setTab] = useState(() => {
+    try {
+      const hint = localStorage.getItem('tc_leads_tab');
+      if (hint) { localStorage.removeItem('tc_leads_tab'); return hint; }
+    } catch {}
+    return 'all';
+  });
   const [dateMode, setDateMode] = useState(() => localStorage.getItem('tc_leads_date_mode') || 'followup'); // 'followup' | 'created'
   const [sortOrder, setSortOrder] = useState(() => {
     try { return JSON.parse(localStorage.getItem(`leadView_${user.email}`))?.sortOrder || 'newest'; }
