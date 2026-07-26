@@ -19,43 +19,43 @@
 //   match 'any'           — at least one pair must pass
 export const WIDGETS = {
   // ── Tiles ────────────────────────────────────────────────────────
-  'leads-total':    { label: 'Total leads',      kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads', filter: { tab: 'all' } },
-  'leads-active':   { label: 'Active leads',     kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
-  'leads-overdue':  { label: 'Overdue follow-ups', kind: 'tile', group: 'Leads',  requires: ['Leads:leads'], to: 'leads', filter: { tab: 'overdue', dateMode: 'followup' } },
-  'leads-today':    { label: 'Follow-ups today', kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads', filter: { tab: 'today', dateMode: 'followup' } },
-  'quotes-count':   { label: 'Quotations',       kind: 'tile', group: 'Finance',  requires: ['Quotations:quotations'], to: 'quotations' },
-  'invoices-count': { label: 'Invoices',         kind: 'tile', group: 'Finance',  requires: ['Invoices:invoices'], to: 'invoices' },
-  'projects-active':{ label: 'Projects running', kind: 'tile', group: 'Work',     requires: ['Projects:projects'], to: 'projects' },
-  'amc-expiring':   { label: 'AMC expiring',     kind: 'tile', group: 'Work',     requires: ['AMC:amc'], to: 'amc' },
-  'stock-out':      { label: 'Out of stock',     kind: 'tile', group: 'Inventory',requires: ['Products:products'], to: 'products' },
-  'stock-low':      { label: 'Low stock',        kind: 'tile', group: 'Inventory',requires: ['Products:products'], to: 'products' },
-  'ecom-orders':    { label: 'Store orders',     kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'], to: 'ecom-orders' },
-  'ecom-revenue':   { label: 'Store revenue',    kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'], to: 'ecom-orders' },
+  'leads-total':    { label: 'Total leads', desc: 'All leads in your view',      kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads', filter: { tab: 'all' } },
+  'leads-active':   { label: 'Active leads', desc: 'Not won or lost yet',     kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
+  'leads-overdue':  { label: 'Overdue follow-ups', desc: 'Follow-up date already passed', kind: 'tile', group: 'Leads',  requires: ['Leads:leads'], to: 'leads', filter: { tab: 'overdue', dateMode: 'followup' } },
+  'leads-today':    { label: 'Follow-ups today', desc: 'Follow-ups due today', kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads', filter: { tab: 'today', dateMode: 'followup' } },
+  'quotes-count':   { label: 'Quotations', desc: 'Total quotations',       kind: 'tile', group: 'Finance',  requires: ['Quotations:quotations'], to: 'quotations' },
+  'invoices-count': { label: 'Invoices', desc: 'Total invoices',         kind: 'tile', group: 'Finance',  requires: ['Invoices:invoices'], to: 'invoices' },
+  'projects-active':{ label: 'Projects running', desc: 'Projects marked In Progress', kind: 'tile', group: 'Work',     requires: ['Projects:projects'], to: 'projects' },
+  'amc-expiring':   { label: 'AMC expiring', desc: 'Contracts ending within 30 days',     kind: 'tile', group: 'Work',     requires: ['AMC:amc'], to: 'amc' },
+  'stock-out':      { label: 'Out of stock', desc: 'Products with zero stock',     kind: 'tile', group: 'Inventory',requires: ['Products:products'], to: 'products' },
+  'stock-low':      { label: 'Low stock', desc: 'Products below their reorder level',        kind: 'tile', group: 'Inventory',requires: ['Products:products'], to: 'products' },
+  'ecom-orders':    { label: 'Store orders', desc: 'Orders placed in your store',     kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'], to: 'ecom-orders' },
+  'ecom-revenue':   { label: 'Store revenue', desc: 'Revenue from delivered orders',    kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'], to: 'ecom-orders' },
   // Served by /api/dashboard-widgets rather than the component's own queries.
-  'leads-untouched':{ label: 'Untouched leads',  kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], server: true, to: 'leads' },
-  'calls-today':    { label: 'Calls today',      kind: 'tile', group: 'Calls',    requires: ['CallLogs:callLogs'], server: true, to: 'teams' },
-  'calls-connected':{ label: 'Connected rate',   kind: 'tile', group: 'Calls',    requires: ['CallLogs:callLogs'], server: true, to: 'teams' },
-  'target-progress':{ label: 'My monthly target',kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], server: true },
+  'leads-untouched':{ label: 'Untouched leads', desc: 'No activity logged for 7+ days',  kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], server: true, to: 'leads' },
+  'calls-today':    { label: 'Calls today', desc: 'Calls you made today',      kind: 'tile', group: 'Calls',    requires: ['CallLogs:callLogs'], server: true, to: 'teams' },
+  'calls-connected':{ label: 'Connected rate', desc: 'Share of calls today that connected',   kind: 'tile', group: 'Calls',    requires: ['CallLogs:callLogs'], server: true, to: 'teams' },
+  'target-progress':{ label: 'My monthly target', desc: 'Leads won this month vs your target',kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], server: true },
 
   // ── Sections ─────────────────────────────────────────────────────
-  'leads-source':      { label: 'Leads by source',    kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
-  'reminders':         { label: 'Upcoming reminders', kind: 'section', group: 'Leads',   requires: ['Leads:leads', 'AMC:amc'], match: 'any' },
-  'leads-recent':      { label: 'Recent leads',       kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
-  'leads-hot':         { label: 'Hot leads',          kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
-  'followup-calendar': { label: 'Follow-up calendar', kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
-  'revenue-trend':     { label: 'Monthly revenue trend', kind: 'section', group: 'Finance', requires: ['Invoices:invoices'] },
+  'leads-source':      { label: 'Leads by source', desc: 'Bar chart of where your leads come from',    kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
+  'reminders':         { label: 'Upcoming reminders', desc: 'Scrolling list — AMC expiry, overdue follow-ups, stock alerts', kind: 'section', group: 'Leads',   requires: ['Leads:leads', 'AMC:amc'], match: 'any' },
+  'leads-recent':      { label: 'Recent leads', desc: 'Table of the 5 newest leads',       kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
+  'leads-hot':         { label: 'Hot leads', desc: 'List of top-priority leads with next follow-up',          kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
+  'followup-calendar': { label: 'Follow-up calendar', desc: 'Month calendar, click a date to see its follow-ups', kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
+  'revenue-trend':     { label: 'Monthly revenue trend', desc: 'Bar chart of the last 6 months', kind: 'section', group: 'Finance', requires: ['Invoices:invoices'] },
   // P&L renders Expenses and Commissions line items, so Invoices alone is not
   // enough to see it. Products is required too — not for access but for
   // correctness: without it COGS silently computes as 0 and Gross Profit reads
   // far too high. A missing input here produces a confidently wrong number.
-  'pnl':               { label: 'Profit & loss summary', kind: 'section', group: 'Finance', requires: ['Invoices:invoices', 'Expenses:expenses', 'Products:products'] },
-  'ecom-recent':       { label: 'Recent store orders', kind: 'section', group: 'Store',  requires: ['Ecommerce:ecommerce'] },
-  'appts-today':       { label: 'Appointments today',  kind: 'section', group: 'Work',   requires: ['Appointments:appointments'] },
+  'pnl':               { label: 'Profit & loss summary', desc: 'Grid — revenue, COGS, expenses, profit, margin', kind: 'section', group: 'Finance', requires: ['Invoices:invoices', 'Expenses:expenses', 'Products:products'] },
+  'ecom-recent':       { label: 'Recent store orders', desc: 'Table of the 5 latest store orders', kind: 'section', group: 'Store',  requires: ['Ecommerce:ecommerce'] },
+  'appts-today':       { label: 'Appointments today', desc: 'List of bookings today, with times',  kind: 'section', group: 'Work',   requires: ['Appointments:appointments'] },
   // Served by /api/dashboard-widgets.
-  'my-day':            { label: 'My day',              kind: 'section', group: 'Leads',  requires: ['Leads:leads'], server: true },
-  'receivables':       { label: 'Aging receivables',   kind: 'section', group: 'Finance',requires: ['Invoices:invoices'], server: true },
-  'team-leaderboard':  { label: 'Team leaderboard',    kind: 'section', group: 'Calls',  requires: ['Teams:teams', 'CallLogs:callLogs'], match: 'any', server: true },
-  'call-heatmap':      { label: 'Best time to call',   kind: 'section', group: 'Calls',  requires: ['CallLogs:callLogs'], server: true },
+  'my-day':            { label: 'My day', desc: 'Your follow-ups, tasks and appointments for today, in time order',              kind: 'section', group: 'Leads',  requires: ['Leads:leads'], server: true },
+  'receivables':       { label: 'Aging receivables', desc: 'Unpaid invoices bucketed by how overdue they are',   kind: 'section', group: 'Finance',requires: ['Invoices:invoices'], server: true },
+  'team-leaderboard':  { label: 'Team leaderboard', desc: 'Table of calls and leads per member, last 30 days',    kind: 'section', group: 'Calls',  requires: ['Teams:teams', 'CallLogs:callLogs'], match: 'any', server: true },
+  'call-heatmap':      { label: 'Best time to call', desc: 'Grid of which day and hour your calls connect',   kind: 'section', group: 'Calls',  requires: ['CallLogs:callLogs'], server: true },
 };
 
 /** Widget ids in this layout whose data comes from /api/dashboard-widgets. */
