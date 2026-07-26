@@ -802,10 +802,17 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           reorderWidget(d.id, kind, list.indexOf(id));
           dragRef.current = null;
         }}
-        style={{ position: 'relative', outline: '1px dashed var(--border)', outlineOffset: 2, borderRadius: 12, cursor: 'grab', ...(spanStyle || {}) }}
+        style={{ outline: '1px dashed var(--border)', outlineOffset: 2, borderRadius: 12, cursor: 'grab', ...(spanStyle || {}) }}
       >
-        {node}
-        <div style={{ position: 'absolute', top: 6, right: 6, display: 'flex', gap: 3, zIndex: 3 }}>
+        {/* Controls sit ABOVE the widget, not on top of it. Absolutely
+            positioning them over the card covered the tile's own label —
+            "Overdue follow-ups", "AMC expiring" and "Untouched 7d+" were all
+            unreadable while editing, which is exactly when you need to know
+            which widget you're about to move or delete. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '0 2px 4px', justifyContent: 'flex-end' }}>
+          <span style={{ marginRight: 'auto', fontSize: 10, color: 'var(--muted)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            ⠿ {WIDGETS[id]?.label || id}
+          </span>
           <button style={{ ...btn, opacity: i <= 0 ? 0.4 : 1 }} disabled={i <= 0} title="Move earlier" onClick={() => moveWidget(id, kind, -1)}>←</button>
           <button style={{ ...btn, opacity: i >= list.length - 1 ? 0.4 : 1 }} disabled={i >= list.length - 1} title="Move later" onClick={() => moveWidget(id, kind, 1)}>→</button>
           {kind === 'section' && (
@@ -813,6 +820,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
           )}
           <button style={{ ...btn, color: 'var(--danger, #dc2626)' }} title="Remove from my dashboard" onClick={() => removeWidget(id, kind)}>✕</button>
         </div>
+        {node}
       </div>
     );
   };
