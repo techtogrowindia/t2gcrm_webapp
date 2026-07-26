@@ -132,7 +132,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // Stage Transitions: fetch activity logs server-side for the selected date
   // range (full set, no WebSocket cap, correct on busy workspaces). Re-fetches
   // when the date range changes since the server filters by createdAt.
-  const [stageLogsData, setStageLogsData] = useState([]);
+  // Per-lead activity summary from the server: { leadId: [lastActivityMs,
+  // lastRescheduleMs] }. Previously the raw log rows, which meant ~12 MB and
+  // up to 14s on a wide range to derive two numbers per lead in the browser.
+  const [stageLogsData, setStageLogsData] = useState({});
   const [stageLogsLoading, setStageLogsLoading] = useState(false);
   useEffect(() => {
     if (tab !== 'followup-status' || !ownerId) return;
@@ -142,10 +145,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
     fetch('/api/team-activity', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ownerId, startMs, endMs }),
+      body: JSON.stringify({ ownerId, startMs, endMs, mode: 'summary' }),
     })
       .then(r => r.json())
-      .then(json => setStageLogsData(json.logs || []))
+      .then(json => setStageLogsData(json.summary || {}))
       .catch(() => {})
       .finally(() => setStageLogsLoading(false));
   }, [tab, ownerId, fromDate, toDate]);
@@ -155,7 +158,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const leads = reportLeads.map(l => (l.source === 'Retailer' || l.source === 'Retailers') ? { ...l, source: 'Channel Partners' } : l);
   const products = deferredData?.products || [];
   const customersList = deferredData?.customers || [];
-  const stageLogs = stageLogsData;
+  const stageLogSummary = stageLogsData;
 
   // Whether the data the ACTIVE tab depends on is still loading. Used to show
   // a progress window over the report area. pl/gst/expenses/rev-src need the
@@ -454,17 +457,25 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // lead is ever silently dropped from the grand total — same lesson learned
   // auditing ARS Engineering's filter counts earlier.
   // ==================================================
+  // Assignee names are matched by string, and stray whitespace splits one
+  // person into several columns: "Kanaka Shree", "Kanaka  Shree" and
+  // "Kanaka Shree " each became their own column with a share of her leads.
+  // The grand total still reconciled, which is why it went unnoticed — it's
+  // the per-person distribution that was wrong, in the one report meant to
+  // replace a manual tally. Same collapse Teams.jsx applies on save.
+  const normName = (v) => String(v || '').trim().replace(/\s+/g, ' ');
+
   const sourceTeamMatrix = useMemo(() => {
     if (tab !== 'source-team') return { matrix: {}, rows: [], cols: [], total: 0 };
     const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
-    const teamNames = new Set(teamMembers.map(t => t.name).filter(Boolean));
+    const teamNames = new Set(teamMembers.map(t => normName(t.name)).filter(Boolean));
     const matrix = {};
     const rowSet = new Set();
     const colSet = new Set();
     let total = 0;
     inRangeLeads.forEach(l => {
       const src = l.source || 'Unknown';
-      const col = l.assign ? l.assign : 'Unassigned';
+      const col = l.assign ? normName(l.assign) : 'Unassigned';
       if (!matrix[src]) matrix[src] = {};
       matrix[src][col] = (matrix[src][col] || 0) + 1;
       rowSet.add(src);
@@ -489,14 +500,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const stageTeamMatrix = useMemo(() => {
     if (tab !== 'stage-team') return { matrix: {}, rows: [], cols: [], total: 0 };
     const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
-    const teamNames = new Set(teamMembers.map(t => t.name).filter(Boolean));
+    const teamNames = new Set(teamMembers.map(t => normName(t.name)).filter(Boolean));
     const matrix = {};
     const rowSet = new Set();
     const colSet = new Set();
     let total = 0;
     inRangeLeads.forEach(l => {
       const stg = l.stage || 'Unknown';
-      const col = l.assign ? l.assign : 'Unassigned';
+      const col = l.assign ? normName(l.assign) : 'Unassigned';
       if (!matrix[stg]) matrix[stg] = {};
       matrix[stg][col] = (matrix[stg][col] || 0) + 1;
       rowSet.add(stg);
@@ -519,14 +530,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const productTeamMatrix = useMemo(() => {
     if (tab !== 'product-team') return { matrix: {}, rows: [], cols: [], total: 0 };
     const inRangeLeads = filteredLeadsAtSource.filter(l => l.createdAt && inRange(new Date(l.createdAt).toISOString()));
-    const teamNames = new Set(teamMembers.map(t => t.name).filter(Boolean));
+    const teamNames = new Set(teamMembers.map(t => normName(t.name)).filter(Boolean));
     const matrix = {};
     const rowSet = new Set();
     const colSet = new Set();
     let total = 0;
     inRangeLeads.forEach(l => {
       const prod = l.productName || '(No product)';
-      const col = l.assign ? l.assign : 'Unassigned';
+      const col = l.assign ? normName(l.assign) : 'Unassigned';
       if (!matrix[prod]) matrix[prod] = {};
       matrix[prod][col] = (matrix[prod][col] || 0) + 1;
       rowSet.add(prod);
@@ -555,15 +566,6 @@ export default function Reports({ user, perms, ownerId, profile }) {
     // stored as local "YYYY-MM-DDThh:mm" strings, so the range must be local too.
     const fromMs = new Date(fromDate + 'T00:00:00').getTime();
     const toMs = new Date(toDate + 'T23:59:59').getTime();
-
-    // Index activity logs by lead id (skip the synthetic 'bulk' entity).
-    const logsByLead = {};
-    stageLogs.forEach(log => {
-      const eid = log.entityId;
-      if (!eid || eid === 'bulk') return;
-      if (!logsByLead[eid]) logsByLead[eid] = [];
-      logsByLead[eid].push(log);
-    });
 
     const emptyCounts = () => ({ total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0, upcoming: 0 });
     const dayMap = {};
@@ -598,11 +600,15 @@ export default function Reports({ user, perms, ownerId, profile }) {
       // wrongly mark a now-overdue follow-up as handled, hiding it from
       // "untouched" (the bug: everything showed as rescheduled, untouched=0).
       const dueDayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-      const logsSinceDue = (logsByLead[l.id] || []).filter(lg => (lg.createdAt || 0) >= dueDayStart);
+      // [lastActivityMs, lastRescheduleMs] — the server already folded the raw
+      // logs down to these two, applying the same 'Follow Up changed' match.
+      const sum = stageLogSummary[l.id];
+      const lastAct = sum ? sum[0] : 0;
+      const lastResched = sum ? sum[1] : 0;
       let cat;
       if (l.stage === wonStage) cat = 'converted';
-      else if (logsSinceDue.some(lg => /follow\s*up changed/i.test(lg.text || ''))) cat = 'rescheduled';
-      else if (logsSinceDue.length > 0) cat = 'attended';
+      else if (lastResched > 0 && lastResched >= dueDayStart) cat = 'rescheduled';
+      else if (lastAct > 0 && lastAct >= dueDayStart) cat = 'attended';
       else if (dueDayStart > todayStart) cat = 'upcoming'; // not due yet
       else cat = 'untouched'; // due/overdue, nothing done since it came due
       bump(dayMap, dayKey, cat);
@@ -625,7 +631,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       return cr && cr >= fromMs && cr <= toMs;
     }).length;
     return { days, byMember, totals, noFollowup, totalLeads };
-  }, [tab, filteredLeadsAtSource, stageLogs, fromDate, toDate, wonStage]);
+  }, [tab, filteredLeadsAtSource, stageLogSummary, fromDate, toDate, wonStage]);
 
   // ==================================================
   // #3 CUSTOMER PURCHASE REPORT — from paid invoice items, grouped by product
