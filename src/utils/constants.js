@@ -48,5 +48,9 @@ export const EMPTY_MEMBER = {
   email: '',
   phone: '',
   role: 'Sales',
+  // Leads-won target for the month, shown as a progress meter on the member's
+  // dashboard. 0 / empty means "no target" — the widget says so rather than
+  // rendering "0 of 0", which reads like failure.
+  monthlyTarget: '',
   active: true
 };

@@ -4,7 +4,8 @@ import { useApp } from '../../context/AppContext';
 import { fmt, fmtD, fmtDT, daysLeft, stageBadgeClass } from '../../utils/helpers';
 import { useDashboardLayout } from '../../hooks/useDashboardLayout';
 import WidgetPicker from './WidgetPicker';
-import { allowedLayout } from '../../../api/_shared-dashboard-widgets';
+import { allowedLayout, serverWidgetIds, WIDGETS } from '../../../api/_shared-dashboard-widgets';
+import { pgAuthGetToken } from '../../hooks/useAuthPg';
 
 export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const { setActiveView } = useApp();
@@ -146,6 +147,37 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     const iv = setInterval(fetchStats, 30000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [ownerId, user.email, myName, teamCanSeeAllLeads, teamCanSeeUnassignedLeads, perms?.isOwner, wonStage, lostStage, JSON.stringify(profile.leadStages), JSON.stringify(profile.disabledStages)]);
+
+  // --- Server-backed widgets ---------------------------------------------
+  // Widgets whose data no existing query supplies (my day, call stats, aging
+  // receivables, leaderboard). One batched request for all of them, refetched
+  // only when the SET of such widgets changes — reordering or adding a
+  // client-side tile must not trigger a network round trip.
+  const [widgetData, setWidgetData] = useState({});
+  const serverIds = useMemo(() => serverWidgetIds(layout), [layout]);
+  const serverIdsKey = useMemo(() => [...serverIds].sort().join(','), [serverIds]);
+
+  useEffect(() => {
+    if (!ownerId || !serverIdsKey) { setWidgetData({}); return; }
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const d0 = new Date();
+        const dayStartMs = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime();
+        const token = pgAuthGetToken() || localStorage.getItem('tc_token') || '';
+        const res = await fetch('/api/dashboard-widgets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ ownerId, widgets: serverIdsKey.split(','), dayStartMs, dayEndMs: dayStartMs + 86400000 }),
+        });
+        const d = await res.json();
+        if (!cancelled && d && !d.error) setWidgetData(d.widgets || {});
+      } catch { /* widgets render their own empty state */ }
+    };
+    run();
+    const iv = setInterval(run, 60000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [ownerId, serverIdsKey]);
 
   const quotes = quotesRaw;
   const invoices = invoicesRaw;
@@ -323,9 +355,161 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     'stock-low':      () => <div className="stat-card sc-yellow" style={{ background: '#fffff0', borderColor: '#faf089' }}><div className="lbl" style={{ color: '#b7791f' }}>Low Stock</div><div className="val" style={{ color: '#b7791f' }}>{stats.lowStock}</div></div>,
     'ecom-orders':    () => <div className="stat-card sc-blue" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}><div className="lbl" style={{ color: '#1d4ed8' }}>Store Orders</div><div className="val" style={{ color: '#1d4ed8' }}>{ecomStats.total}</div></div>,
     'ecom-revenue':   () => <div className="stat-card sc-green" style={{ background: '#f0fdf4', borderColor: '#bbf7d0' }}><div className="lbl" style={{ color: '#15803d' }}>Store Revenue</div><div className="val" style={{ color: '#15803d' }}>{fmt(ecomStats.revenue)}</div></div>,
+    'leads-untouched':() => {
+      const d = widgetData['leads-untouched'];
+      return <div className="stat-card sc-yellow"><div className="lbl">Untouched {d?.days || 7}d+</div><div className="val">{d?.count ?? '—'}</div><div className="sub">No activity logged</div></div>;
+    },
+    'calls-today':    () => <div className="stat-card sc-teal"><div className="lbl">Calls Today</div><div className="val">{widgetData['calls-today']?.count ?? '—'}</div></div>,
+    'calls-connected':() => {
+      const d = widgetData['calls-connected'];
+      return <div className="stat-card sc-blue"><div className="lbl">Connected Rate</div><div className="val">{d ? `${d.pct}%` : '—'}</div><div className="sub">{d ? `${d.connected} of ${d.total} calls` : 'Today'}</div></div>;
+    },
+    'target-progress':() => {
+      const d = widgetData['target-progress'];
+      // No target set is a configuration state, not a zero — say so rather than
+      // showing "0 of 0", which reads like failure.
+      if (!d || !d.target) return <div className="stat-card sc-purple"><div className="lbl">Monthly Target</div><div className="val" style={{ fontSize: 15 }}>Not set</div><div className="sub">Ask your manager to set one</div></div>;
+      const pct = Math.min(100, Math.round((d.won / d.target) * 100));
+      return (
+        <div className="stat-card sc-purple">
+          <div className="lbl">Monthly Target</div>
+          <div className="val">{d.won}<span style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 600 }}> / {d.target}</span></div>
+          <div style={{ height: 5, background: 'var(--border)', borderRadius: 3, marginTop: 7, overflow: 'hidden' }}>
+            <div style={{ width: `${pct}%`, height: '100%', background: pct >= 100 ? '#16a34a' : 'var(--accent)' }} />
+          </div>
+        </div>
+      );
+    },
   };
 
   const SECTIONS = {
+    'my-day': () => {
+      const d = widgetData['my-day'];
+      const items = d?.items || [];
+      const ICON = { followup: '📞', task: '✅', appointment: '📅' };
+      const GO = { followup: 'leads', task: 'alltasks', appointment: 'appointments' };
+      return (
+        <div className="tw">
+          <div className="tw-head">
+            <h3>🗓 My Day</h3>
+            {items.length > 0 && <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>{d.total} item{d.total !== 1 ? 's' : ''}</span>}
+          </div>
+          <div style={{ padding: '4px 0', maxHeight: 320, overflowY: 'auto' }}>
+            {items.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>✓ Nothing scheduled for today</div>
+            ) : items.map(it => (
+              <div
+                key={`${it.kind}-${it.id}`}
+                onClick={() => { if (it.kind === 'followup') localStorage.setItem('tc_open_lead', it.id); setActiveView(GO[it.kind]); }}
+                className="rem-item-hover"
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
+              >
+                <span style={{ fontSize: 13, width: 46, color: 'var(--muted)', fontWeight: 700, flexShrink: 0 }}>
+                  {new Date(it.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                </span>
+                <span style={{ fontSize: 14, flexShrink: 0 }}>{ICON[it.kind]}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.title}</div>
+                  {it.sub && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{it.sub}</div>}
+                </div>
+                {it.tag && <span className="badge" style={{ fontSize: 10, flexShrink: 0 }}>{it.tag}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    },
+
+    'receivables': () => {
+      const d = widgetData['receivables'];
+      const B = [
+        { k: 'current', label: 'Not yet due', color: '#16a34a' },
+        { k: 'd30', label: '1–30 days', color: '#d97706' },
+        { k: 'd60', label: '31–60 days', color: '#ea580c' },
+        { k: 'd90', label: '60+ days', color: '#dc2626' },
+      ];
+      const max = d ? Math.max(...B.map(b => d.buckets[b.k] || 0), 1) : 1;
+      return (
+        <div className="tw">
+          <div className="tw-head"><h3>💳 Aging Receivables</h3>{d && <span style={{ fontSize: 12, fontWeight: 700 }}>{fmt(d.total)}</span>}</div>
+          <div style={{ padding: '14px 16px' }}>
+            {!d ? <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)', fontSize: 12 }}>Loading…</div>
+              : d.total === 0 ? <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)', fontSize: 12 }}>✓ Nothing outstanding</div>
+              : B.map(b => (
+                <div key={b.k} className="chart-row">
+                  <div className="chart-label">{b.label}</div>
+                  <div className="chart-bar-wrap"><div className="chart-bar" style={{ width: `${((d.buckets[b.k] || 0) / max) * 100}%`, background: b.color }} /></div>
+                  <div className="chart-val">{fmt(d.buckets[b.k] || 0)}</div>
+                </div>
+              ))}
+          </div>
+        </div>
+      );
+    },
+
+    'team-leaderboard': () => {
+      const rows = widgetData['team-leaderboard']?.rows || [];
+      return (
+        <div className="tw">
+          <div className="tw-head"><h3>🏆 Team Leaderboard</h3><span style={{ fontSize: 11, color: 'var(--muted)' }}>Last 30 days</span></div>
+          <table>
+            <thead><tr><th>Member</th><th>Calls</th><th>Leads</th></tr></thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id}>
+                  <td><strong>{r.name}</strong>{r.role && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{r.role}</div>}</td>
+                  <td style={{ fontWeight: 700 }}>{r.calls}</td>
+                  <td>{r.leads}</td>
+                </tr>
+              ))}
+              {rows.length === 0 && <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No team activity yet</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      );
+    },
+
+    'call-heatmap': () => {
+      const d = widgetData['call-heatmap'];
+      const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      // Business hours only — a 24-column grid is unreadable at this width and
+      // the empty night columns carry no information.
+      const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+      const max = d ? Math.max(...d.grid.flat(), 1) : 1;
+      return (
+        <div className="tw">
+          <div className="tw-head"><h3>🕒 Best Time to Call</h3><span style={{ fontSize: 11, color: 'var(--muted)' }}>Connected calls, 28 days</span></div>
+          <div style={{ padding: '14px 16px', overflowX: 'auto' }}>
+            {!d ? <div style={{ textAlign: 'center', padding: 24, color: 'var(--muted)', fontSize: 12 }}>Loading…</div> : (
+              <table style={{ borderCollapse: 'collapse', fontSize: 10 }}>
+                <thead>
+                  <tr>
+                    <th style={{ padding: 2 }} />
+                    {HOURS.map(h => <th key={h} style={{ padding: '2px 3px', fontWeight: 600, color: 'var(--muted)' }}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {DAYS.map((dn, di) => (
+                    <tr key={dn}>
+                      <td style={{ padding: '2px 6px 2px 0', color: 'var(--muted)', fontWeight: 600 }}>{dn}</td>
+                      {HOURS.map(h => {
+                        const v = d.grid[di][h] || 0;
+                        return (
+                          <td key={h} title={`${dn} ${h}:00 — ${v} call${v !== 1 ? 's' : ''}`} style={{ padding: 1 }}>
+                            <div style={{ width: 20, height: 18, borderRadius: 3, background: v === 0 ? 'var(--border)' : `rgba(34,197,94,${0.18 + (v / max) * 0.82})` }} />
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      );
+    },
+
     'leads-source': () => (
           <div className="tw">
             <div className="tw-head"><h3>Leads by Source</h3></div>
@@ -557,6 +741,21 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const shownTiles = visible.tiles.filter(id => TILES[id]);
   const shownSections = visible.sections.filter(id => SECTIONS[id]);
 
+  // Drill-down: clicking a tile opens the view it summarises. Applied by
+  // cloning the rendered element rather than wrapping it, so the .stat-card
+  // stays the direct child of .stat-grid and the layout is untouched.
+  // Suppressed while editing, where a click means "drag me", not "navigate".
+  const tileNode = (id) => {
+    const node = TILES[id]();
+    const to = WIDGETS[id]?.to;
+    if (!to || editing) return node;
+    return React.cloneElement(node, {
+      onClick: () => setActiveView(to),
+      title: `Open ${WIDGETS[id].label}`,
+      style: { ...(node.props.style || {}), cursor: 'pointer' },
+    });
+  };
+
   // Wrap a widget with edit controls. This is a plain function, NOT a
   // component: declaring a component inside the render body gives it a new
   // identity every pass, which unmounts and remounts its children — the
@@ -630,7 +829,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
       {/* Tiles */}
       {shownTiles.length > 0 && (
         <div className="stat-grid">
-          {shownTiles.map(id => shell(id, 'tile', <React.Fragment key={id}>{TILES[id]()}</React.Fragment>))}
+          {shownTiles.map(id => shell(id, 'tile', <React.Fragment key={id}>{tileNode(id)}</React.Fragment>))}
         </div>
       )}
 

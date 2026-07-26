@@ -19,18 +19,23 @@
 //   match 'any'           — at least one pair must pass
 export const WIDGETS = {
   // ── Tiles ────────────────────────────────────────────────────────
-  'leads-total':    { label: 'Total leads',      kind: 'tile', group: 'Leads',    requires: ['Leads:leads'] },
-  'leads-active':   { label: 'Active leads',     kind: 'tile', group: 'Leads',    requires: ['Leads:leads'] },
-  'leads-overdue':  { label: 'Overdue follow-ups', kind: 'tile', group: 'Leads',  requires: ['Leads:leads'] },
-  'leads-today':    { label: 'Follow-ups today', kind: 'tile', group: 'Leads',    requires: ['Leads:leads'] },
-  'quotes-count':   { label: 'Quotations',       kind: 'tile', group: 'Finance',  requires: ['Quotations:quotations'] },
-  'invoices-count': { label: 'Invoices',         kind: 'tile', group: 'Finance',  requires: ['Invoices:invoices'] },
-  'projects-active':{ label: 'Projects running', kind: 'tile', group: 'Work',     requires: ['Projects:projects'] },
-  'amc-expiring':   { label: 'AMC expiring',     kind: 'tile', group: 'Work',     requires: ['AMC:amc'] },
-  'stock-out':      { label: 'Out of stock',     kind: 'tile', group: 'Inventory',requires: ['Products:products'] },
-  'stock-low':      { label: 'Low stock',        kind: 'tile', group: 'Inventory',requires: ['Products:products'] },
-  'ecom-orders':    { label: 'Store orders',     kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'] },
-  'ecom-revenue':   { label: 'Store revenue',    kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'] },
+  'leads-total':    { label: 'Total leads',      kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
+  'leads-active':   { label: 'Active leads',     kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
+  'leads-overdue':  { label: 'Overdue follow-ups', kind: 'tile', group: 'Leads',  requires: ['Leads:leads'], to: 'leads' },
+  'leads-today':    { label: 'Follow-ups today', kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], to: 'leads' },
+  'quotes-count':   { label: 'Quotations',       kind: 'tile', group: 'Finance',  requires: ['Quotations:quotations'], to: 'quotations' },
+  'invoices-count': { label: 'Invoices',         kind: 'tile', group: 'Finance',  requires: ['Invoices:invoices'], to: 'invoices' },
+  'projects-active':{ label: 'Projects running', kind: 'tile', group: 'Work',     requires: ['Projects:projects'], to: 'projects' },
+  'amc-expiring':   { label: 'AMC expiring',     kind: 'tile', group: 'Work',     requires: ['AMC:amc'], to: 'amc' },
+  'stock-out':      { label: 'Out of stock',     kind: 'tile', group: 'Inventory',requires: ['Products:products'], to: 'products' },
+  'stock-low':      { label: 'Low stock',        kind: 'tile', group: 'Inventory',requires: ['Products:products'], to: 'products' },
+  'ecom-orders':    { label: 'Store orders',     kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'], to: 'ecom-orders' },
+  'ecom-revenue':   { label: 'Store revenue',    kind: 'tile', group: 'Store',    requires: ['Ecommerce:ecommerce'], to: 'ecom-orders' },
+  // Served by /api/dashboard-widgets rather than the component's own queries.
+  'leads-untouched':{ label: 'Untouched leads',  kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], server: true, to: 'leads' },
+  'calls-today':    { label: 'Calls today',      kind: 'tile', group: 'Calls',    requires: ['CallLogs:callLogs'], server: true, to: 'teams' },
+  'calls-connected':{ label: 'Connected rate',   kind: 'tile', group: 'Calls',    requires: ['CallLogs:callLogs'], server: true, to: 'teams' },
+  'target-progress':{ label: 'My monthly target',kind: 'tile', group: 'Leads',    requires: ['Leads:leads'], server: true },
 
   // ── Sections ─────────────────────────────────────────────────────
   'leads-source':      { label: 'Leads by source',    kind: 'section', group: 'Leads',   requires: ['Leads:leads'] },
@@ -46,7 +51,17 @@ export const WIDGETS = {
   'pnl':               { label: 'Profit & loss summary', kind: 'section', group: 'Finance', requires: ['Invoices:invoices', 'Expenses:expenses', 'Products:products'] },
   'ecom-recent':       { label: 'Recent store orders', kind: 'section', group: 'Store',  requires: ['Ecommerce:ecommerce'] },
   'appts-today':       { label: 'Appointments today',  kind: 'section', group: 'Work',   requires: ['Appointments:appointments'] },
+  // Served by /api/dashboard-widgets.
+  'my-day':            { label: 'My day',              kind: 'section', group: 'Leads',  requires: ['Leads:leads'], server: true },
+  'receivables':       { label: 'Aging receivables',   kind: 'section', group: 'Finance',requires: ['Invoices:invoices'], server: true },
+  'team-leaderboard':  { label: 'Team leaderboard',    kind: 'section', group: 'Calls',  requires: ['Teams:teams', 'CallLogs:callLogs'], match: 'any', server: true },
+  'call-heatmap':      { label: 'Best time to call',   kind: 'section', group: 'Calls',  requires: ['CallLogs:callLogs'], server: true },
 };
+
+/** Widget ids in this layout whose data comes from /api/dashboard-widgets. */
+export function serverWidgetIds(layout) {
+  return [...(layout?.tiles || []), ...(layout?.sections || [])].filter(id => WIDGETS[id]?.server);
+}
 
 /**
  * Can this caller see this widget?
@@ -78,14 +93,15 @@ export const PRESETS = {
     tiles: ['leads-total', 'leads-active', 'leads-overdue', 'quotes-count', 'invoices-count', 'projects-active', 'amc-expiring', 'stock-out', 'stock-low', 'ecom-orders', 'ecom-revenue'],
     sections: ['leads-source', 'reminders', 'leads-recent', 'leads-hot', 'pnl', 'revenue-trend', 'followup-calendar', 'ecom-recent', 'appts-today'],
   },
-  // Field sales: what to do today, not how the business is doing.
+  // Field sales: what to do today, not how the business is doing. "My day"
+  // leads because it is the only widget that answers "what now?" directly.
   sales: {
-    tiles: ['leads-today', 'leads-overdue', 'leads-active', 'leads-total'],
-    sections: ['reminders', 'followup-calendar', 'leads-hot', 'leads-recent', 'leads-source'],
+    tiles: ['leads-today', 'leads-overdue', 'calls-today', 'target-progress'],
+    sections: ['my-day', 'reminders', 'followup-calendar', 'leads-hot'],
   },
   manager: {
-    tiles: ['leads-total', 'leads-active', 'leads-overdue', 'leads-today', 'quotes-count', 'invoices-count'],
-    sections: ['leads-source', 'reminders', 'leads-recent', 'leads-hot', 'revenue-trend', 'followup-calendar'],
+    tiles: ['leads-total', 'leads-active', 'leads-overdue', 'leads-today', 'calls-today', 'leads-untouched'],
+    sections: ['my-day', 'team-leaderboard', 'leads-source', 'reminders', 'revenue-trend', 'call-heatmap'],
   },
 };
 

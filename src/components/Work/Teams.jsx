@@ -466,7 +466,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
                         </span>
                       </td>
                       <td>
-                        <button className="btn btn-secondary btn-sm" onClick={() => { setEditData(m); setForm({ name: m.name, email: m.email, phone: m.phone || '', role: m.role, active: m.active !== false }); setModal(true); }}>Edit</button>{' '}
+                        <button className="btn btn-secondary btn-sm" onClick={() => { setEditData(m); setForm({ name: m.name, email: m.email, phone: m.phone || '', role: m.role, monthlyTarget: m.monthlyTarget ?? '', active: m.active !== false }); setModal(true); }}>Edit</button>{' '}
                         <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={() => del(m.id)}>Del</button>
                       </td>
                     </tr>
@@ -537,6 +537,7 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
                 <div className="fg"><label>Email *</label><input type="email" value={form.email} onChange={f('email')} /></div>
                 <div className="fg"><label>Phone</label><input value={form.phone} onChange={f('phone')} /></div>
                 <div className="fg"><label>Role</label><select value={form.role} onChange={f('role')}>{roles.map(r => <option key={r.name}>{r.name}</option>)}</select></div>
+                <div className="fg"><label>Monthly Target (leads won)</label><input type="number" min="0" placeholder="No target" value={form.monthlyTarget ?? ''} onChange={f('monthlyTarget')} /></div>
               </div>
             </div>
             <div className="mo-foot"><button className="btn btn-secondary btn-sm" onClick={() => setModal(false)}>Cancel</button><button className="btn btn-primary btn-sm" onClick={save}>Save</button></div>
