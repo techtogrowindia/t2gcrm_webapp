@@ -12,11 +12,12 @@ import { WIDGETS, isWidgetAllowed } from '../../../api/_shared-dashboard-widgets
 // NOT wrapped in .tw: that class sets `overflow: hidden`, which would clip the
 // absolutely positioned menus.
 //
-// Widgets the viewer isn't entitled to stay listed but locked. Hiding them
-// makes the catalogue look arbitrary ("why does Bhavya have a revenue tile?");
-// showing them explains the gap and gives the owner somewhere to grant access
-// from. The lock is cosmetic — the widget endpoint refuses to compute anything
-// the caller can't see, even if they hand-edit their saved layout.
+// Widgets the viewer's role or plan doesn't permit are NOT listed at all. An
+// earlier version showed them locked; the catalogue now contains only what the
+// person can actually use, so nothing advertises data they can't have.
+// The picker is presentation either way — the real enforcement is in
+// /api/dashboard-widgets, which refuses to compute anything the caller isn't
+// entitled to even if they hand-edit their saved layout.
 
 function KindDropdown({ kind, icon, title, blurb, ctx, active, onAdd, onRemove }) {
   const [open, setOpen] = useState(false);
@@ -32,13 +33,14 @@ function KindDropdown({ kind, icon, title, blurb, ctx, active, onAdd, onRemove }
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onEsc); };
   }, [open]);
 
+  // Permitted widgets only — role and plan filtered before anything renders.
   const all = useMemo(
     () => Object.entries(WIDGETS)
-      .filter(([, w]) => w.kind === kind)
-      .map(([id, w]) => ({ id, ...w, allowed: isWidgetAllowed(id, ctx) })),
+      .filter(([id, w]) => w.kind === kind && isWidgetAllowed(id, ctx))
+      .map(([id, w]) => ({ id, ...w })),
     [kind, ctx]
   );
-  const allowedCount = all.filter(w => w.allowed).length;
+  const allowedCount = all.length;
   const onCount = all.filter(w => active.has(w.id)).length;
 
   const groups = useMemo(() => {
@@ -49,7 +51,7 @@ function KindDropdown({ kind, icon, title, blurb, ctx, active, onAdd, onRemove }
       if (!out.has(w.group)) out.set(w.group, []);
       out.get(w.group).push(w);
     }
-    return [...out.entries()].filter(([, items]) => items.some(i => i.allowed));
+    return [...out.entries()];
   }, [all, q]);
 
   if (allowedCount === 0) return null;
@@ -95,20 +97,19 @@ function KindDropdown({ kind, icon, title, blurb, ctx, active, onAdd, onRemove }
                 return (
                   <label
                     key={w.id}
-                    title={w.allowed ? w.desc : 'Not available with your role or plan'}
-                    style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '6px 12px', cursor: w.allowed ? 'pointer' : 'default', opacity: w.allowed ? 1 : 0.5 }}
-                    onMouseEnter={e => { if (w.allowed) e.currentTarget.style.background = 'var(--bg)'; }}
+                    title={w.desc}
+                    style={{ display: 'flex', gap: 9, alignItems: 'flex-start', padding: '6px 12px', cursor: 'pointer' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg)'; }}
                     onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                   >
                     <input
                       type="checkbox"
                       checked={on}
-                      disabled={!w.allowed}
                       onChange={() => (on ? onRemove(w.id, w.kind) : onAdd(w.id, w.kind))}
                       style={{ marginTop: 3, flexShrink: 0 }}
                     />
                     <span style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>{!w.allowed && '🔒 '}{w.label}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>{w.label}</span>
                       <span style={{ display: 'block', fontSize: 10.5, color: 'var(--muted)', lineHeight: 1.35 }}>{w.desc}</span>
                     </span>
                   </label>
