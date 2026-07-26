@@ -150,18 +150,18 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       return;
     }
     try {
-      const r = await fetch(`/api/data/leads?id=${encodeURIComponent(openId)}`, { method: 'GET' });
+      // /api/leads-page, NOT /api/data: the latter is unauthenticated and
+      // trusts ownerId from the query string. This sends the same identity the
+      // rest of the page does, so the server applies the caller's own
+      // visibility rules, and returns a single row rather than the full list.
+      const r = await fetch('/api/leads-page', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...buildPageBody(), leadId: openId, mode: 'list', page: 1, pageSize: 1 }),
+      });
       if (!r.ok) return;
       const json = await r.json();
-      // /api/data returns { success, data: [...] } — this used to look for
-      // `items`/`item`, which never exist, so `found` was always null and the
-      // lead silently never opened. That broke every tc_open_lead deep link,
-      // including notification click-through. Keep the old keys as fallbacks
-      // in case another caller ever returns that shape.
-      const list = Array.isArray(json?.data) ? json.data
-        : Array.isArray(json?.items) ? json.items
-        : (json?.item ? [json.item] : []);
-      const found = list.find(l => l.id === openId) || null;
+      const found = (json?.items || []).find(l => l.id === openId) || null;
       if (found) {
         setViewLead(found);
         localStorage.removeItem('tc_open_lead');

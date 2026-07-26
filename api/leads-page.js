@@ -30,6 +30,7 @@ export default async function handler(req, res) {
       reqFilter = '',
       prodFilter = '',   // linked product id, or '__none__' for leads with no product
       search = '',
+      leadId = null,        // single-lead lookup for deep links (see 3b)
       visibleStages = null, // null = all stages allowed
       disabledStages = [],
       page = 1,
@@ -77,6 +78,23 @@ export default async function handler(req, res) {
       leads = leads.filter(l => vs.has(l.stage) && !disabledSet.has(l.stage));
     } else if (disabledSet.size > 0) {
       leads = leads.filter(l => !disabledSet.has(l.stage));
+    }
+
+    // --- 3b. Single-lead lookup (deep links) ------------------------------
+    // Opening one lead by id — from a dashboard tile, My Day, or a
+    // notification. Deliberately placed AFTER team + stage visibility so a
+    // caller can only open a lead they were already allowed to see, and
+    // BEFORE the tab/date/dropdown filters so a lead that is legitimately
+    // theirs still opens even when the current page filter excludes it.
+    //
+    // This replaces a call to /api/data, which has no auth at all — it trusts
+    // ownerId straight off the query string, so anyone could have read any
+    // workspace's leads through it. Same identity and visibility rules as the
+    // rest of the Leads page here, and one row over the wire instead of the
+    // whole list.
+    if (leadId) {
+      const one = leads.filter(l => l.id === String(leadId));
+      return res.status(200).json({ items: one, counts: {}, totalFiltered: one.length, planTotal: null, single: true });
     }
 
     // --- 4. Dropdown filters (baseFiltered equivalent) --------------------
