@@ -1,10 +1,15 @@
-import React, { useMemo, useEffect, useState } from 'react';
+import React, { useMemo, useEffect, useState, useRef } from 'react';
 import db from '../../instant';
 import { useApp } from '../../context/AppContext';
 import { fmt, fmtD, fmtDT, daysLeft, stageBadgeClass } from '../../utils/helpers';
+import { useDashboardLayout } from '../../hooks/useDashboardLayout';
+import WidgetPicker from './WidgetPicker';
+import { allowedLayout } from '../../../api/_shared-dashboard-widgets';
 
 export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const { setActiveView } = useApp();
+  const [editing, setEditing] = useState(false);
+  const dragRef = useRef(null);
 
   // Permission + plan gates, declared before the queries so they drive BOTH what
   // gets fetched and what gets rendered. Previously every collection was fetched
@@ -39,9 +44,19 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   // NOTE: `leads` is NOT subscribed here — at >10k leads the InstantDB
   // subscription silently truncates/times out (symptom: TOTAL LEADS = 0 or
   // 9999). Lead-derived aggregates now come from /api/dashboard-stats below.
+  // Same gates expressed as a context object, for the widget registry shared
+  // with the server. One definition of "may this person see this widget".
+  const permCtx = useMemo(() => ({
+    can: (m, a = 'list') => perms?.can(m, a) === true,
+    isModuleEnabled: (k) => planEnforcement?.isModuleEnabled(k) !== false,
+  }), [perms, planEnforcement]);
+
   const { data: coreData } = db.useQuery({
     userProfiles: { $: { where: { userId: ownerId } } },
     teamMembers: { $: { where: { userId: ownerId } } },
+    // The viewer's own row — where a team member's dashboard layout is stored.
+    // One row, keyed by their identity, so it can't collide with anyone else's.
+    ...(user?.id ? { memberProfiles: { $: { where: { userId: user.id }, limit: 1 } } } : {}),
     ...(gInvoices ? { invoices: { $: { where: { userId: ownerId }, limit: 5000 } } } : {}),
     ...(gProjects ? { projects: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
     ...(gAmc ? { amc: { $: { where: { userId: ownerId }, limit: 2000 } } } : {}),
@@ -70,6 +85,7 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const commissionsRaw = deferredData?.partnerCommissions || [];
 
   const teamMembers = coreData?.teamMembers || [];
+  const memberProfile = coreData?.memberProfiles?.[0];
   const myTeamMember = teamMembers.find(t => (t.email || '').toLowerCase() === (user.email || '').toLowerCase());
   // perms.name is the authoritative member name (usePermissions). On the PG/JWT
   // path user.name is empty, so without this fallback myName can be '' and the
@@ -77,6 +93,17 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
   const myName = myTeamMember?.name || perms?.name || user.name || '';
   const teamCanSeeAllLeads = profile.teamCanSeeAllLeads !== false;
   const teamCanSeeUnassignedLeads = profile.teamCanSeeUnassignedLeads !== false;
+
+  // Per-user layout. `ready` waits for both the source record and perms so the
+  // saved layout isn't briefly replaced by a preset on first paint.
+  const { layout, addWidget, removeWidget, moveWidget, reorderWidget, resetLayout, saveError } = useDashboardLayout({
+    userId: user?.id,
+    isOwner: perms?.isOwner === true,
+    role: perms?.role,
+    profile,
+    memberProfile,
+    ready: !!coreData && !!perms,
+  });
 
   // --- Server-driven lead stats ------------------------------------------
   // Replaces the 10k-lead subscription. Refreshes every 30s.
@@ -86,11 +113,17 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     let cancelled = false;
     const fetchStats = async () => {
       try {
+        // Today's window in the VIEWER's local day — the server's timezone
+        // isn't the business's, so midnight has to be computed here.
+        const d0 = new Date();
+        const dayStartMs = new Date(d0.getFullYear(), d0.getMonth(), d0.getDate()).getTime();
         const res = await fetch('/api/dashboard-stats', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ownerId,
+            dayStartMs,
+            dayEndMs: dayStartMs + 86400000,
             userEmail: user.email,
             myName,
             teamCanSeeAllLeads,
@@ -126,11 +159,12 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     const total = leadStats?.totals?.total || 0;
     const active = leadStats?.totals?.active || 0;
     const overdue = leadStats?.totals?.overdue || 0;
+    const today = leadStats?.totals?.today || 0;
     const amcExp = amc.filter(a => { const d = daysLeft(a.endDate); return d <= 30 && d >= 0; }).length;
     const inProgress = projects.filter(p => p.status === 'In Progress').length;
     const outOfStock = (deferredData?.products || []).filter(p => p.trackStock && p.stock <= 0).length;
     const lowStock = (deferredData?.products || []).filter(p => p.trackStock && p.stock > 0 && p.stock <= (p.lowStockThreshold || 5)).length;
-    return { total, overdue, active, amcExp, inProgress, outOfStock, lowStock };
+    return { total, overdue, today, active, amcExp, inProgress, outOfStock, lowStock };
   }, [leadStats, amc, projects, deferredData?.products]);
 
   const ecomStats = useMemo(() => {
@@ -271,58 +305,28 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
     }
   };
 
-  return (
-    <div>
-      {/* Header */}
-      <div className="sh">
-        <div>
-          <h2>Dashboard</h2>
-          <div className="sub">{`${greeting}! ${now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}</div>
-        </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {stats.amcExp > 0 && mod('amc') && <span className="rem-badge">🛡 {stats.amcExp} AMC expiring</span>}
-        </div>
-      </div>
+  // ── Widget bodies ────────────────────────────────────────────────
+  // The saved layout decides which of these render and in what order. They
+  // stay in this file rather than becoming 20 components because each one
+  // reads the memos computed above; splitting them would mean threading a
+  // dozen props through every widget for no gain.
+  const TILES = {
+    'leads-total':    () => <div className="stat-card sc-green"><div className="lbl">Total Leads</div><div className="val">{stats.total}</div></div>,
+    'leads-active':   () => <div className="stat-card sc-blue"><div className="lbl">Active</div><div className="val">{stats.active}</div></div>,
+    'leads-overdue':  () => <div className="stat-card sc-red"><div className="lbl">Overdue Follow</div><div className="val">{stats.overdue}</div></div>,
+    'leads-today':    () => <div className="stat-card sc-blue"><div className="lbl">Follow-ups Today</div><div className="val">{stats.today}</div></div>,
+    'quotes-count':   () => <div className="stat-card sc-yellow"><div className="lbl">Quotations</div><div className="val">{quotes.length}</div></div>,
+    'invoices-count': () => <div className="stat-card sc-purple"><div className="lbl">Invoices</div><div className="val">{invoices.length}</div></div>,
+    'projects-active':() => <div className="stat-card sc-teal"><div className="lbl">Projects</div><div className="val">{stats.inProgress}</div></div>,
+    'amc-expiring':   () => <div className="stat-card sc-red"><div className="lbl">AMC Expiring</div><div className="val">{stats.amcExp}</div></div>,
+    'stock-out':      () => <div className="stat-card sc-red" style={{ background: '#fff5f5', borderColor: '#feb2b2' }}><div className="lbl" style={{ color: '#c53030' }}>Out of Stock</div><div className="val" style={{ color: '#c53030' }}>{stats.outOfStock}</div></div>,
+    'stock-low':      () => <div className="stat-card sc-yellow" style={{ background: '#fffff0', borderColor: '#faf089' }}><div className="lbl" style={{ color: '#b7791f' }}>Low Stock</div><div className="val" style={{ color: '#b7791f' }}>{stats.lowStock}</div></div>,
+    'ecom-orders':    () => <div className="stat-card sc-blue" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}><div className="lbl" style={{ color: '#1d4ed8' }}>Store Orders</div><div className="val" style={{ color: '#1d4ed8' }}>{ecomStats.total}</div></div>,
+    'ecom-revenue':   () => <div className="stat-card sc-green" style={{ background: '#f0fdf4', borderColor: '#bbf7d0' }}><div className="lbl" style={{ color: '#15803d' }}>Store Revenue</div><div className="val" style={{ color: '#15803d' }}>{fmt(ecomStats.revenue)}</div></div>,
+  };
 
-      {/* Stats */}
-      <div className="stat-grid">
-        {gLeads && (
-          <>
-            <div className="stat-card sc-green"><div className="lbl">Total Leads</div><div className="val">{stats.total}</div></div>
-            <div className="stat-card sc-blue"><div className="lbl">Active</div><div className="val">{stats.active}</div></div>
-            <div className="stat-card sc-red"><div className="lbl">Overdue Follow</div><div className="val">{stats.overdue}</div></div>
-          </>
-        )}
-        {gQuotes && (
-          <div className="stat-card sc-yellow"><div className="lbl">Quotations</div><div className="val">{quotes.length}</div></div>
-        )}
-        {gInvoices && (
-          <div className="stat-card sc-purple"><div className="lbl">Invoices</div><div className="val">{invoices.length}</div></div>
-        )}
-        {gProjects && (
-          <div className="stat-card sc-teal"><div className="lbl">Projects</div><div className="val">{stats.inProgress}</div></div>
-        )}
-        {gAmc && (
-          <div className="stat-card sc-red"><div className="lbl">AMC Expiring</div><div className="val">{stats.amcExp}</div></div>
-        )}
-        {gProducts && (
-          <>
-            <div className="stat-card sc-red" style={{ background: '#fff5f5', borderColor: '#feb2b2' }}><div className="lbl" style={{ color: '#c53030' }}>Out of Stock</div><div className="val" style={{ color: '#c53030' }}>{stats.outOfStock}</div></div>
-            <div className="stat-card sc-yellow" style={{ background: '#fffff0', borderColor: '#faf089' }}><div className="lbl" style={{ color: '#b7791f' }}>Low Stock</div><div className="val" style={{ color: '#b7791f' }}>{stats.lowStock}</div></div>
-          </>
-        )}
-        {gOrders && (
-          <>
-            <div className="stat-card sc-blue" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}><div className="lbl" style={{ color: '#1d4ed8' }}>Store Orders</div><div className="val" style={{ color: '#1d4ed8' }}>{ecomStats.total}</div></div>
-            <div className="stat-card sc-green" style={{ background: '#f0fdf4', borderColor: '#bbf7d0' }}><div className="lbl" style={{ color: '#15803d' }}>Store Revenue</div><div className="val" style={{ color: '#15803d' }}>{fmt(ecomStats.revenue)}</div></div>
-          </>
-        )}
-      </div>
-
-      {/* Charts Row */}
-      <div className="dash-grid-2">
-        {/* Source Chart */}
-        {gLeads && (
+  const SECTIONS = {
+    'leads-source': () => (
           <div className="tw">
             <div className="tw-head"><h3>Leads by Source</h3></div>
             <div style={{ padding: '14px 16px' }}>
@@ -337,10 +341,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               ))}
             </div>
           </div>
-        )}
-
-        {/* Reminders */}
-        {((gLeads) || (gAmc)) && (
+    ),
+    'reminders': () => (
           <div className="tw">
             <div className="tw-head">
               <h3>⏰ Upcoming Reminders</h3>
@@ -357,13 +359,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               ))}
             </div>
           </div>
-        )}
-      </div>
-
-      {/* Recent Leads + Calendar */}
-      <div className="dash-grid-2">
-        {gLeads && (
-          <>
+    ),
+    'leads-recent': () => (
             <div className="tw">
               <div className="tw-head"><h3>Recent Leads</h3></div>
               <table>
@@ -381,7 +378,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               </table>
             </div>
 
-            {/* Hot Leads */}
+    ),
+    'leads-hot': () => (
             <div className="tw">
               <div className="tw-head"><h3>🔥 Hot Leads (Top Priority)</h3></div>
               <div style={{ padding: '0' }}>
@@ -403,11 +401,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
                 ))}
               </div>
             </div>
-          </>
-        )}
-
-        {/* P&L Summary */}
-        {gPnl && (
+    ),
+    'pnl': () => (
           <div className="tw">
             <div className="tw-head"><h3>💰 Profit &amp; Loss Summary</h3><span style={{ fontSize: 11, color: 'var(--muted)' }}>Based on Paid Invoices</span></div>
             <div className="pnl-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
@@ -427,10 +422,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               ))}
             </div>
           </div>
-        )}
-
-        {/* Revenue Trend */}
-        {gInvoices && (
+    ),
+    'revenue-trend': () => (
           <div className="tw">
             <div className="tw-head"><h3>📈 Monthly Revenue Trend</h3></div>
             <div style={{ padding: '24px 20px', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10, height: 160 }}>
@@ -446,10 +439,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               })}
             </div>
           </div>
-        )}
-
-        {/* Calendar */}
-        {gLeads && (
+    ),
+    'followup-calendar': () => (
           <div className="tw">
             <div className="tw-head">
               <h3>Follow-Up Calendar</h3>
@@ -513,12 +504,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               )}
             </div>
           </div>
-        )}
-      </div>
-
-      {/* Ecom & Appointments Row */}
-      <div className="dash-grid-2" style={{ marginTop: 18 }}>
-        {gOrders && (
+    ),
+    'ecom-recent': () => (
           <div className="tw">
             <div className="tw-head"><h3>Recent Store Orders</h3></div>
             <table>
@@ -538,9 +525,8 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               </tbody>
             </table>
           </div>
-        )}
-
-        {gAppts && (
+    ),
+    'appts-today': () => (
           <div className="tw">
             <div className="tw-head"><h3>Appointments Today</h3></div>
             <div style={{ padding: 0 }}>
@@ -560,8 +546,106 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
               ))}
             </div>
           </div>
-        )}
+    ),
+  };
+
+  // Only render what the layout asks for AND the viewer is entitled to. The
+  // permission filter runs on every render, not just when the layout is saved,
+  // so revoking someone's access takes effect immediately rather than on their
+  // next edit.
+  const visible = useMemo(() => allowedLayout(layout, permCtx), [layout, permCtx]);
+  const shownTiles = visible.tiles.filter(id => TILES[id]);
+  const shownSections = visible.sections.filter(id => SECTIONS[id]);
+
+  // Wrap a widget with edit controls. This is a plain function, NOT a
+  // component: declaring a component inside the render body gives it a new
+  // identity every pass, which unmounts and remounts its children — the
+  // calendar would silently jump back to the current month on every re-render.
+  // When not editing it returns the node untouched, so the normal dashboard is
+  // pixel-identical to before (.stat-grid and .dash-grid-2 style their DIRECT
+  // children, so an always-on wrapper would change the layout).
+  const shell = (id, kind, node) => {
+    if (!editing) return node;
+    const list = kind === 'tile' ? shownTiles : shownSections;
+    const i = list.indexOf(id);
+    const btn = { border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--muted)', cursor: 'pointer', borderRadius: 5, fontSize: 12, lineHeight: 1, padding: '3px 6px' };
+    return (
+      <div
+        key={id}
+        draggable
+        onDragStart={e => { dragRef.current = { id, kind }; e.dataTransfer.effectAllowed = 'move'; }}
+        onDragEnd={() => { dragRef.current = null; }}
+        onDragOver={e => { if (dragRef.current && dragRef.current.kind === kind) e.preventDefault(); }}
+        onDrop={e => {
+          const d = dragRef.current;
+          if (!d || d.kind !== kind || d.id === id) return;
+          e.preventDefault();
+          reorderWidget(d.id, kind, list.indexOf(id));
+          dragRef.current = null;
+        }}
+        style={{ position: 'relative', outline: '1px dashed var(--border)', outlineOffset: 2, borderRadius: 12, cursor: 'grab' }}
+      >
+        {node}
+        <div style={{ position: 'absolute', top: 6, right: 6, display: 'flex', gap: 3, zIndex: 3 }}>
+          <button style={{ ...btn, opacity: i <= 0 ? 0.4 : 1 }} disabled={i <= 0} title="Move earlier" onClick={() => moveWidget(id, kind, -1)}>←</button>
+          <button style={{ ...btn, opacity: i >= list.length - 1 ? 0.4 : 1 }} disabled={i >= list.length - 1} title="Move later" onClick={() => moveWidget(id, kind, 1)}>→</button>
+          <button style={{ ...btn, color: 'var(--danger, #dc2626)' }} title="Remove from my dashboard" onClick={() => removeWidget(id, kind)}>✕</button>
+        </div>
       </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="sh">
+        <div>
+          <h2>Dashboard</h2>
+          <div className="sub">{`${greeting}! ${now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {stats.amcExp > 0 && mod('amc') && <span className="rem-badge">🛡 {stats.amcExp} AMC expiring</span>}
+          <button className={`btn btn-sm ${editing ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setEditing(v => !v)}>
+            {editing ? '✓ Done' : '⚙ Customize'}
+          </button>
+        </div>
+      </div>
+
+      {saveError && (
+        <div style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 12 }}>
+          {saveError} — your layout is saved on this device but didn't reach the server.
+        </div>
+      )}
+
+      {editing && (
+        <WidgetPicker
+          layout={layout}
+          ctx={permCtx}
+          onAdd={addWidget}
+          onReset={resetLayout}
+          onClose={() => setEditing(false)}
+        />
+      )}
+
+      {/* Tiles */}
+      {shownTiles.length > 0 && (
+        <div className="stat-grid">
+          {shownTiles.map(id => shell(id, 'tile', <React.Fragment key={id}>{TILES[id]()}</React.Fragment>))}
+        </div>
+      )}
+
+      {/* Sections */}
+      {shownSections.length > 0 && (
+        <div className="dash-grid-2">
+          {shownSections.map(id => shell(id, 'section', <React.Fragment key={id}>{SECTIONS[id]()}</React.Fragment>))}
+        </div>
+      )}
+
+      {shownTiles.length === 0 && shownSections.length === 0 && (
+        <div className="tw" style={{ padding: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+          Your dashboard is empty. Choose <strong>Customize</strong> to add widgets.
+        </div>
+      )}
     </div>
   );
 }
