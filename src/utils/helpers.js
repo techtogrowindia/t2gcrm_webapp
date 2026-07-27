@@ -254,3 +254,34 @@ export function sanitizeStage(stage, disabledStages, fallback) {
   if (fallback && !(Array.isArray(disabledStages) && disabledStages.includes(fallback))) return fallback;
   return null;
 }
+
+// Payment modes offered when recording a payment. A business list, so it is
+// overridable via userProfiles.paymentModes — these are only the first-run
+// defaults (CLAUDE.md "No Hardcoded Configuration").
+export const DEFAULT_PAYMENT_MODES = ['Bank Transfer', 'Cash', 'UPI', 'Cheque', 'Card', 'Other'];
+
+/**
+ * Next payment receipt number for a business.
+ *
+ * Receipts are numbered in one sequence across every invoice, the way Zoho
+ * does it — a receipt is a document in its own right, not a child of the
+ * invoice it settles. Older payments were recorded with no number at all, so
+ * the max is taken over whatever numbers exist and gaps are left alone rather
+ * than renumbering history.
+ *
+ * @param {Array} invoices    every invoice for the business
+ * @param {string} [prefix]   profile.payPrefix
+ * @param {number} [startAt]  profile.payNextNum
+ */
+export function nextPaymentNo(invoices, prefix = 'PAY-', startAt = 1) {
+  let max = 0;
+  for (const inv of invoices || []) {
+    const pays = Array.isArray(inv.payments) ? inv.payments : [];
+    for (const p of pays) {
+      const m = String(p?.no || '').match(/(\d+)\s*$/);
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    }
+  }
+  const n = Math.max(Number(startAt) || 1, max + 1);
+  return `${prefix}${String(n).padStart(3, '0')}`;
+}

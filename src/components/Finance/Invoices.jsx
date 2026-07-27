@@ -5,7 +5,7 @@ import { useData } from '../../hooks/useData';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
-import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol, autoStagePatch } from '../../utils/helpers';
+import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol, autoStagePatch, DEFAULT_PAYMENT_MODES, nextPaymentNo } from '../../utils/helpers';
 import DocumentTemplate from './DocumentTemplate';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
@@ -42,7 +42,14 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(null);
   const [payModal, setPayModal] = useState(null);
-  const [payAmt, setPayAmt] = useState('');
+  // A payment is a document in its own right (receipt no, date, mode,
+  // reference), not just an amount hung off the invoice.
+  const EMPTY_PAY = () => ({
+    amount: '', date: new Date().toISOString().slice(0, 10),
+    mode: '', reference: '', notes: '',
+  });
+  const [payForm, setPayForm] = useState(EMPTY_PAY());
+
   const [colModal, setColModal] = useState(false);
   const [tempCols, setTempCols] = useState([]);
   const [custModal, setCustModal] = useState(false);
@@ -93,6 +100,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   // Fetch when any view that needs customer lookup opens: create/edit form,
   // print view, or the payment modal (payment_received WA notif needs the phone).
   useEffect(() => { if (modal || printing || payModal) fetchModalCustomers(); }, [!!modal, !!printing, !!payModal]);
+  useEffect(() => { if (payModal) setPayForm({ ...EMPTY_PAY(), mode: paymentModes[0] || '' }); }, [payModal?.id]);
 
   // NOTE: this initial fetch only preloads the first 500 leads (by the
   // server's default order) — production accounts have 11k+ leads, so a lead
@@ -150,6 +158,9 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const partnerCommissions = data?.partnerCommissions || [];
   const wonStage = profile.wonStage || 'Won';
   const disabledStages = profile.disabledStages || [];
+  // Business-configurable, per CLAUDE.md — defaults only apply on first run.
+  const paymentModes = (profile.paymentModes && profile.paymentModes.length)
+    ? profile.paymentModes : DEFAULT_PAYMENT_MODES;
   // Stages the business switched off in Settings. The system must not move
   // leads into them automatically — see autoStagePatch in utils/helpers.
 
@@ -625,10 +636,32 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
 
   const savePayment = async () => {
     if (!canEdit) { toast('Permission denied: cannot record payments', 'error'); return; }
-    if (!payAmt || parseFloat(payAmt) <= 0) { toast('Invalid amount', 'error'); return; }
-    const existing = payModal.payments || [];
-    const nw = [...existing, { date: Date.now(), amount: parseFloat(payAmt) }];
-    const totalPaid = nw.reduce((s, p) => s + p.amount, 0);
+    const amt = parseFloat(payForm.amount);
+    if (!amt || amt <= 0) { toast('Invalid amount', 'error'); return; }
+    const existing = Array.isArray(payModal.payments) ? payModal.payments : [];
+    // Overpaying an invoice is almost always a typo — catch it here rather
+    // than leaving a negative balance to be discovered in a report later.
+    const already = existing.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0);
+    const due = (Number(payModal.total) || 0) - already;
+    if (amt - due > 0.5 && !window.confirm(
+      `This is more than the ${fmt(due, payModal.currency)} outstanding. Record ${fmt(amt, payModal.currency)} anyway?`
+    )) return;
+    // A receipt, not just a number: date as 'YYYY-MM-DD' like every other
+    // finance date (it used to be epoch, which no date-range report could
+    // read), plus mode and reference so it can be reconciled against a bank
+    // statement.
+    const nw = [...existing, {
+      no: nextPaymentNo(invoices, profile.payPrefix || 'PAY-', profile.payNextNum),
+      date: payForm.date || new Date().toISOString().slice(0, 10),
+      amount: amt,
+      mode: payForm.mode || paymentModes[0] || '',
+      reference: (payForm.reference || '').trim(),
+      notes: (payForm.notes || '').trim(),
+      createdAt: Date.now(),
+      actorId: user.id,
+      userName: user.email,
+    }];
+    const totalPaid = nw.reduce((s, p) => s + (Number(p.amount) || 0), 0);
     const stat = totalPaid >= payModal.total ? 'Paid' : 'Partially Paid';
     
     const txs = [dbOp.update('invoices', payModal.id, { payments: nw, status: stat })];
@@ -683,16 +716,16 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
         clientphoneno: payRecipientPhone,
         leadphoneno: payRecipientPhone,
         invoiceno: payModal.no,
-        amount: parseFloat(payAmt),
-        date: new Date().toISOString().split('T')[0],
+        amount: amt,
+        date: payForm.date || new Date().toISOString().split('T')[0],
         bizName: profile?.businessName || profile?.bizName || '',
         ownerPhone: profile?.phone || '',
-        entityId: `${payModal.no}-${payAmt}`,
+        entityId: `${payModal.no}-${amt}`,
       }, profile, ownerId).catch(() => {});
     }
     
     setPayModal(null);
-    setPayAmt('');
+    setPayForm(EMPTY_PAY());
   };
 
   const createCustomer = async () => {
@@ -1126,7 +1159,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
       {/* PAY MODAL */}
       {payModal && (
         <div className="mo open">
-          <div className="mo-box" style={{ width: 400 }}>
+          <div className="mo-box" style={{ width: 560 }}>
             <div className="mo-head"><h3>Record Payment</h3><button className="btn-icon" onClick={() => setPayModal(null)}>✕</button></div>
             <div className="mo-body" style={{ padding: 20 }}>
              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 15, fontSize: 13, background: '#f8fafc', padding: 10, borderRadius: 8 }}>
@@ -1138,10 +1171,63 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                   return <span>Paid: <strong style={{ color: '#16a34a' }}>{fmt(shownPaid, payModal.currency)}</strong></span>
                 })()}
               </div>
-              <div className="fg">
-                <label>Amount ({currencySymbol(payModal.currency)})</label>
-                <input type="number" value={payAmt} onChange={e => setPayAmt(e.target.value)} placeholder="0.00" />
+              <div className="fgrid">
+                <div className="fg">
+                  <label>Amount ({currencySymbol(payModal.currency)})</label>
+                  <input type="number" autoFocus value={payForm.amount} onChange={e => setPayForm(f => ({ ...f, amount: e.target.value }))} placeholder="0.00" />
+                </div>
+                <div className="fg">
+                  <label>Payment Date</label>
+                  <input type="date" value={payForm.date} onChange={e => setPayForm(f => ({ ...f, date: e.target.value }))} />
+                </div>
+                <div className="fg">
+                  <label>Payment Mode</label>
+                  <select value={payForm.mode} onChange={e => setPayForm(f => ({ ...f, mode: e.target.value }))}>
+                    {paymentModes.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="fg">
+                  <label>Reference Number</label>
+                  <input value={payForm.reference} onChange={e => setPayForm(f => ({ ...f, reference: e.target.value }))} placeholder="UTR / cheque no." />
+                </div>
+                <div className="fg span2">
+                  <label>Notes</label>
+                  <input value={payForm.notes} onChange={e => setPayForm(f => ({ ...f, notes: e.target.value }))} placeholder="Optional" />
+                </div>
               </div>
+
+              {/* Payments already received against this invoice. */}
+              {(() => {
+                const hist = Array.isArray(payModal.payments) ? payModal.payments : [];
+                if (!hist.length) return null;
+                return (
+                  <div style={{ marginTop: 18, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--muted)', marginBottom: 8 }}>
+                      Payments Received ({hist.length})
+                    </div>
+                    <div style={{ maxHeight: 170, overflowY: 'auto' }}>
+                      {hist.map((p, i) => (
+                        <div key={p.no || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700 }}>
+                              {p.no || 'Payment'}
+                              {/* Legacy rows carry no mode or reference. */}
+                              {p.mode && <span style={{ fontWeight: 400, color: 'var(--muted)' }}> · {p.mode}</span>}
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                              {fmtD(p.date)}{p.reference ? ` · Ref ${p.reference}` : ''}
+                            </div>
+                            {p.notes && <div style={{ fontSize: 11, color: 'var(--muted)', fontStyle: 'italic' }}>{p.notes}</div>}
+                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: '#16a34a', whiteSpace: 'nowrap' }}>
+                            {fmt(Number(p.amount) || 0, payModal.currency)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             <div className="mo-foot">
               <button className="btn btn-secondary btn-sm" onClick={() => setPayModal(null)}>Cancel</button>
