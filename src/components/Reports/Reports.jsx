@@ -554,12 +554,16 @@ export default function Reports({ user, perms, ownerId, profile }) {
     // team members with no leads DID get a column, so the table was asymmetric
     // and looked like data was missing. Deduped: the catalogue has repeated
     // names, and each must appear once.
+    // normName BOTH sides. Trimming only the catalogue split "Cow Mat " into
+    // two rows — the catalogue entry and the lead both store it WITH a trailing
+    // space, so they matched until one side was cleaned. Same whitespace trap
+    // as the assignee columns.
     (deferredData?.products || []).forEach(p => {
-      const nm = (p.name || '').trim();
+      const nm = normName(p.name);
       if (nm) rowSet.add(nm);
     });
     inRangeLeads.forEach(l => {
-      const prod = l.productName || '(No product)';
+      const prod = normName(l.productName) || '(No product)';
       const col = l.assign ? normName(l.assign) : 'Unassigned';
       if (!matrix[prod]) matrix[prod] = {};
       matrix[prod][col] = (matrix[prod][col] || 0) + 1;
