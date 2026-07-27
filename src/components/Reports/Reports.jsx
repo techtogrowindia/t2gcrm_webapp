@@ -588,102 +588,87 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // = some other activity happened; untouched = no activity at all.
   // ==================================================
   const followupStatus = useMemo(() => {
-    if (tab !== 'followup-status') return { days: [], byMember: [], totals: { total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0, upcoming: 0 }, noFollowup: 0, totalLeads: 0 };
+    // Every lead created in the range is counted EXACTLY ONCE, in exactly one
+    // status, so the table total always equals Total Leads. This used to count
+    // follow-up OCCURRENCES (a lead due Monday, moved to Wednesday, counted
+    // twice), which can never reconcile to a lead count — and a report the
+    // business can't reconcile is a report they can't use.
+    const EMPTY = () => ({ converted: 0, rescheduled: 0, attended: 0, untouched: 0, upcoming: 0, nofollowup: 0, total: 0 });
+    if (tab !== 'followup-status') {
+      return { days: [], byMember: [], totals: EMPTY(), totalLeads: 0, rescheduleEvents: 0, unreconciled: 0 };
+    }
     // Parse both bounds as LOCAL midnight/end-of-day (not `new Date(fromDate)`,
     // which parses "YYYY-MM-DD" as UTC and, in +05:30, shifts the window start
-    // to 05:30 local — dropping early-morning follow-ups). followup values are
-    // stored as local "YYYY-MM-DDThh:mm" strings, so the range must be local too.
+    // to 05:30 local — dropping early-morning follow-ups).
     const fromMs = new Date(fromDate + 'T00:00:00').getTime();
     const toMs = new Date(toDate + 'T23:59:59').getTime();
 
-    const emptyCounts = () => ({ total: 0, converted: 0, rescheduled: 0, attended: 0, untouched: 0, upcoming: 0 });
+    const nowD = new Date();
+    const todayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate()).getTime();
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const dayKeyOfMs = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+    const startOfKey = (key) => { const [y, m, dd] = key.split('-').map(Number); return new Date(y, m - 1, dd).getTime(); };
+
     const dayMap = {};
-    const memberMap = {}; // assigned member -> counts (who has/hasn't acted)
+    const memberMap = {};
     const bump = (map, key, cat) => {
-      if (!map[key]) map[key] = emptyCounts();
+      if (!map[key]) map[key] = EMPTY();
       map[key].total += 1;
       map[key][cat] += 1;
     };
 
-    // Start of TODAY (local) — a follow-up due today or earlier is actionable;
-    // a follow-up dated in the future is "upcoming", not overdue.
-    const nowD = new Date();
-    const todayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate()).getTime();
+    // The population is fixed here and nowhere else: leads CREATED in range.
+    // Total Leads is this same list, so the two can never drift apart.
+    const inRange = filteredLeadsAtSource.filter(l => {
+      const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
+      return cr && cr >= fromMs && cr <= toMs;
+    });
 
-    // Leads with NO follow-up date scheduled — a gap worth surfacing. They have
-    // no follow-up date to filter by, so they're scoped by creation date within
-    // the selected range instead.
-    let noFollowup = 0;
+    // Reschedules are still surfaced, as an event count rather than by
+    // inflating the row totals — that was the point of the old occurrence view.
+    let rescheduleEvents = 0;
 
-    // A follow-up belongs to the day it was DUE, not the day it currently sits
-    // on. Working a lead almost always reschedules it forward, which used to
-    // move it out of the day being reported — so each day drained down to
-    // exactly the leads nobody had touched and everything read "untouched".
-    // Two sources of "was due on day D":
-    //   a) the lead's follow-up is STILL on a day in range
-    //   b) the lead was rescheduled AWAY from a day in range (movedFrom)
-    const pad2 = (n) => String(n).padStart(2, '0');
-    const dayKeyOfMs = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
-    const startOfKey = (key) => { const [y, m, dd] = key.split('-').map(Number); return new Date(y, m - 1, dd).getTime(); };
-    const keyInRange = (key) => { const t = startOfKey(key); return t >= fromMs && t <= toMs; };
-
-    // One lead can legitimately appear on several days (due Monday, moved to
-    // Wednesday, moved again) — but only once per day.
-    const seenEntry = new Set();
-    const addEntry = (l, dayKey, movedAway) => {
-      const k = `${l.id}|${dayKey}`;
-      if (seenEntry.has(k)) return;
-      seenEntry.add(k);
-      const dueDayStart = startOfKey(dayKey);
+    inRange.forEach(l => {
       const sum = stageLogSummary[l.id];
       const lastAct = sum ? sum[0] : 0;
       const lastResched = sum ? sum[1] : 0;
+      const movedDays = stageMovedFrom[l.id] || [];
+      rescheduleEvents += movedDays.length;
+      const fu = l.followup ? new Date(l.followup).getTime() : null;
+
       let cat;
       if (l.stage === wonStage) cat = 'converted';
-      // Moved off this day = the rep actioned it. This is the case the old
-      // version could not see at all, because the lead had already left the day.
-      else if (movedAway) cat = 'rescheduled';
-      else if (lastResched > 0 && lastResched >= dueDayStart) cat = 'rescheduled';
-      else if (lastAct > 0 && lastAct >= dueDayStart) cat = 'attended';
-      else if (dueDayStart > todayStart) cat = 'upcoming'; // not due yet
-      else cat = 'untouched'; // due/overdue, nothing done since it came due
-      bump(dayMap, dayKey, cat);
-      bump(memberMap, l.assign ? normName(l.assign) : 'Unassigned', cat);
-    };
-
-    filteredLeadsAtSource.forEach(l => {
-      const fu = l.followup ? new Date(l.followup).getTime() : null;
-      if (!fu) {
-        // No follow-up scheduled — a gap worth surfacing. Scoped by creation
-        // date instead, since there's no follow-up date to filter by.
-        const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
-        if (cr && cr >= fromMs && cr <= toMs) noFollowup += 1;
-      } else if (fu >= fromMs && fu <= toMs) {
-        addEntry(l, dayKeyOfMs(fu), false);
+      else if (!fu) cat = 'nofollowup';
+      else {
+        // Rescheduled/attended only count when the action happened INSIDE the
+        // reporting window, otherwise a lead moved months ago reads as worked.
+        const reschedInRange = (lastResched >= fromMs && lastResched <= toMs)
+          || movedDays.some(k => { const t = startOfKey(k); return t >= fromMs && t <= toMs; });
+        const actedInRange = lastAct >= fromMs && lastAct <= toMs;
+        // A follow-up dated today is due today, not "upcoming".
+        const dueDayStart = startOfKey(dayKeyOfMs(fu));
+        if (reschedInRange) cat = 'rescheduled';
+        else if (actedInRange) cat = 'attended';
+        else if (dueDayStart > todayStart) cat = 'upcoming';
+        else cat = 'untouched';
       }
-      // Days this lead was moved off, even though it no longer sits there.
-      (stageMovedFrom[l.id] || []).forEach(key => { if (keyInRange(key)) addEntry(l, key, true); });
+      bump(memberMap, l.assign ? normName(l.assign) : 'Unassigned', cat);
+      bump(dayMap, dayKeyOfMs(new Date(l.createdAt).getTime()), cat);
     });
 
     const days = Object.entries(dayMap).map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
-    // Members sorted by untouched-first (the key accountability metric — who
-    // has the most follow-ups they haven't acted on), then by total.
+    // Members sorted by untouched-first (who has the most unactioned leads).
     const byMember = Object.entries(memberMap).map(([member, v]) => ({ member, ...v }))
       .sort((a, b) => (b.untouched - a.untouched) || (b.total - a.total));
-    const totals = days.reduce((acc, d) => {
-      acc.total += d.total; acc.converted += d.converted; acc.rescheduled += d.rescheduled;
-      acc.attended += d.attended; acc.untouched += d.untouched; acc.upcoming += d.upcoming;
+    const totals = byMember.reduce((acc, m) => {
+      Object.keys(acc).forEach(k => { acc[k] += m[k]; });
       return acc;
-    }, emptyCounts());
-    // Total leads CREATED in the selected range (regardless of follow-up).
-    const totalLeads = filteredLeadsAtSource.filter(l => {
-      const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
-      return cr && cr >= fromMs && cr <= toMs;
-    }).length;
-    // Occurrences vs leads: one lead rescheduled three times produces three
-    // entries. Both numbers are reported so the tile can say which it means.
-    const leadsInvolved = new Set([...seenEntry].map(k => k.split('|')[0])).size;
-    return { days, byMember, totals, noFollowup, totalLeads, leadsInvolved };
+    }, EMPTY());
+    const totalLeads = inRange.length;
+    // Reconciliation guard. This should always be 0 by construction; if it ever
+    // isn't, the report says so instead of printing a number nobody can defend.
+    const unreconciled = totalLeads - totals.total;
+    return { days, byMember, totals, totalLeads, rescheduleEvents, unreconciled };
   }, [tab, filteredLeadsAtSource, stageLogSummary, stageMovedFrom, fromDate, toDate, wonStage]);
 
   // ==================================================
@@ -916,13 +901,13 @@ export default function Reports({ user, perms, ownerId, profile }) {
     } else if (tab === 'followup-status') {
       const rows = [
         ['--- By Team Member (who has not acted) ---'],
-        ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming', 'Total'],
-        ...followupStatus.byMember.map(m => [m.member, m.converted, m.rescheduled, m.attended, m.untouched, m.upcoming, m.total]),
+        ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming', 'No Follow-up', 'Total'],
+        ...followupStatus.byMember.map(m => [m.member, m.converted, m.rescheduled, m.attended, m.untouched, m.upcoming, m.nofollowup, m.total]),
         [''],
         ['--- By Day ---'],
-        ['Date', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming', 'Total'],
-        ...followupStatus.days.map(d => [fmtD(d.date), d.converted, d.rescheduled, d.attended, d.untouched, d.upcoming, d.total]),
-        ['Total', followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched, followupStatus.totals.upcoming, followupStatus.totals.total],
+        ['Date', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming', 'No Follow-up', 'Total'],
+        ...followupStatus.days.map(d => [fmtD(d.date), d.converted, d.rescheduled, d.attended, d.untouched, d.upcoming, d.nofollowup, d.total]),
+        ['Total', followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched, followupStatus.totals.upcoming, followupStatus.totals.nofollowup, followupStatus.totals.total],
       ];
       exportCSV(rows[0], rows.slice(1), `Followup_Status_${fromDate}_to_${toDate}`);
     } else if (tab === 'leads') {
@@ -1682,51 +1667,35 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
       {tab === 'followup-status' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {/* Band 1 — counted by LEAD CREATION date. Adds up: with + without = total. */}
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
-              Leads created in this date range
-            </div>
-            <div className="stat-grid">
-              <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>created in range</div></div>
-              <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">With a Follow-up Date</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totalLeads - followupStatus.noFollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>scheduled</div></div>
-              <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">No Follow-up Date</div><div className="val" style={{ color: '#475569' }}>{followupStatus.noFollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>nothing scheduled</div></div>
-            </div>
+          {/* One population, one row of tiles: the six statuses are mutually
+              exclusive and sum to Total Leads, so the report reconciles on its
+              face. Anything that doesn't add up is a bug, and says so below. */}
+          <div className="stat-grid">
+            <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>created in range</div></div>
+            <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
+            <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>{followupStatus.rescheduleEvents} reschedule events</div></div>
+            <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
+            <div className="stat-card sc-red"><div className="lbl">Untouched (overdue)</div><div className="val">{followupStatus.totals.untouched}</div></div>
+            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Upcoming</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not due yet</div></div>
+            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">No Follow-up</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.nofollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>none scheduled</div></div>
           </div>
-
-          {/* Band 2 — counted by FOLLOW-UP DUE date, so it includes leads created
-              before this range whose follow-up fell inside it. That is why this
-              total does not equal the lead count above. The five categories add
-              up to the occurrence total. */}
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
-              Follow-ups due in this date range
-              <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginLeft: 8 }}>
-                — a different set of leads: includes leads created earlier whose follow-up fell in this range
-              </span>
-            </div>
-            <div className="stat-grid">
-              <div className="stat-card sc-blue">
-                <div className="lbl">Follow-up Occurrences</div>
-                <div className="val">{followupStatus.totals.total}</div>
-                <div style={{ fontSize: 10, color: 'var(--muted)' }}>across {followupStatus.leadsInvolved} lead{followupStatus.leadsInvolved === 1 ? '' : 's'}</div>
-              </div>
-              <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
-              <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
-              <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
-              <div className="stat-card sc-red"><div className="lbl">Untouched (overdue)</div><div className="val">{followupStatus.totals.untouched}</div></div>
-              <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Upcoming</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not due yet</div></div>
-            </div>
+          <div style={{ fontSize: 11, color: followupStatus.unreconciled ? '#dc2626' : 'var(--muted)', fontWeight: followupStatus.unreconciled ? 700 : 400 }}>
+            {followupStatus.unreconciled
+              ? `⚠ ${followupStatus.unreconciled} lead(s) unaccounted for — the statuses below do not add up to Total Leads. Please report this.`
+              : `Converted + Rescheduled + Attended + Untouched + Upcoming + No Follow-up = ${followupStatus.totals.total}, matching Total Leads. Every lead is counted once.`}
           </div>
 
           <div className="tw">
             <div className="tw-head"><h3>By Team Member</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Follow-ups due in this range, counted as OCCURRENCES — a lead rescheduled three times is counted on each of the three days it was due, which is what makes rescheduled work visible. This total matches the Follow-up Occurrences tile, not Total Leads: the two count different things. Sorted by Untouched (most overdue-unactioned first). "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet.
+              Every lead created in this range appears exactly once, so the Total column adds up to Total Leads.
+              "Unassigned" covers leads with no team member set · "No Follow-up" = no follow-up date scheduled at all ·
+              "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet ·
+              "Rescheduled"/"Attended" = acted on within this date range. Sorted by Untouched.
             </div>
             <div className="tw-scroll">
               {followupStatus.byMember.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>No follow-ups due in this period.</div>
+                <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>No leads created in this period.</div>
               ) : (
                 <table>
                   <thead>
@@ -1737,6 +1706,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right', background: '#fef2f2' }}>Untouched</th>
                       <th style={{ textAlign: 'right' }}>Upcoming</th>
+                      <th style={{ textAlign: 'right' }}>No Follow-up</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
                     </tr>
                   </thead>
@@ -1749,6 +1719,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                         <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: m.attended ? 700 : 400 }}>{m.attended || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: 700, background: m.untouched ? 'rgba(220,38,38,0.06)' : 'transparent' }}>{m.untouched || '-'}</td>
                         <td style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: m.upcoming ? 600 : 400 }}>{m.upcoming || '-'}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{m.nofollowup || '-'}</td>
                         <td style={{ textAlign: 'right', fontWeight: 700 }}>{m.total}</td>
                       </tr>
                     ))}
@@ -1759,6 +1730,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700, background: '#fef2f2' }}>{followupStatus.totals.untouched}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.upcoming}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.nofollowup}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
                     </tr>
                   </tbody>
@@ -1770,7 +1742,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div className="tw">
             <div className="tw-head"><h3>Follow-up Status by Day</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Rows = follow-up due date · Converted = now in "{wonStage}"; Rescheduled/Attended = acted on at/after the due date; Untouched = due/overdue with no activity since; Upcoming = not due yet.
+              Rows = lead creation date, so the column totals match Total Leads · Converted = now in "{wonStage}"; Rescheduled/Attended = acted on at/after the due date; Untouched = due/overdue with no activity since; Upcoming = not due yet.
             </div>
             <div className="tw-scroll">
               {followupStatus.days.length === 0 ? (
@@ -1787,6 +1759,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right' }}>Untouched</th>
                       <th style={{ textAlign: 'right' }}>Upcoming</th>
+                      <th style={{ textAlign: 'right' }}>No Follow-up</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
                     </tr>
                   </thead>
@@ -1799,6 +1772,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                         <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: d.attended ? 700 : 400 }}>{d.attended || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: d.untouched ? 700 : 400 }}>{d.untouched || '-'}</td>
                         <td style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: d.upcoming ? 600 : 400 }}>{d.upcoming || '-'}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{d.nofollowup || '-'}</td>
                         <td style={{ textAlign: 'right', fontWeight: 700 }}>{d.total}</td>
                       </tr>
                     ))}
@@ -1809,6 +1783,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.untouched}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.upcoming}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.nofollowup}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
                     </tr>
                   </tbody>
