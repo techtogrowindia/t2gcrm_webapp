@@ -502,9 +502,14 @@ export default async function handler(req, res) {
       const { id: targetId } = data;
       if (!targetId) return res.status(400).json({ error: 'Record ID is required for deletion' });
 
-      // Postgres: cascade is handled by data-pg's CASCADE map (one transaction).
+      // Postgres: cascade is handled by data-pg's CASCADE map (one transaction),
+      // which also records who deleted what — this route used to accept the
+      // caller's `logText` and then return without ever writing it, so deletions
+      // left no trace at all.
       if (USE_PG_DATA) {
-        await pgRunOps(ownerId, [opD(collection, targetId)]);
+        await pgRunOps(ownerId, [opD(collection, targetId)], {
+          userName: data.userName || '', actorId: data.actorId || null,
+        });
         return res.status(200).json({ success: true, message: 'Record deleted successfully' });
       }
 

@@ -124,6 +124,26 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
 
+// Every instance that runs this file schedules these jobs. Before the Postgres
+// cutover that was harmless. Now, an instance whose .env lacks USE_PG_DATA sends
+// its writes to the retired InstantDB store instead of Postgres — which is how a
+// batch of TradeIndia leads ended up in InstantDB, invisible to the CRM, and one
+// of them never reached production at all. Refuse to schedule rather than sync
+// live data into the wrong database.
+const CRONS_ENABLED = process.env.USE_PG_DATA === 'true';
+if (!CRONS_ENABLED) {
+  console.warn(
+    '[cron] USE_PG_DATA is not set — background jobs (lead integrations, WhatsApp ' +
+    'reminders) are DISABLED for this instance, because their writes would go to ' +
+    'the retired InstantDB store. Set USE_PG_DATA=true to enable them.'
+  );
+}
+const scheduleCron = (fn, intervalMs, firstRunMs) => {
+  if (!CRONS_ENABLED) return;
+  setInterval(fn, intervalMs);
+  setTimeout(fn, firstRunMs);
+};
+
 // Auto-sync scheduler for lead integrations.
 // Runs every 5 minutes; the handler itself decides which configs are due
 // based on each config's autoSyncInterval + lastAutoSyncAt.
@@ -146,8 +166,7 @@ const runIntegrationsCron = async () => {
     integrationsRunning = false;
   }
 };
-setInterval(runIntegrationsCron, 5 * 60 * 1000);   // every 5 minutes
-setTimeout(runIntegrationsCron, 10 * 1000);        // first run 10s after boot
+scheduleCron(runIntegrationsCron, 5 * 60 * 1000, 10 * 1000);   // every 5 minutes, first run 10s after boot
 
 // WhatsApp AMC expiry reminder — runs once per day.
 // Finds AMC contracts expiring in exactly N days (per template config)
@@ -171,8 +190,7 @@ const runWaAmcCron = async () => {
     waAmcRunning = false;
   }
 };
-setInterval(runWaAmcCron, 24 * 60 * 60 * 1000); // once per day
-setTimeout(runWaAmcCron, 30 * 1000);             // first run 30s after boot
+scheduleCron(runWaAmcCron, 24 * 60 * 60 * 1000, 30 * 1000); // once per day, first run 30s after boot
 
 // WhatsApp lead follow-up reminder — runs once per day.
 // Checks leads with a followup date exactly N days away and sends a WA alert.
@@ -195,5 +213,4 @@ const runWaFollowupCron = async () => {
     waFollowupRunning = false;
   }
 };
-setInterval(runWaFollowupCron, 24 * 60 * 60 * 1000); // once per day
-setTimeout(runWaFollowupCron, 45 * 1000);             // first run 45s after boot
+scheduleCron(runWaFollowupCron, 24 * 60 * 60 * 1000, 45 * 1000); // once per day, first run 45s after boot

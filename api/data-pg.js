@@ -94,8 +94,31 @@ function verifyJwt(token) {
   return payload;
 }
 
+// Collection -> singular label for the delete audit log. Keyed by InstantDB
+// collection (what execOp receives), unlike ENTITY_TYPE_MAP in data.js which is
+// keyed by the REST module name — the two key spaces don't overlap.
+const ENTITY_LABEL = {
+  leads: 'lead', customers: 'customer', quotes: 'quotation', invoices: 'invoice',
+  amc: 'amc', expenses: 'expense', products: 'product', vendors: 'vendor',
+  purchaseOrders: 'purchaseOrder', projects: 'project', tasks: 'task',
+  teamMembers: 'team', orders: 'order', appointments: 'appointment',
+  callLogs: 'callLog', attendance: 'attendance', ecomCustomers: 'ecomCustomer',
+  automations: 'automation', partnerApplications: 'partnerApplication',
+  partnerCommissions: 'partnerCommission',
+};
+
+// Deletes here are routine machine housekeeping (crons purging their own
+// bookkeeping), so auditing them would bury real deletions in noise.
+// activityLogs is skipped so purging logs can't generate more logs.
+const AUDIT_SKIP = new Set([
+  'activityLogs', 'outbox', 'executedAutomations', 'memberStats', 'callLogSyncState',
+]);
+
 // ── Execute one op (returns { sql, params } or delete tuple) ─────
-async function execOp(op, tenantId) {
+// `actor` identifies who is responsible, for the delete audit trail. It comes
+// from the verified JWT (or the DELETE body on the legacy route) — never from
+// unauthenticated input. Absent for crons, which are recorded as 'system'.
+async function execOp(op, tenantId, actor) {
   const { action, collection, id, data } = op;
 
   // userProfiles -> accounts: partial SHALLOW-MERGE into doc (matches
@@ -131,7 +154,45 @@ async function execOp(op, tenantId) {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id));
     if (!isUuid) return [];
     // Returns an array of {sql,params} so a delete can cascade.
-    const out = [{ sql: `DELETE FROM ${table} WHERE id=$1`, params: [id] }];
+    const out = [];
+
+    if (AUDIT_SKIP.has(collection)) {
+      out.push({ sql: `DELETE FROM ${table} WHERE id=$1`, params: [id] });
+    } else {
+      // Delete and record it in ONE statement: the audit row can only exist if
+      // a row was really removed, and the label (quote no, client, name) has to
+      // be captured here because a separate INSERT would run after the row is
+      // already gone.
+      //
+      // The id is stored as `deletedEntityId`, deliberately NOT `entityId`:
+      // CASCADE below wipes activity_logs by doc->>'entityId', so an audit row
+      // using that key could be erased by a later delete of the same id. This
+      // shape is structurally uncascadable.
+      const label = ENTITY_LABEL[collection] || collection;
+      const title = label.charAt(0).toUpperCase() + label.slice(1);
+      out.push({
+        sql: `WITH gone AS (
+                DELETE FROM ${table} WHERE id = $1 RETURNING id, doc
+              )
+              INSERT INTO activity_logs (id, tenant_id, doc)
+              SELECT gen_random_uuid(), $2::uuid, jsonb_build_object(
+                'entityType',      $4::text,
+                'action',          'deleted',
+                'entityName',      COALESCE(NULLIF(gone.doc->>'no', ''), NULLIF(gone.doc->>'name', ''), NULLIF(gone.doc->>'client', ''), NULLIF(gone.doc->>'title', ''), ''),
+                'deletedEntityId', gone.id::text,
+                'text',            concat($5::text, ' ', COALESCE(NULLIF(gone.doc->>'no', ''), NULLIF(gone.doc->>'name', ''), NULLIF(gone.doc->>'client', ''), NULLIF(gone.doc->>'title', ''), '(unnamed)'), ' deleted'),
+                'userId',          $3::text,
+                'userName',        $6::text,
+                'actorId',         $7::text,
+                'createdAt',       (extract(epoch from now()) * 1000)::bigint
+              ) FROM gone`,
+        params: [
+          id, tenantId, tenantId, label, title,
+          actor?.userName || 'system', actor?.actorId || null,
+        ],
+      });
+    }
+
     for (const c of (CASCADE[table] || [])) {
       out.push({ sql: `DELETE FROM ${c.table} WHERE doc->>'${c.field}' = $1`, params: [id] });
     }
@@ -235,8 +296,8 @@ export async function pgReadAll(querySpec) {
   return out;
 }
 
-export async function pgRunOps(tenantId, ops) {
-  const nested = await Promise.all(ops.map(op => execOp(op, tenantId)));
+export async function pgRunOps(tenantId, ops, actor) {
+  const nested = await Promise.all(ops.map(op => execOp(op, tenantId, actor)));
   await tenantTransaction(tenantId, nested.flat());
 }
 export { execOp };
@@ -262,6 +323,9 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: `Unauthorized: ${e.message}` });
   }
   const isSuperadmin = callerEmail === 'santhanam.gokul@gmail.com';
+  // Who to blame for a delete. Taken from the verified token only — a client
+  // could otherwise name someone else in the request body.
+  const auditActor = { userName: callerEmail || 'unknown', actorId: null };
 
   try {
     const { action, collection, id, data, ops, collections } = req.body || {};
@@ -326,14 +390,14 @@ export default async function handler(req, res) {
     if (action === 'batch') {
       if (!Array.isArray(ops) || !ops.length)
         return res.status(400).json({ error: 'ops array required for batch' });
-      const nested = await Promise.all(ops.map(op => execOp(op, tenantId)));
+      const nested = await Promise.all(ops.map(op => execOp(op, tenantId, auditActor)));
       await tenantTransaction(tenantId, nested.flat());
       return res.status(200).json({ ok: true, count: ops.length });
     }
 
     // ── Single op ────────────────────────────────────────────────
     if (!collection || !id) return res.status(400).json({ error: 'collection and id required' });
-    const queries = await execOp({ action, collection, id, data }, tenantId);
+    const queries = await execOp({ action, collection, id, data }, tenantId, auditActor);
     await tenantTransaction(tenantId, queries);
     return res.status(200).json({ ok: true });
 

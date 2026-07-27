@@ -32,10 +32,12 @@ export async function readDataAll(db, querySpec) {
 export const opU = (collection, _id, data) => ({ action: 'upsert', collection, id: _id, data });
 export const opD = (collection, _id) => ({ action: 'delete', collection, id: _id });
 
-export async function runOps(db, ownerId, ops) {
+// `actor` (optional) names who is responsible, for the delete audit trail.
+// Crons and webhooks pass nothing and are recorded as 'system'.
+export async function runOps(db, ownerId, ops, actor) {
   const clean = (ops || []).filter(Boolean);
   if (!clean.length) return;
-  if (USE_PG_DATA) return pgRunOps(ownerId, clean);
+  if (USE_PG_DATA) return pgRunOps(ownerId, clean, actor);
   const txs = clean.map(op => op.action === 'delete'
     ? tx[op.collection][op.id].delete()
     : tx[op.collection][op.id].update(op.data));
