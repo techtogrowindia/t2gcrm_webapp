@@ -47,6 +47,18 @@ export function parseDateValue(v, opts = {}) {
 
   const s = String(v).trim();
 
+  // An explicit timezone designator ('...Z' or '...+05:30') makes the instant
+  // unambiguous — hand it straight to the engine. Rebuilding it from its parts
+  // as LOCAL time would silently shift it by the UTC offset, and callers do
+  // pass such strings: Reports converts lead.createdAt with
+  // `new Date(ms).toISOString()`, which always ends in Z.
+  if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const dz = new Date(s);
+    if (isNaN(dz.getTime())) return null;
+    const yz = dz.getFullYear();
+    return yz >= MIN_YEAR && yz <= MAX_YEAR ? dz.getTime() : null;
+  }
+
   // 'YYYY-MM-DD' [T HH:mm[:ss]] — including typo'd years with extra leading
   // digits. Built from the captured parts and constructed as LOCAL time:
   // `new Date('2026-07-27')` is parsed as UTC by the spec, which in +05:30
