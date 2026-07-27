@@ -17,6 +17,18 @@ export default function AMC({ user, perms, ownerId }) {
   const canDelete = perms?.can('AMC', 'delete') === true;
 
   const [modal, setModal] = useState(false);
+
+  // A fixed-position menu doesn't travel with the page, so close it on any
+  // scroll or outside click rather than leaving it stranded mid-screen.
+  useEffect(() => {
+    const close = (e) => {
+      if (e?.type === 'mousedown' && e.target.closest?.('.dd-menu, .btn-icon')) return;
+      document.querySelectorAll('.dd-menu').forEach(el => { el.style.display = 'none'; });
+    };
+    window.addEventListener('scroll', close, true);
+    document.addEventListener('mousedown', close);
+    return () => { window.removeEventListener('scroll', close, true); document.removeEventListener('mousedown', close); };
+  }, []);
   const [editData, setEditData] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [tab, setTab] = useState('all');
@@ -691,7 +703,19 @@ export default function AMC({ user, perms, ownerId }) {
                           <button className="btn-icon" onClick={(e) => {
                             const dm = e.currentTarget.nextElementSibling;
                             document.querySelectorAll('.dd-menu').forEach(el => el !== dm && (el.style.display = 'none'));
-                            dm.style.display = dm.style.display === 'block' ? 'none' : 'block';
+                            const opening = dm.style.display !== 'block';
+                            dm.style.display = opening ? 'block' : 'none';
+                            if (!opening) return;
+                            // Fixed, from the button's rect: .tw-scroll sets
+                            // overflow-x, which makes the vertical axis compute
+                            // to auto too, so an absolute menu was clipped by
+                            // the table. Flips above when there's no room below.
+                            const r = e.currentTarget.getBoundingClientRect();
+                            const h = dm.offsetHeight || 120;
+                            dm.style.position = 'fixed';
+                            dm.style.top = ((window.innerHeight - r.bottom) < h + 12 ? r.top - h - 4 : r.bottom + 4) + 'px';
+                            dm.style.left = Math.max(8, r.right - 140) + 'px';
+                            dm.style.right = 'auto';
                           }}>⋮</button>
                           <div className="dd-menu" style={{ display: 'none', position: 'absolute', right: 0, top: 28, background: '#fff', border: '1px solid var(--border)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 10, minWidth: 160, overflow: 'hidden' }}>
                             {canEdit && <div style={{ padding: '8px 12px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid var(--border)' }} onClick={() => { handleGenerateInvoice(a); document.querySelectorAll('.dd-menu').forEach(el => el.style.display = 'none'); }}>💳 Generate Invoice</div>}

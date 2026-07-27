@@ -42,6 +42,17 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(null);
   const [payModal, setPayModal] = useState(null);
+  // A fixed-position menu doesn't travel with the page, so close it on any
+  // scroll or outside click rather than leaving it stranded mid-screen.
+  useEffect(() => {
+    const close = (e) => {
+      if (e?.type === 'mousedown' && e.target.closest?.('.dd-menu, .btn-icon')) return;
+      document.querySelectorAll('.dd-menu').forEach(el => { el.style.display = 'none'; });
+    };
+    window.addEventListener('scroll', close, true);
+    document.addEventListener('mousedown', close);
+    return () => { window.removeEventListener('scroll', close, true); document.removeEventListener('mousedown', close); };
+  }, []);
   // A payment is a document in its own right (receipt no, date, mode,
   // reference), not just an amount hung off the invoice.
   const EMPTY_PAY = () => ({
@@ -832,7 +843,24 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                              <button className="btn-icon" onClick={(e) => {
                               const dm = e.currentTarget.nextElementSibling;
                               document.querySelectorAll('.dd-menu').forEach(el => el !== dm && (el.style.display = 'none'));
-                              dm.style.display = dm.style.display === 'block' ? 'none' : 'block';
+                              const opening = dm.style.display !== 'block';
+                              dm.style.display = opening ? 'block' : 'none';
+                              if (!opening) return;
+                              // Positioned FIXED, from the button's own rect.
+                              // Absolute positioning kept the menu inside
+                              // .tw-scroll, and `overflow-x: auto` there makes
+                              // the vertical axis compute to auto as well — so
+                              // the menu was clipped by the table and only its
+                              // first item was visible. Fixed escapes every
+                              // clipping ancestor.
+                              const r = e.currentTarget.getBoundingClientRect();
+                              const h = dm.offsetHeight || 120;
+                              // Flip above the button when there isn't room below.
+                              const below = window.innerHeight - r.bottom;
+                              dm.style.position = 'fixed';
+                              dm.style.top = (below < h + 12 ? r.top - h - 4 : r.bottom + 4) + 'px';
+                              dm.style.left = Math.max(8, r.right - 140) + 'px';
+                              dm.style.right = 'auto';
                              }}>⋮</button>
                              <div className="dd-menu" style={{ display: 'none', position: 'absolute', right: 0, top: 28, background: '#fff', border: '1px solid var(--border)', borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 10, width: 140, overflow: 'hidden' }}>
                                <div style={{ padding: '8px 12px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid var(--border)' }} onClick={() => { setPrinting(inv); document.querySelectorAll('.dd-menu').forEach(el => el.style.display = 'none'); }}>📄 Print</div>
@@ -907,34 +935,6 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                     </div>
                     <button className="btn btn-secondary" style={{ padding: '0 10px' }} onClick={() => setCustModal(true)} title="Add New Customer">+</button>
                   </div>
-
-                  {/* Place of supply decides CGST+SGST vs IGST and must be
-                      fixed when the invoice is issued. Shown rather than
-                      inferred: a lead or one-off client carries no state, and
-                      silently assuming "same state" put the wrong tax on the
-                      document. */}
-                  <div className="fg" style={{ marginTop: 10 }}>
-                    <label>
-                      Place of Supply
-                      {(() => {
-                        const g = resolveGstSplit(form, profile, customers.find(c => c.name === form.client));
-                        if (!g.known) return <span style={{ color: '#b45309', fontWeight: 600 }}> — not set, GST will be charged as CGST+SGST</span>;
-                        return <span style={{ color: 'var(--muted)', fontWeight: 400 }}> — {g.isInterState ? 'inter-state, IGST' : 'same state, CGST+SGST'}</span>;
-                      })()}
-                    </label>
-                    <select value={form.placeOfSupply || ''} onChange={e => setForm(p2 => ({ ...p2, placeOfSupply: e.target.value }))}>
-                      <option value="">Select state…</option>
-                      {INDIAN_STATES.map(st => <option key={st} value={st}>{st}</option>)}
-                    </select>
-                  </div>
-
-                  {/* Whether GST is payable by the recipient instead of the
-                      supplier. A required declaration on a GST invoice — it has
-                      to appear on the document even when it is "No". */}
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, cursor: 'pointer' }}>
-                    <input type="checkbox" checked={!!form.reverseCharge} onChange={e => setForm(p2 => ({ ...p2, reverseCharge: e.target.checked }))} />
-                    <span>Tax payable under <strong>reverse charge</strong> (recipient pays the GST)</span>
-                  </label>
                 </div>
                 <div className="fg"><label>Due Date</label><input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))} /></div>
                 <div className="fg"><label>Status</label>
@@ -948,6 +948,32 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                     <option value="">Unassigned</option>
                     {data?.teamMembers?.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
                   </select>
+                </div>
+
+                {/* GST position, on its own row in the grid rather than tucked
+                    inside the client cell — nested there it inherited a narrow
+                    column and the label wrapped over three lines. */}
+                <div className="fg" style={{ gridColumn: 'span 2' }}>
+                  <label>
+                    Place of Supply
+                    {(() => {
+                      const g = resolveGstSplit(form, profile, customers.find(c => c.name === form.client));
+                      return g.known
+                        ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}> — {g.isInterState ? 'inter-state, IGST' : 'same state, CGST+SGST'}</span>
+                        : <span style={{ color: '#b45309', fontWeight: 600 }}> — not set, GST charged as CGST+SGST</span>;
+                    })()}
+                  </label>
+                  <select value={form.placeOfSupply || ''} onChange={e => setForm(p2 => ({ ...p2, placeOfSupply: e.target.value }))}>
+                    <option value="">Select state…</option>
+                    {INDIAN_STATES.map(st => <option key={st} value={st}>{st}</option>)}
+                  </select>
+                </div>
+                <div className="fg" style={{ gridColumn: 'span 3', justifyContent: 'flex-end' }}>
+                  <label style={{ visibility: 'hidden' }}>Reverse charge</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer', height: 38 }}>
+                    <input type="checkbox" checked={!!form.reverseCharge} onChange={e => setForm(p2 => ({ ...p2, reverseCharge: e.target.checked }))} style={{ width: 'auto', margin: 0 }} />
+                    <span>Tax payable under <strong>reverse charge</strong> (recipient pays the GST)</span>
+                  </label>
                 </div>
                 {planEnforcement?.isModuleEnabled('distributors') !== false && partnerApplications.length > 0 && (
                   <>
