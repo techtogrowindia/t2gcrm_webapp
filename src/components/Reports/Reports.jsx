@@ -680,7 +680,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
       const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
       return cr && cr >= fromMs && cr <= toMs;
     }).length;
-    return { days, byMember, totals, noFollowup, totalLeads };
+    // Occurrences vs leads: one lead rescheduled three times produces three
+    // entries. Both numbers are reported so the tile can say which it means.
+    const leadsInvolved = new Set([...seenEntry].map(k => k.split('|')[0])).size;
+    return { days, byMember, totals, noFollowup, totalLeads, leadsInvolved };
   }, [tab, filteredLeadsAtSource, stageLogSummary, stageMovedFrom, fromDate, toDate, wonStage]);
 
   // ==================================================
@@ -913,7 +916,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
     } else if (tab === 'followup-status') {
       const rows = [
         ['--- By Team Member (who has not acted) ---'],
-        ['Team Member', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming'],
+        ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming', 'Total'],
         ...followupStatus.byMember.map(m => [m.member, m.total, m.converted, m.rescheduled, m.attended, m.untouched, m.upcoming]),
         [''],
         ['--- By Day ---'],
@@ -1681,7 +1684,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div className="stat-grid">
             <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>created in range</div></div>
-            <div className="stat-card sc-blue"><div className="lbl">Total Follow-ups</div><div className="val">{followupStatus.totals.total}</div></div>
+            <div className="stat-card sc-blue">
+              <div className="lbl">Follow-up Occurrences</div>
+              <div className="val">{followupStatus.totals.total}</div>
+              {/* Without this the tile looks broken next to Total Leads:
+                  occurrences + no-follow-up-date can exceed the lead count,
+                  because a rescheduled lead is counted on each day it was due. */}
+              <div className="sub">across {followupStatus.leadsInvolved} lead{followupStatus.leadsInvolved === 1 ? '' : 's'}</div>
+            </div>
             <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
             <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
             <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
@@ -1693,7 +1703,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div className="tw">
             <div className="tw-head"><h3>By Team Member</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Sorted by Untouched (most overdue-unactioned first). "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet.
+              Counts follow-up OCCURRENCES, not leads — a lead rescheduled three times is counted on each of the three days it was due, which is what makes rescheduled work visible. So this total is higher than the number of leads involved. Sorted by Untouched (most overdue-unactioned first). "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet.
             </div>
             <div className="tw-scroll">
               {followupStatus.byMember.length === 0 ? (
@@ -1703,34 +1713,34 @@ export default function Reports({ user, perms, ownerId, profile }) {
                   <thead>
                     <tr>
                       <th>Team Member</th>
-                      <th style={{ textAlign: 'right' }}>Total</th>
                       <th style={{ textAlign: 'right' }}>Converted</th>
                       <th style={{ textAlign: 'right' }}>Rescheduled</th>
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right', background: '#fef2f2' }}>Untouched</th>
                       <th style={{ textAlign: 'right' }}>Upcoming</th>
+                      <th style={{ textAlign: 'right' }}>Total</th>
                     </tr>
                   </thead>
                   <tbody>
                     {followupStatus.byMember.map(m => (
                       <tr key={m.member}>
                         <td><strong>{m.member}</strong></td>
-                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{m.total}</td>
                         <td style={{ textAlign: 'right', color: '#16a34a', fontWeight: m.converted ? 700 : 400 }}>{m.converted || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#d97706', fontWeight: m.rescheduled ? 700 : 400 }}>{m.rescheduled || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: m.attended ? 700 : 400 }}>{m.attended || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: 700, background: m.untouched ? 'rgba(220,38,38,0.06)' : 'transparent' }}>{m.untouched || '-'}</td>
                         <td style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: m.upcoming ? 600 : 400 }}>{m.upcoming || '-'}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{m.total}</td>
                       </tr>
                     ))}
                     <tr style={{ background: '#f9fafb' }}>
                       <td><strong>Total</strong></td>
-                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.converted}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.rescheduled}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700, background: '#fef2f2' }}>{followupStatus.totals.untouched}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.upcoming}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
                     </tr>
                   </tbody>
                 </table>
