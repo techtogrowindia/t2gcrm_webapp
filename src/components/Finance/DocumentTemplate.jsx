@@ -1,5 +1,5 @@
 import React from 'react';
-import { fmt, fmtD, numberToWords, currencySymbol } from '../../utils/helpers';
+import { fmt, fmtD, numberToWords, currencySymbol, resolveGstSplit } from '../../utils/helpers';
 import { computeDocTotals } from '../../utils/docTotals';
 
 export default function DocumentTemplate({ data, profile, type = 'Invoice', preview = false, settings }) {
@@ -19,7 +19,9 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
   const ptots = computeDocTotals(items, data);
 
   const clientMatch = data.clientDetails || {}; 
-  const isInterState = profile?.bizState && clientMatch?.state && profile.bizState !== clientMatch.state;
+  // Prefer the split frozen onto the document at issue time; the live customer
+  // lookup is only a fallback for documents saved before those fields existed.
+  const { isInterState } = resolveGstSplit(data, profile, clientMatch);
 
   const A4_STYLE = preview ? {
     width: '210mm',

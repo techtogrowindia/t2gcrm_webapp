@@ -285,3 +285,32 @@ export function nextPaymentNo(invoices, prefix = 'PAY-', startAt = 1) {
   const n = Math.max(Number(startAt) || 1, max + 1);
   return `${prefix}${String(n).padStart(3, '0')}`;
 }
+
+/**
+ * Decide CGST+SGST vs IGST for a document.
+ *
+ * The split used to be worked out at PRINT time from whichever customer record
+ * currently matched the client NAME. Two consequences, both bad on a tax
+ * document: if no customer matched (a lead, a renamed client, a one-off sale)
+ * the state was unknown and it silently fell through to CGST+SGST even on an
+ * inter-state sale; and editing a customer's state later re-rendered an already
+ * issued invoice with a different tax split.
+ *
+ * A GST invoice must be fixed at the moment it is issued, so placeOfSupply and
+ * supplierState are stored ON the document. The live customer lookup is only a
+ * fallback for documents saved before those fields existed.
+ *
+ * `known` is false when neither side can be established — the caller should say
+ * so rather than presenting a confident split it cannot justify.
+ */
+export function resolveGstSplit(doc = {}, profile = {}, clientMatch = null) {
+  const norm = (v) => String(v || '').trim().toLowerCase();
+  const supplier = doc.supplierState || profile.bizState || '';
+  const buyer = doc.placeOfSupply || clientMatch?.state || '';
+  if (!norm(supplier) || !norm(buyer)) {
+    // Unknown: keep the historical CGST+SGST presentation so nothing changes
+    // shape unexpectedly, but report known:false so the UI can flag it.
+    return { isInterState: false, supplier, buyer, known: false };
+  }
+  return { isInterState: norm(supplier) !== norm(buyer), supplier, buyer, known: true };
+}

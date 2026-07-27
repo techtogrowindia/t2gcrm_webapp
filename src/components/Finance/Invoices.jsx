@@ -5,7 +5,7 @@ import { useData } from '../../hooks/useData';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
-import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol, autoStagePatch, DEFAULT_PAYMENT_MODES, nextPaymentNo } from '../../utils/helpers';
+import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol, autoStagePatch, DEFAULT_PAYMENT_MODES, nextPaymentNo, resolveGstSplit } from '../../utils/helpers';
 import DocumentTemplate from './DocumentTemplate';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
@@ -27,7 +27,7 @@ function calcTotals(items, disc, discType, adj, delivery = 0, deliveryTaxRate = 
   return { sub, taxTotal, discAmt, deliveryAmt, deliveryTax, total };
 }
 
-const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
+const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], placeOfSupply: '', supplierState: '', assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
 
 export default function Invoices({ user, perms, ownerId, settings, planEnforcement }) {
   const canCreate = perms?.can('Invoices', 'create') === true;
@@ -319,9 +319,16 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
       invPayload.shipTo = '';
     }
 
-    const payload = { 
-      ...invPayload, 
-      userId: ownerId, 
+    // Freeze the GST position at issue time. Both were previously derived at
+    // PRINT time from whichever customer record matched the client name, so an
+    // unmatched client silently produced CGST+SGST on an inter-state sale, and
+    // editing a customer's state afterwards changed an already issued invoice.
+    const gstClient = customers.find(c => c.name === invPayload.client);
+    const payload = {
+      ...invPayload,
+      supplierState: invPayload.supplierState || profile?.bizState || '',
+      placeOfSupply: invPayload.placeOfSupply || gstClient?.state || '',
+      userId: ownerId,
       actorId: user.id, 
       date: editData ? editData.date : new Date().toISOString().split('T')[0], 
       total: tots.total, 
@@ -879,9 +886,13 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                           // Auto-map distributor/retailer from matching lead
                           const matchedLead = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
                           const matchedCust = customers.find(c => (c.name || '').trim().toLowerCase() === (val || '').trim().toLowerCase());
-                          setForm(p => ({ 
-                            ...p, 
+                          setForm(p => ({
+                            ...p,
                             client: val,
+                            // Seed place of supply from the chosen customer; the
+                            // field below stays editable for one-off sales and
+                            // leads, which carry no state at all.
+                            placeOfSupply: matchedCust?.state || matchedLead?.state || p.placeOfSupply || '',
                             distributorId: matchedLead?.distributorId || matchedCust?.distributorId || '',
                             retailerId: matchedLead?.retailerId || matchedCust?.retailerId || ''
                           }));
@@ -890,6 +901,26 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                       />
                     </div>
                     <button className="btn btn-secondary" style={{ padding: '0 10px' }} onClick={() => setCustModal(true)} title="Add New Customer">+</button>
+                  </div>
+
+                  {/* Place of supply decides CGST+SGST vs IGST and must be
+                      fixed when the invoice is issued. Shown rather than
+                      inferred: a lead or one-off client carries no state, and
+                      silently assuming "same state" put the wrong tax on the
+                      document. */}
+                  <div className="fg" style={{ marginTop: 10 }}>
+                    <label>
+                      Place of Supply
+                      {(() => {
+                        const g = resolveGstSplit(form, profile, customers.find(c => c.name === form.client));
+                        if (!g.known) return <span style={{ color: '#b45309', fontWeight: 600 }}> — not set, GST will be charged as CGST+SGST</span>;
+                        return <span style={{ color: 'var(--muted)', fontWeight: 400 }}> — {g.isInterState ? 'inter-state, IGST' : 'same state, CGST+SGST'}</span>;
+                      })()}
+                    </label>
+                    <select value={form.placeOfSupply || ''} onChange={e => setForm(p2 => ({ ...p2, placeOfSupply: e.target.value }))}>
+                      <option value="">Select state…</option>
+                      {INDIAN_STATES.map(st => <option key={st} value={st}>{st}</option>)}
+                    </select>
                   </div>
                 </div>
                 <div className="fg"><label>Due Date</label><input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))} /></div>
@@ -1105,7 +1136,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                   {(tots.discAmt > 0 && form.discType === '%') && <div className="total-row"><span style={{ color: 'var(--muted)' }}>Discount Amount</span><span style={{ color: '#dc2626' }}>- {fmt(tots.discAmt, form.currency)}</span></div>}
                   {(() => {
                     const clientMatchForm = customers.find(c => c.name === form.client);
-                    const isInterStateForm = profile?.bizState && clientMatchForm?.state && profile.bizState !== clientMatchForm.state;
+                    const { isInterState: isInterStateForm } = resolveGstSplit(form, profile, clientMatchForm);
                     if (tots.taxTotal > 0) {
                       return isInterStateForm ? (
                         <div className="total-row"><span style={{ color: 'var(--muted)' }}>IGST</span><span style={{ color: '#16a34a' }}>{fmt(tots.taxTotal, form.currency)}</span></div>
