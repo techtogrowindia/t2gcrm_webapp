@@ -139,7 +139,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
   const [stageLogsLoading, setStageLogsLoading] = useState(false);
   useEffect(() => {
     if (tab !== 'followup-status' || !ownerId) return;
-    const startMs = new Date(fromDate).getTime();
+    // Parse as LOCAL midnight. `new Date('YYYY-MM-DD')` parses as UTC, which in
+    // +05:30 starts the window at 05:30 local and silently drops every log
+    // before then. The classification memo below already parses it this way —
+    // the fetch didn't, so the two disagreed about where the day begins.
+    const startMs = new Date(fromDate + 'T00:00:00').getTime();
     const endMs = new Date(toDate + 'T23:59:59').getTime();
     setStageLogsLoading(true);
     fetch('/api/team-activity', {
