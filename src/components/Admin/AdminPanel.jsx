@@ -473,12 +473,24 @@ export default function AdminPanel({ user }) {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 14 }}>
             {plans.map((p, i) => {
-              const enabledMods = ALL_MODULES.filter(m => p.modules ? p.modules[m.key] !== false : true);
+              // Must match usePlanEnforcement.isModuleEnabled exactly (strict
+              // === true). Anything looser makes this panel claim a module is
+              // enabled while the business can't see it.
+              const enabledMods = ALL_MODULES.filter(m => p.modules ? p.modules[m.key] === true : true);
+              // Keys added to ALL_MODULES after this plan was last saved. They
+              // enforce as OFF, so the plan has to be re-saved to pick them up.
+              const unconfigured = p.modules ? ALL_MODULES.filter(m => p.modules[m.key] === undefined) : [];
               const isHidden = !!p.hidden;
               const assignedCount = users.filter(u => u.plan === p.name).length;
               return (
                 <div key={p.id || p.name} className={`plan-card${i === 1 && !isHidden ? ' featured' : ''}`} style={{ position: 'relative', opacity: isHidden ? 0.7 : 1, border: isHidden ? '2px dashed #fbbf24' : undefined }}>
                   {i === 1 && !isHidden && <div className="plan-badge">Popular</div>}
+                  {unconfigured.length > 0 && (
+                    <div style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 6, padding: '6px 8px', fontSize: 11, fontWeight: 600, marginBottom: 8 }}>
+                      ⚠ {unconfigured.length} new module{unconfigured.length === 1 ? '' : 's'} not configured on this plan ({unconfigured.map(m => m.label).join(', ')}).
+                      They are switched OFF for {assignedCount === 1 ? 'the business' : 'businesses'} on this plan until you press Edit → Update.
+                    </div>
+                  )}
                   {isHidden && <div style={{ position: 'absolute', top: -10, right: 10, background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700 }}>🔒 Hidden</div>}
                   <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 5 }}>{p.name}</div>
                   <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--accent)', marginBottom: 4 }}>
@@ -492,7 +504,7 @@ export default function AdminPanel({ user }) {
                   </div>
                   {p.limits && Object.entries(p.limits).some(([, v]) => +v !== -1) && (
                     <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-                      {ALL_MODULES.filter(m => m.hasLimit && p.modules?.[m.key] !== false).map(m => (
+                      {ALL_MODULES.filter(m => m.hasLimit && p.modules?.[m.key] === true).map(m => (
                         <div key={m.limitKey}>{m.label}: {p.limits?.[m.limitKey] === -1 || p.limits?.[m.limitKey] === undefined ? 'Unlimited' : p.limits[m.limitKey]}</div>
                       ))}
                     </div>
@@ -687,15 +699,15 @@ export default function AdminPanel({ user }) {
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   {ALL_MODULES.map(m => (
-                    <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: planForm.modules?.[m.key] !== false ? 'var(--bg-soft)' : '#fef2f2', borderRadius: 8, border: `1px solid ${planForm.modules?.[m.key] !== false ? 'var(--border)' : '#fca5a5'}` }}>
+                    <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: planForm.modules?.[m.key] === true ? 'var(--bg-soft)' : '#fef2f2', borderRadius: 8, border: `1px solid ${planForm.modules?.[m.key] === true ? 'var(--border)' : '#fca5a5'}` }}>
                       <input
                         type="checkbox"
-                        checked={planForm.modules?.[m.key] !== false}
+                        checked={planForm.modules?.[m.key] === true}
                         onChange={e => setPlanForm(p => ({ ...p, modules: { ...p.modules, [m.key]: e.target.checked } }))}
                         style={{ width: 15, height: 15, flexShrink: 0 }}
                       />
                       <span style={{ fontSize: 12, flex: 1, fontWeight: 500, color: planForm.modules?.[m.key] === false ? '#991b1b' : undefined }}>{m.label}</span>
-                      {m.hasLimit && planForm.modules?.[m.key] !== false && (
+                      {m.hasLimit && planForm.modules?.[m.key] === true && (
                         <input
                           type="number"
                           value={planForm.limits?.[m.limitKey] ?? m.defaultLimit}
