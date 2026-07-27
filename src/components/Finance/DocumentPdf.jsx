@@ -267,6 +267,10 @@ function StandardDoc({ t, data, profile, type, settings }) {
             <View style={s.cDesc}>
               <Text style={s.itemName}>{it.name}</Text>
               {it.sku ? <Text style={s.itemSub}>Code: {it.sku}</Text> : null}
+              {/* HSN/SAC is mandatory on a GST invoice. Placed under the item
+                  name rather than as its own column — the row is already tight
+                  and this matches how Indian invoice layouts present it. */}
+              {it.hsn ? <Text style={s.itemSub}>HSN/SAC: {it.hsn}</Text> : null}
               {it.desc ? <Text style={s.itemSub}>{it.desc}</Text> : null}
             </View>
             <Text style={s.cQty}>{Number(it.qty)} {it.unit || ''}</Text>

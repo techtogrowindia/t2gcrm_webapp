@@ -12,7 +12,7 @@ import { fireAutoNotifications } from '../../utils/messaging';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
 
-const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
+const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
 
 function calcTotals(items, disc, discType, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
   const its = Array.isArray(items) ? items : (items ? JSON.parse(items) : []);
@@ -198,7 +198,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     d.setDate(d.getDate() + 14);
     const defDue = d.toISOString().split('T')[0];
     
-    setForm({ ...EMPTY, no: nextNo, validUntil: defDue, terms: profile?.qTerms || '', notes: profile?.qNotes || '', currency: profile?.defaultCurrency || 'INR', items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] });
+    setForm({ ...EMPTY, no: nextNo, validUntil: defDue, terms: profile?.qTerms || '', notes: profile?.qNotes || '', currency: profile?.defaultCurrency || 'INR', items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] });
     setModal(true); 
   };
   const openEdit = (q) => {
@@ -428,7 +428,9 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   };
 
   const updateItem = (i, k, v) => {
-    let newIt = { ...form.items[i], [k]: k === 'name' || k === 'desc' ? v : parseFloat(v) || 0 };
+    // hsn stays a string — see Invoices.jsx
+    const isText = k === 'name' || k === 'desc' || k === 'hsn';
+    let newIt = { ...form.items[i], [k]: isText ? v : parseFloat(v) || 0 };
     if (k === 'name') {
       const pMatch = products.find(p => p.name === v);
       if (pMatch) newIt = { ...newIt, rate: pMatch.rate || 0, taxRate: pMatch.tax || 0, unit: pMatch.unit || 'Nos' };
@@ -436,7 +438,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     const items = form.items.map((it, idx) => idx === i ? newIt : it);
     setForm(p => ({ ...p, items }));
   };
-  const addItem = () => setForm(p => ({ ...p, items: [...p.items, { name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: profile?.defaultTaxRate || 0 }] }));
+  const addItem = () => setForm(p => ({ ...p, items: [...p.items, { name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: profile?.defaultTaxRate || 0 }] }));
   const removeItem = (i) => setForm(p => ({ ...p, items: p.items.filter((_, idx) => idx !== i) }));
 
   const convertToInvoice = async (q) => {

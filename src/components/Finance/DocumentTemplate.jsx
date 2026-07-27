@@ -210,7 +210,8 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                           <td>
                             <div style={{ fontWeight: '700', fontSize: '12px' }}>{it.name}</div>
                             {it.sku && <div style={{ fontSize: '10px', fontWeight: '500', color: '#000', marginTop: '4px' }}>Code: {it.sku}</div>}
-                            {it.desc && <div style={{ fontSize: '11px', color: '#000', marginTop: '4px', whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>{it.desc}</div>}
+                            {it.hsn ? <div style={{ fontSize: 10, color: '#666' }}>HSN/SAC: {it.hsn}</div> : null}
+                    {it.desc && <div style={{ fontSize: '11px', color: '#000', marginTop: '4px', whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>{it.desc}</div>}
                           </td>
                           <td style={{ textAlign: 'center' }}>{Number(it.qty)} {it.unit || ''}</td>
                           <td style={{ textAlign: 'right' }}>{moneyNo(it.rate)}</td>

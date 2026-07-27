@@ -27,7 +27,7 @@ function calcTotals(items, disc, discType, adj, delivery = 0, deliveryTaxRate = 
   return { sub, taxTotal, discAmt, deliveryAmt, deliveryTax, total };
 }
 
-const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], placeOfSupply: '', supplierState: '', assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
+const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], placeOfSupply: '', supplierState: '', assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
 
 export default function Invoices({ user, perms, ownerId, settings, planEnforcement }) {
   const canCreate = perms?.can('Invoices', 'create') === true;
@@ -576,10 +576,15 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   };
 
   const updateItem = (i, k, v) => {
-    let newIt = { ...form.items[i], [k]: k === 'name' || k === 'desc' ? v : parseFloat(v) || 0 };
+    // hsn stays a string: codes are 4-8 digits and can carry leading zeros,
+    // which parseFloat would silently strip.
+    const isText = k === 'name' || k === 'desc' || k === 'hsn';
+    let newIt = { ...form.items[i], [k]: isText ? v : parseFloat(v) || 0 };
     if (k === 'name') {
       const pMatch = products.find(p => p.name === v);
-      if (pMatch) newIt = { ...newIt, rate: pMatch.rate || 0, taxRate: pMatch.tax || 0 };
+      // Products already store an HSN; it was just never carried onto the line,
+      // which is why invoices went out without the code GST requires.
+      if (pMatch) newIt = { ...newIt, rate: pMatch.rate || 0, taxRate: pMatch.tax || 0, hsn: pMatch.hsn || newIt.hsn || '' };
     }
     const items = form.items.map((it, idx) => idx === i ? newIt : it);
     setForm(p => ({ ...p, items }));
@@ -1048,7 +1053,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                 <button className="btn btn-secondary btn-sm" onClick={() => setForm(p => ({ ...p, items: [...p.items, { name: '', desc: '', qty: 1, unit: 'Nos', rate: 0, taxRate: profile?.defaultTaxRate || 0 }] }))}>+ Add Row</button>
               </div>
               <table className="li-table">
-                <thead><tr><th>Item</th><th style={{ width: 95 }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90 }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80 }}>Amount</th><th></th></tr></thead>
+                <thead><tr><th>Item</th><th style={{ width: 90 }}>HSN/SAC</th><th style={{ width: 95 }}>Qty</th><th style={{ width: 80 }}>Unit</th><th style={{ width: 90 }}>Rate</th><th style={{ width: 160 }}>Tax</th><th style={{ width: 80 }}>Amount</th><th></th></tr></thead>
                 <tbody>
                   {form.items.map((it, i) => (
                     <tr key={i}>
@@ -1090,6 +1095,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                           />
                         </div>
                       </td>
+                      <td><input className="li-input" value={it.hsn || ''} onChange={e => updateItem(i, 'hsn', e.target.value)} placeholder="HSN" style={{ width: 90 }} /></td>
                       <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 95, textAlign: 'center' }} /></td>
                       <td>
                         <select className="li-input" value={it.unit || 'Nos'} onChange={e => updateItem(i, 'unit', e.target.value)}>
