@@ -507,9 +507,9 @@ export default async function handler(req, res) {
       // caller's `logText` and then return without ever writing it, so deletions
       // left no trace at all.
       if (USE_PG_DATA) {
-        await pgRunOps(ownerId, [opD(collection, targetId)], {
-          userName: data.userName || '', actorId: data.actorId || null,
-        });
+        // userName/actorId are destructured out of params above, so they are
+        // NOT in `data` — read the outer bindings.
+        await pgRunOps(ownerId, [opD(collection, targetId)], { userName, actorId });
         return res.status(200).json({ success: true, message: 'Record deleted successfully' });
       }
 
