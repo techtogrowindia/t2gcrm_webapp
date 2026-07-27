@@ -12,7 +12,7 @@ import { fireAutoNotifications } from '../../utils/messaging';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
 
-const EMPTY = { no: '', client: '', validUntil: '', status: 'Created', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
+const EMPTY = { no: '', docType: 'Quotation', client: '', validUntil: '', status: 'Created', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, tdsRate: 0, items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0, addDelivery: false };
 
 function calcTotals(items, disc, discType, tdsRate, adj, delivery = 0, deliveryTaxRate = 0) {
   const its = Array.isArray(items) ? items : (items ? JSON.parse(items) : []);
@@ -178,15 +178,23 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   const tots = calcTotals(form.items, form.disc, form.discType, form.tdsRate, form.adj, form.deliveryCharge, form.deliveryTaxRate);
   const curSym = currencySymbol(form.currency || 'INR');
 
-  const openCreate = () => {
+  const openCreate = (docTypeArg = 'Quotation') => {
+    // Defensive: an onClick handler passed straight as the callback would hand
+    // in a MouseEvent, which must never reach the saved document.
+    const docType = docTypeArg === 'Proforma' ? 'Proforma' : 'Quotation';
     fetchModalLeads();
     setEditData(null);
     // Numbering from Settings > Financial: prefix + next sequence (see the
     // matching comment in Invoices.jsx). Honours the configured Starting
     // Number, continues past the highest existing quote, any past format.
-    const qPrefix = profile?.qPrefix ?? 'QUO-';
-    const qStart = parseInt(profile?.qNextNum) || 1;
+    // Proformas run their OWN series and are counted only against other
+    // proformas — sharing the quotation sequence would leave gaps in both.
+    const isPro = docType === 'Proforma';
+    const qPrefix = isPro ? (profile?.pfPrefix ?? 'PI-') : (profile?.qPrefix ?? 'QUO-');
+    const qStart = parseInt(isPro ? profile?.pfNextNum : profile?.qNextNum) || 1;
     const qMaxSeq = quotes.reduce((m, q) => {
+      const sameType = (q.docType || 'Quotation') === (isPro ? 'Proforma' : 'Quotation');
+      if (!sameType) return m;
       const match = String(q.no || '').match(/(\d+)\s*$/);
       return match ? Math.max(m, parseInt(match[1])) : m;
     }, 0);
@@ -198,7 +206,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     d.setDate(d.getDate() + 14);
     const defDue = d.toISOString().split('T')[0];
     
-    setForm({ ...EMPTY, no: nextNo, validUntil: defDue, terms: profile?.qTerms || '', notes: profile?.qNotes || '', currency: profile?.defaultCurrency || 'INR', items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] });
+    setForm({ ...EMPTY, docType, no: nextNo, validUntil: defDue, terms: profile?.qTerms || '', notes: profile?.qNotes || '', currency: profile?.defaultCurrency || 'INR', items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: defTax }] });
     setModal(true); 
   };
   const openEdit = (q) => {
@@ -515,7 +523,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
           <button className="btn btn-secondary" onClick={async () => {
             try {
               const { downloadDocumentPdf } = await import('./DocumentPdf');
-              await downloadDocumentPdf({ data: dataWithContext, profile, type: 'Quotation', settings });
+              await downloadDocumentPdf({ data: dataWithContext, profile, type: printing?.docType === 'Proforma' ? 'Proforma Invoice' : 'Quotation', settings });
             } catch (e) {
               console.error('PDF download failed', e);
               toast('PDF generation failed — use Print / Save PDF instead', 'error');
@@ -538,7 +546,8 @@ export default function Quotations({ user, perms, ownerId, settings }) {
     <div>
       <div className="sh">
         <div><h2>Quotations</h2></div>
-        {canCreate && <button className="btn btn-primary btn-sm" onClick={openCreate}>+ Create</button>}
+        {canCreate && <button className="btn btn-secondary btn-sm" onClick={() => openCreate('Proforma')}>+ Proforma</button>}
+        {canCreate && <button className="btn btn-primary btn-sm" onClick={() => openCreate('Quotation')}>+ Create</button>}
       </div>
       <div className="tabs">
         {['all', 'Created', 'Sent', 'Completed', 'Cancelled'].map(t => (
@@ -569,6 +578,12 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                     >
                       {q.no}
                     </strong>
+                    {/* Two document types share this list; a proforma is a
+                        different thing from a quotation and must be readable
+                        as such at a glance. */}
+                    {q.docType === 'Proforma' && (
+                      <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 10, background: '#eef2ff', color: '#4338ca' }}>PROFORMA</span>
+                    )}
                   </td>
                   <td>{q.client}</td>
                   <td><span className={`badge ${stageBadgeClass(q.status)}`}>{q.status}</span></td>

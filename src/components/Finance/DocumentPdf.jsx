@@ -254,6 +254,15 @@ function StandardDoc({ t, data, profile, type, settings }) {
           ) : null}
         </View>
 
+        {/* A proforma is a pre-sale document, not a tax invoice — saying so on
+            the page is what keeps it from being treated as one. */}
+        {String(type).toLowerCase().includes('proforma') ? (
+          <View style={{ marginBottom: 6 }}>
+            <Text style={{ fontSize: 8, color: '#92400e' }}>
+              This is a proforma invoice, not a tax invoice. No GST is payable against this document.
+            </Text>
+          </View>
+        ) : null}
         {/* Required GST declaration — printed whether or not it applies. */}
         <View style={{ marginBottom: 6 }}>
           <Text style={{ fontSize: 8, color: '#555' }}>
