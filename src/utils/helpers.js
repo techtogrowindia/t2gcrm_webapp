@@ -228,3 +228,29 @@ export function autoStagePatch(targetStage, disabledStages, extra = {}) {
   if (off) return { patch: { ...extra }, changed: false };
   return { patch: { ...extra, stage: targetStage, stageChangedAt: Date.now() }, changed: true };
 }
+
+/**
+ * Keep a lead out of a stage the business has switched off in Settings.
+ *
+ * The stage dropdowns already exclude disabled stages, but CSV import maps a
+ * `stage` column straight from the file, bulk actions pass a raw value, and
+ * the API and webhooks write whatever they are given. Any of those could park
+ * a lead in a disabled stage, where it disappears from reports — so the value
+ * is checked at the point of WRITE rather than only in the picker.
+ *
+ * @param {string} stage           the stage being written
+ * @param {string[]} disabledStages profile.disabledStages
+ * @param {string} [fallback]      used when the requested stage is disabled;
+ *                                 pass the lead's current stage to leave it
+ *                                 where it is, or omit to drop the field
+ * @returns {string|null} the stage to write, or null to write nothing
+ */
+export function sanitizeStage(stage, disabledStages, fallback) {
+  if (!stage) return fallback ?? null;
+  const off = Array.isArray(disabledStages) && disabledStages.includes(stage);
+  if (!off) return stage;
+  // Requested stage is disabled — keep the lead where it is rather than
+  // silently moving it somewhere it will not be reported.
+  if (fallback && !(Array.isArray(disabledStages) && disabledStages.includes(fallback))) return fallback;
+  return null;
+}

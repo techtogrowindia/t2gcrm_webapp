@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import db from '../../instant';
 import { id } from '@instantdb/react';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
-import { fmtD, fmtDT, stageBadgeClass, uid, normalizeName, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS, INDIAN_STATES, COUNTRIES } from '../../utils/helpers';
+import { fmtD, fmtDT, stageBadgeClass, uid, normalizeName, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, DEFAULT_PROD_CATS, INDIAN_STATES, COUNTRIES, sanitizeStage } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { EMPTY_LEAD } from '../../utils/constants';
 import { fireAutoNotifications } from '../../utils/messaging';
@@ -697,7 +697,11 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       if (r.phone) phoneIndexLocal.set(String(r.phone).replace(/\D/g, ''), true);
     }
     // Validation sets for O(1) membership checks
-    const stageSet = new Set(allStages);
+    // ENABLED stages only. Built from allStages, an import could set a stage
+    // the business had switched off in Settings — where the lead then vanishes
+    // from every report. The dropdowns already exclude them; the import mapper
+    // is the path that bypassed that.
+    const stageSet = new Set(allEnabledStages);
     const sourceSet = new Set(activeSources);
     const reqSet = new Set(activeRequirements);
     // Assignee must match a current team member. Map normalized (trim + collapse
@@ -1048,7 +1052,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     // Build the shared update payload once
     const updates = {};
     if (pendingBulkAssign) { updates.assign = pendingBulkAssign; updates.assignedAt = Date.now(); }
-    if (pendingBulkStage) { updates.stage = pendingBulkStage; updates.stageChangedAt = Date.now(); }
+    // Guard the raw value: the picker excludes disabled stages, but this is the
+    // write path and a stale/blocked value must not reach the database.
+    const bulkStage = sanitizeStage(pendingBulkStage, disabledStages);
+    if (bulkStage) { updates.stage = bulkStage; updates.stageChangedAt = Date.now(); }
     if (pendingBulkReq) { updates.requirement = pendingBulkReq; }
     if (pendingBulkProduct) { updates.productId = pendingBulkProduct; updates.productName = bulkProduct?.name || ''; }
 
@@ -1087,7 +1094,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       count,
       bulkFields: {
         ...(pendingBulkAssign ? { assign: pendingBulkAssign } : {}),
-        ...(pendingBulkStage ? { stage: pendingBulkStage } : {}),
+        ...(pendingBulkStage ? { stage: sanitizeStage(pendingBulkStage, disabledStages) || undefined } : {}),
         ...(pendingBulkReq ? { requirement: pendingBulkReq } : {}),
         ...(pendingBulkProduct ? { productId: pendingBulkProduct, productName: bulkProduct?.name || '' } : {}),
       },
