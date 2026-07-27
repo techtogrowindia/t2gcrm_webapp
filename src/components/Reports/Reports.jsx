@@ -2,6 +2,8 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import db from '../../instant';
 import { fmt, fmtD, INDIAN_STATES, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, stageBadgeClass, getInvoiceStatus } from '../../utils/helpers';
 import { inDateRange, startOfDayMs, endOfDayMs } from '../../../api/_shared-dates';
+import { computeDocTotals } from '../../utils/docTotals';
+import { resolveGstSplit } from '../../utils/helpers';
 
 export default function Reports({ user, perms, ownerId, profile }) {
   const canExport = (perms?.can('Reports', 'create') === true) || (perms?.can('Reports', 'edit') === true);
@@ -774,6 +776,45 @@ export default function Reports({ user, perms, ownerId, profile }) {
   }, [tab, filteredExpByCat]);
 
   // Monthly GST Breakdown
+  // Rate-wise GST with the CGST/SGST/IGST split. The report previously showed
+  // one total-tax figure, which cannot be used for filing — GSTR-1 needs
+  // taxable value and the tax split per rate.
+  //
+  // Uses computeDocTotals, the same function the invoice and PDF use, so the
+  // report agrees with the documents — including GST being charged AFTER the
+  // discount. Deriving the numbers separately here is how a report drifts from
+  // the paperwork it is meant to summarise.
+  const gstRateWise = useMemo(() => {
+    if (tab !== 'gst') return { rows: [], unknownSplit: 0 };
+    const byRate = {};
+    let unknownSplit = 0;
+    filteredInv.forEach(inv => {
+      const items = Array.isArray(inv.items) ? inv.items : (inv.items ? JSON.parse(inv.items || '[]') : []);
+      if (!items.length) return;
+      const t = computeDocTotals(items, inv);
+      // placeOfSupply is stamped on documents issued after that fix; older ones
+      // have neither field and no customer record is loaded on this tab, so the
+      // split is genuinely unknown and is counted rather than guessed.
+      const g = resolveGstSplit(inv, profile, null);
+      if (!g.known) unknownSplit += 1;
+      Object.entries(t.taxesByRate || {}).forEach(([rateStr, taxAmt]) => {
+        const rate = parseFloat(rateStr) || 0;
+        if (!rate || !taxAmt) return;
+        const e = byRate[rate] || (byRate[rate] = { taxable: 0, cgst: 0, sgst: 0, igst: 0, tax: 0 });
+        // Taxable value back out of the tax at that rate — keeps it consistent
+        // with the discount-adjusted figure the document shows.
+        e.taxable += taxAmt / (rate / 100);
+        e.tax += taxAmt;
+        if (g.isInterState) e.igst += taxAmt;
+        else { e.cgst += taxAmt / 2; e.sgst += taxAmt / 2; }
+      });
+    });
+    const rows = Object.entries(byRate)
+      .map(([rate, v]) => ({ rate: parseFloat(rate), ...v }))
+      .sort((a, b) => a.rate - b.rate);
+    return { rows, unknownSplit };
+  }, [tab, filteredInv, profile]);
+
   const gstBreakdown = useMemo(() => {
     const months = {};
     filteredInv.forEach(inv => {
@@ -825,6 +866,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
       }).filter(inv => inv.paidAmt > 0);
 
       const rows = [
+        ['--- GST by Rate ---'],
+        ['Rate', 'Taxable Value', 'CGST', 'SGST', 'IGST', 'Total Tax'],
+        ...gstRateWise.rows.map(r => [`${r.rate}%`, Math.round(r.taxable), Math.round(r.cgst), Math.round(r.sgst), Math.round(r.igst), Math.round(r.tax)]),
+        [''],
         ['--- Monthly Summary ---'],
         ['Month', 'Output GST', 'Input GST', 'Net Payable'],
         ...gstBreakdown.map(([k, v]) => [k, v.out, v.inp, v.out - v.inp]),
@@ -1157,6 +1202,44 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
       {tab === 'gst' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* Rate-wise split — what a return actually needs. */}
+          <div className="tw" style={{ order: 2 }}>
+            <div className="tw-head">
+              <h3>GST by Rate</h3>
+              <span style={{ fontSize: 11, color: 'var(--muted)' }}>Taxable value and tax split per rate</span>
+            </div>
+            {gstRateWise.unknownSplit > 0 && (
+              <div style={{ padding: '8px 16px', background: '#fffbeb', borderBottom: '1px solid var(--border)', fontSize: 11, color: '#92400e' }}>
+                {gstRateWise.unknownSplit} invoice{gstRateWise.unknownSplit === 1 ? '' : 's'} in this range have no place of supply recorded, so their tax is shown as CGST+SGST. Set Place of Supply on those invoices to split them correctly.
+              </div>
+            )}
+            <table>
+              <thead><tr><th>Rate</th><th>Taxable Value</th><th>CGST</th><th>SGST</th><th>IGST</th><th>Total Tax</th></tr></thead>
+              <tbody>
+                {gstRateWise.rows.map(r => (
+                  <tr key={r.rate}>
+                    <td><strong>{r.rate}%</strong></td>
+                    <td>{fmt(Math.round(r.taxable))}</td>
+                    <td>{r.cgst ? fmt(Math.round(r.cgst)) : '–'}</td>
+                    <td>{r.sgst ? fmt(Math.round(r.sgst)) : '–'}</td>
+                    <td>{r.igst ? fmt(Math.round(r.igst)) : '–'}</td>
+                    <td style={{ fontWeight: 700 }}>{fmt(Math.round(r.tax))}</td>
+                  </tr>
+                ))}
+                {gstRateWise.rows.length === 0 && <tr><td colSpan={6} style={{ textAlign: 'center', padding: 24, color: 'var(--muted)' }}>No taxable invoices in this period</td></tr>}
+                {gstRateWise.rows.length > 0 && (
+                  <tr style={{ background: 'var(--bg)' }}>
+                    <td><strong>Total</strong></td>
+                    <td><strong>{fmt(Math.round(gstRateWise.rows.reduce((a, r) => a + r.taxable, 0)))}</strong></td>
+                    <td><strong>{fmt(Math.round(gstRateWise.rows.reduce((a, r) => a + r.cgst, 0)))}</strong></td>
+                    <td><strong>{fmt(Math.round(gstRateWise.rows.reduce((a, r) => a + r.sgst, 0)))}</strong></td>
+                    <td><strong>{fmt(Math.round(gstRateWise.rows.reduce((a, r) => a + r.igst, 0)))}</strong></td>
+                    <td><strong>{fmt(Math.round(gstRateWise.rows.reduce((a, r) => a + r.tax, 0)))}</strong></td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
           <div className="stat-grid">
             <div className="stat-card sc-green"><div className="lbl">Output GST (Collected)</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)', wordBreak: 'break-word', lineHeight: '1.2' }}>{fmt(gst)}</div></div>
             <div className="stat-card sc-red"><div className="lbl">Input GST (Paid)</div><div className="val" style={{ fontSize: 'clamp(16px, 1.5vw, 20px)', wordBreak: 'break-word', lineHeight: '1.2' }}>{fmt(inputGst)}</div></div>

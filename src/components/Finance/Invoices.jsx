@@ -27,7 +27,7 @@ function calcTotals(items, disc, discType, adj, delivery = 0, deliveryTaxRate = 
   return { sub, taxTotal, discAmt, deliveryAmt, deliveryTax, total };
 }
 
-const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], placeOfSupply: '', supplierState: '', assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
+const EMPTY = { no: '', client: '', dueDate: '', status: 'Draft', notes: '', terms: '', quoteFor: '', disc: 0, discType: '%', adj: 0, items: [{ name: '', desc: '', hsn: '', qty: 1, unit: 'Nos', rate: 0, taxRate: 0 }], isAmc: false, amcCycle: 'Yearly', amcStart: '', amcEnd: '', amcPlan: '', amcAmount: '', amcTaxRate: 0, shipTo: '', addShipping: false, payments: [], placeOfSupply: '', supplierState: '', reverseCharge: false, assign: '', distributorId: '', retailerId: '', currency: 'INR', deliveryCharge: 0, deliveryTaxRate: 0 };
 
 export default function Invoices({ user, perms, ownerId, settings, planEnforcement }) {
   const canCreate = perms?.can('Invoices', 'create') === true;
@@ -927,6 +927,14 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                       {INDIAN_STATES.map(st => <option key={st} value={st}>{st}</option>)}
                     </select>
                   </div>
+
+                  {/* Whether GST is payable by the recipient instead of the
+                      supplier. A required declaration on a GST invoice — it has
+                      to appear on the document even when it is "No". */}
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={!!form.reverseCharge} onChange={e => setForm(p2 => ({ ...p2, reverseCharge: e.target.checked }))} />
+                    <span>Tax payable under <strong>reverse charge</strong> (recipient pays the GST)</span>
+                  </label>
                 </div>
                 <div className="fg"><label>Due Date</label><input type="date" value={form.dueDate} onChange={e => setForm(p => ({ ...p, dueDate: e.target.value }))} /></div>
                 <div className="fg"><label>Status</label>

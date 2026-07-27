@@ -254,6 +254,13 @@ function StandardDoc({ t, data, profile, type, settings }) {
           ) : null}
         </View>
 
+        {/* Required GST declaration — printed whether or not it applies. */}
+        <View style={{ marginBottom: 6 }}>
+          <Text style={{ fontSize: 8, color: '#555' }}>
+            {data.placeOfSupply ? `Place of Supply: ${data.placeOfSupply}   ` : ''}
+            Tax payable under reverse charge: {data.reverseCharge ? 'Yes' : 'No'}
+          </Text>
+        </View>
         {/* Items */}
         <View style={s.th}>
           <Text style={[s.thText, s.cDesc]}>Description</Text>
