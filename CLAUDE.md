@@ -429,6 +429,125 @@ Production has 11k+ leads, 27k+ call logs. Never subscribe to large collections 
 
 **Modal-lazy-fetch pattern** — components that only need leads in a "Select client" dropdown: fetch once on modal open via `/api/leads-page`, cache in `useState`. Don't subscribe.
 
+## Dates — one parser, `api/_shared-dates.js`
+
+Finance and lead records do **not** all store dates the same way. Use
+`parseDateValue` / `startOfDayMs` / `endOfDayMs` / `inDateRange` — never
+`new Date(str)` on a stored value.
+
+- **`new Date('2026-07-27')` parses as UTC.** In +05:30 that lands at 05:30
+  local, so a range built that way silently drops the first 5.5 hours of the
+  day. `'2026-07-27T00:00:00'` (no designator) parses as LOCAL. Same process,
+  same timezone — the *string form* decides. The VPS being IST is irrelevant.
+- **A string ending in `Z` or `±HH:MM` is unambiguous** — hand it to the engine.
+  Rebuilding it from its parts as local shifts it by the offset. Reports pass
+  `new Date(ms).toISOString()`, which always ends in Z.
+- **Bad values must not vanish.** `new Date()` returns Invalid Date for epoch
+  strings and typo'd years, and `d >= from && d <= to` is FALSE for Invalid
+  Date — so those rows disappeared from every report. On production that was 8
+  invoices and 5 expenses missing from P&L, GST and Revenue by Source.
+- The parser is forgiving about FORM (epoch number/string, `YYYY-MM-DD`, ISO
+  with time, typo'd year like `52026-09-15`) and strict about PLAUSIBILITY
+  (rejects years outside 2000–2100, so a typo can't drag a record to the far
+  future). Typo'd years are fixed by deleting ONE digit — truncating to the last
+  four turns `20026` into `0026`.
+
+**Writers must store `'YYYY-MM-DD'`.** `api/ecom/checkout.js` wrote epoch ms and
+that is where the 8 unreadable invoices came from.
+
+## GST compliance
+
+- **Place of supply is frozen on the document.** `placeOfSupply` and
+  `supplierState` are stamped at save; `resolveGstSplit()` reads those first and
+  only falls back to the live customer for older records. It used to be decided
+  at PDF render from whichever customer matched the client NAME — so an
+  unmatched client (lead, one-off, renamed) silently produced CGST+SGST on an
+  inter-state sale, and editing a customer's state later changed an already
+  issued invoice. A GST invoice must be fixed at issue.
+- `resolveGstSplit` returns `known:false` when neither side is established.
+  Present that as "not set", never as a confident split.
+- **HSN/SAC** is mandatory per line. Products already store one; selecting a
+  product copies it onto the line. Held as a STRING — codes can start with a
+  zero and `parseFloat` would silently change the code.
+- **Reverse charge** is a required declaration and prints either way.
+- **GST Summary is rate-wise**: taxable value + CGST/SGST/IGST per rate, using
+  `computeDocTotals` — the same function the invoice and PDF use, so the report
+  agrees with the paperwork (including GST charged AFTER discount). Invoices
+  with no place of supply are shown as CGST+SGST but COUNTED and surfaced.
+
+⚠️ Invoices issued before this have no `placeOfSupply` and still fall back to
+the live customer. Backfilling would rewrite the tax position on already-issued
+documents — owner's decision, not a cleanup to run.
+
+## Payments Received
+
+A payment is a receipt, not an amount: `{ no, date, amount, mode, reference,
+notes, createdAt, actorId, userName }`.
+
+- Payments stay inside `invoice.payments`. A receipt only exists against an
+  invoice, so keeping them together makes an orphan structurally impossible.
+  The cost is reading invoices to list payments — fine for a small collection,
+  wrong for leads or call logs.
+- **Receipt numbers run in ONE sequence across all invoices** (`nextPaymentNo`,
+  `profile.payPrefix` / `payNextNum`). Gaps are left alone rather than history
+  renumbered.
+- Dates are `'YYYY-MM-DD'`. They used to be `Date.now()`, unreadable by every
+  date-range report.
+- Modes come from `profile.paymentModes` (defaults in helpers), not a hardcoded
+  list.
+- Legacy payments have no number/mode/reference — render what exists, show a
+  dash, never fabricate a number.
+- `PaymentReceiptPdf.jsx` is lazily imported; react-pdf is a 1.5 MB chunk.
+- The page rides the **Invoices** permission and plan key. A new module key
+  would hide it from everyone until every plan was re-saved.
+
+## Proforma invoices
+
+`docType: 'Quotation' | 'Proforma'` on **quotes**, not invoices. A proforma is
+not revenue and carries no GST liability — in `invoices` it would inflate P&L,
+GST Summary, Revenue by Source, the dashboard and receivables. Quotes feed no
+financial total, so that is the safe home, and convert-to-invoice is inherited.
+Own numbering series (`pfPrefix` / `pfNextNum`, default `PI-`) counted only
+against other proformas. The PDF states it is not a tax invoice.
+
+## Stages: the system must not fight the configuration
+
+A lead in a disabled stage is invisible in every report while still sitting in
+the database. Eight ARS leads were stranded in "Quotation Created" this way.
+
+- **Auto-transitions respect `disabledStages`.** Quotations/Invoices move leads
+  to 'Quotation Sent', 'Invoice Created', the won stage and so on — via
+  `autoStagePatch()`, which withholds only the stage if its target is disabled.
+  Each of the 7 transitions is judged on its OWN target. Enrichment (email,
+  phone), customer creation and the activity log still happen; the log says
+  what actually occurred.
+- **Guard the WRITE path, not just the picker.** CSV import validated against
+  `allStages` (disabled included) and bulk apply passed raw values — both now
+  use `sanitizeStage()`.
+- **Webhooks coerce, never reject** (`coerceLeadStage` in `_lead-config.js`).
+  IndiaMART/JustDial/TradeIndia/Sheets map the remote payload straight on. An
+  inbound enquiry must never be dropped over a bad field — a lead in a slightly
+  wrong stage is recoverable, one never created is not.
+- **Settings refuses to delete or disable a value records still use**
+  (`/api/field-usage`): stages, sources, requirements, product categories,
+  custom fields, expense categories, product units, task/order statuses. Counts
+  server-side on the leads cache. Re-enabling stays instant. A list it can't
+  check reports `checked:false` so the caller warns rather than reading silence
+  as a clean bill of health.
+
+## Whitespace splits string-keyed reports
+
+Assignees, products and stages are matched by string, and stray spaces split one
+value into several rows/columns — `"Kanaka Shree"`, `"Kanaka  Shree"` and
+`"Kanaka Shree "` became three columns each holding part of her leads. Totals
+still reconciled, which is why it went unnoticed; the per-person distribution
+was wrong. **Normalise BOTH sides** (`normName`) — cleaning one side is worse
+than cleaning neither, which is how `"Cow Mat "` split into two product rows.
+
+Report rows seed from the CATALOGUE, not only from values found in the data:
+6 of ARS's 11 products had no row at all, while team members with no leads did
+get a column.
+
 ## Customizable Dashboard
 
 Each person arranges their own dashboard; nobody else's changes.
