@@ -1264,8 +1264,23 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                             </div>
                             {p.notes && <div style={{ fontSize: 11, color: 'var(--muted)', fontStyle: 'italic' }}>{p.notes}</div>}
                           </div>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: '#16a34a', whiteSpace: 'nowrap' }}>
-                            {fmt(Number(p.amount) || 0, payModal.currency)}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: '#16a34a' }}>
+                              {fmt(Number(p.amount) || 0, payModal.currency)}
+                            </div>
+                            {/* Receipt for THIS payment. Lazily imported like
+                                the invoice PDF — react-pdf is a 1.5 MB chunk
+                                and must not load with the Invoices page. */}
+                            <button
+                              className="btn-icon btn-sm"
+                              title={`Download receipt ${p.no || ''}`}
+                              onClick={async () => {
+                                try {
+                                  const { downloadPaymentReceipt } = await import('./PaymentReceiptPdf');
+                                  await downloadPaymentReceipt({ payment: p, invoice: payModal, profile });
+                                } catch { toast('Could not generate the receipt', 'error'); }
+                              }}
+                            >⤓</button>
                           </div>
                         </div>
                       ))}
