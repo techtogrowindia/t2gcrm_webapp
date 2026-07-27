@@ -917,12 +917,12 @@ export default function Reports({ user, perms, ownerId, profile }) {
       const rows = [
         ['--- By Team Member (who has not acted) ---'],
         ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming', 'Total'],
-        ...followupStatus.byMember.map(m => [m.member, m.total, m.converted, m.rescheduled, m.attended, m.untouched, m.upcoming]),
+        ...followupStatus.byMember.map(m => [m.member, m.converted, m.rescheduled, m.attended, m.untouched, m.upcoming, m.total]),
         [''],
         ['--- By Day ---'],
-        ['Date', 'Total', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming'],
-        ...followupStatus.days.map(d => [fmtD(d.date), d.total, d.converted, d.rescheduled, d.attended, d.untouched, d.upcoming]),
-        ['Total', followupStatus.totals.total, followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched, followupStatus.totals.upcoming],
+        ['Date', 'Converted', 'Rescheduled', 'Attended', 'Untouched', 'Upcoming', 'Total'],
+        ...followupStatus.days.map(d => [fmtD(d.date), d.converted, d.rescheduled, d.attended, d.untouched, d.upcoming, d.total]),
+        ['Total', followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.untouched, followupStatus.totals.upcoming, followupStatus.totals.total],
       ];
       exportCSV(rows[0], rows.slice(1), `Followup_Status_${fromDate}_to_${toDate}`);
     } else if (tab === 'leads') {
@@ -1763,34 +1763,34 @@ export default function Reports({ user, perms, ownerId, profile }) {
                   <thead>
                     <tr>
                       <th>Date</th>
-                      <th style={{ textAlign: 'right' }}>Total</th>
                       <th style={{ textAlign: 'right' }}>Converted</th>
                       <th style={{ textAlign: 'right' }}>Rescheduled</th>
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right' }}>Untouched</th>
                       <th style={{ textAlign: 'right' }}>Upcoming</th>
+                      <th style={{ textAlign: 'right' }}>Total</th>
                     </tr>
                   </thead>
                   <tbody>
                     {followupStatus.days.map(d => (
                       <tr key={d.date}>
                         <td><strong>{fmtD(d.date)}</strong></td>
-                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{d.total}</td>
                         <td style={{ textAlign: 'right', color: '#16a34a', fontWeight: d.converted ? 700 : 400 }}>{d.converted || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#d97706', fontWeight: d.rescheduled ? 700 : 400 }}>{d.rescheduled || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: d.attended ? 700 : 400 }}>{d.attended || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: d.untouched ? 700 : 400 }}>{d.untouched || '-'}</td>
                         <td style={{ textAlign: 'right', color: 'var(--muted)', fontWeight: d.upcoming ? 600 : 400 }}>{d.upcoming || '-'}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700 }}>{d.total}</td>
                       </tr>
                     ))}
                     <tr style={{ background: '#f9fafb' }}>
                       <td><strong>Total</strong></td>
-                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.converted}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.rescheduled}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.untouched}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.upcoming}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.total}</td>
                     </tr>
                   </tbody>
                 </table>
