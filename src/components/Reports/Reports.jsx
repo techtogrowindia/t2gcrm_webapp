@@ -645,17 +645,23 @@ export default function Reports({ user, perms, ownerId, profile }) {
       if (l.stage === wonStage) cat = 'converted';
       else if (!fu) cat = 'nofollowup';
       else {
-        // Rescheduled/attended only count when the action happened INSIDE the
-        // reporting window, otherwise a lead moved months ago reads as worked.
-        const reschedInRange = (lastResched >= fromMs && lastResched <= toMs)
-          || movedDays.some(k => { const t = startOfKey(k); return t >= fromMs && t <= toMs; });
-        const actedInRange = lastAct >= fromMs && lastAct <= toMs;
-        // A follow-up dated today is due today, not "upcoming".
-        const dueDayStart = startOfKey(dayKeyOfMs(fu));
-        if (reschedInRange) cat = 'rescheduled';
-        else if (actedInRange) cat = 'attended';
-        else if (dueDayStart > todayStart) cat = 'upcoming';
-        else cat = 'untouched';
+        // Status is where the lead stands TODAY, not merely whether it was
+        // touched at some point in the range. Scoping it to the range made
+        // "Untouched" read 0 over a long period — almost every lead gets
+        // touched once in a year — which hid the one number the team acts on.
+        const dueDayStart = startOfKey(dayKeyOfMs(fu)); // a follow-up dated today IS due
+        if (dueDayStart <= todayStart) {
+          // Overdue. Only work done since it actually came due counts —
+          // a note added before the due date doesn't make it handled.
+          const workedSinceDue = lastAct >= dueDayStart || lastResched >= dueDayStart;
+          cat = workedSinceDue ? 'attended' : 'untouched';
+        } else {
+          // Not due yet. Moved here during this range = the rep worked it;
+          // otherwise it's simply scheduled ahead.
+          const reschedInRange = (lastResched >= fromMs && lastResched <= toMs)
+            || movedDays.some(k => { const t = startOfKey(k); return t >= fromMs && t <= toMs; });
+          cat = reschedInRange ? 'rescheduled' : 'upcoming';
+        }
       }
       bump(memberMap, l.assign ? normName(l.assign) : 'Unassigned', cat);
       bump(dayMap, dayKeyOfMs(new Date(l.createdAt).getTime()), cat);
@@ -1703,8 +1709,9 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
               Every lead created in this range appears exactly once, so the Total column adds up to Total Leads.
               "Unassigned" covers leads with no team member set · "No Follow-up" = no follow-up date scheduled at all ·
-              "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet ·
-              "Rescheduled"/"Attended" = acted on within this date range. Sorted by Untouched.
+              "Untouched" = overdue right now and nobody has touched it since it came due — the number to chase ·
+              "Attended" = overdue but worked since it came due · "Rescheduled" = moved to a future date during this range ·
+              "Upcoming" = due in the future. Sorted by Untouched.
             </div>
             <div className="tw-scroll">
               {followupStatus.byMember.length === 0 ? (
@@ -1755,7 +1762,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div className="tw">
             <div className="tw-head"><h3>Follow-up Status by Day</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Rows = lead creation date, so the column totals match Total Leads · Converted = now in "{wonStage}"; Rescheduled/Attended = acted on at/after the due date; Untouched = due/overdue with no activity since; Upcoming = not due yet.
+              Rows = lead creation date, so the column totals match Total Leads · Converted = now in "{wonStage}" · Untouched = overdue right now with nobody having touched it since it came due · Attended = overdue but worked since · Rescheduled = moved to a future date during this range · Upcoming = due in the future.
             </div>
             <div className="tw-scroll" style={{ maxHeight: '55vh', overflowY: 'auto' }}>
               {followupStatus.days.length === 0 ? (
