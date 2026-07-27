@@ -1682,28 +1682,47 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
       {tab === 'followup-status' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <div className="stat-grid">
-            <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>created in range</div></div>
-            <div className="stat-card sc-blue">
-              <div className="lbl">Follow-up Occurrences</div>
-              <div className="val">{followupStatus.totals.total}</div>
-              {/* Without this the tile looks broken next to Total Leads:
-                  occurrences + no-follow-up-date can exceed the lead count,
-                  because a rescheduled lead is counted on each day it was due. */}
-              <div className="sub">across {followupStatus.leadsInvolved} lead{followupStatus.leadsInvolved === 1 ? '' : 's'}</div>
+          {/* Band 1 — counted by LEAD CREATION date. Adds up: with + without = total. */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+              Leads created in this date range
             </div>
-            <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
-            <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
-            <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
-            <div className="stat-card sc-red"><div className="lbl">Untouched (overdue)</div><div className="val">{followupStatus.totals.untouched}</div></div>
-            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Upcoming</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not due yet</div></div>
-            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">No Follow-up Date</div><div className="val" style={{ color: '#475569' }}>{followupStatus.noFollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>leads created in range</div></div>
+            <div className="stat-grid">
+              <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>created in range</div></div>
+              <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">With a Follow-up Date</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totalLeads - followupStatus.noFollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>scheduled</div></div>
+              <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">No Follow-up Date</div><div className="val" style={{ color: '#475569' }}>{followupStatus.noFollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>nothing scheduled</div></div>
+            </div>
+          </div>
+
+          {/* Band 2 — counted by FOLLOW-UP DUE date, so it includes leads created
+              before this range whose follow-up fell inside it. That is why this
+              total does not equal the lead count above. The five categories add
+              up to the occurrence total. */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+              Follow-ups due in this date range
+              <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginLeft: 8 }}>
+                — a different set of leads: includes leads created earlier whose follow-up fell in this range
+              </span>
+            </div>
+            <div className="stat-grid">
+              <div className="stat-card sc-blue">
+                <div className="lbl">Follow-up Occurrences</div>
+                <div className="val">{followupStatus.totals.total}</div>
+                <div style={{ fontSize: 10, color: 'var(--muted)' }}>across {followupStatus.leadsInvolved} lead{followupStatus.leadsInvolved === 1 ? '' : 's'}</div>
+              </div>
+              <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
+              <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div></div>
+              <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
+              <div className="stat-card sc-red"><div className="lbl">Untouched (overdue)</div><div className="val">{followupStatus.totals.untouched}</div></div>
+              <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Upcoming</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not due yet</div></div>
+            </div>
           </div>
 
           <div className="tw">
             <div className="tw-head"><h3>By Team Member</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Counts follow-up OCCURRENCES, not leads — a lead rescheduled three times is counted on each of the three days it was due, which is what makes rescheduled work visible. So this total is higher than the number of leads involved. Sorted by Untouched (most overdue-unactioned first). "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet.
+              Follow-ups due in this range, counted as OCCURRENCES — a lead rescheduled three times is counted on each of the three days it was due, which is what makes rescheduled work visible. This total matches the Follow-up Occurrences tile, not Total Leads: the two count different things. Sorted by Untouched (most overdue-unactioned first). "Untouched" = follow-up due/overdue with no activity since it came due · "Upcoming" = not due yet.
             </div>
             <div className="tw-scroll">
               {followupStatus.byMember.length === 0 ? (
