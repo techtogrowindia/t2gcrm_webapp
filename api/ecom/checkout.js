@@ -49,8 +49,11 @@ export default async function handler(req, res) {
       client: customer.name,
       clientEmail: customer.email || '',
       clientPhone: customer.phone,
-      date: now,
-      dueDate: now + 7 * 24 * 60 * 60 * 1000,
+      // 'YYYY-MM-DD', matching every other invoice writer. This used to store
+      // epoch ms, which `new Date()` can't parse from a string — so ecom
+      // invoices were silently absent from every date-filtered finance report.
+      date: new Date(now).toISOString().split('T')[0],
+      dueDate: new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       items: items.map(i => ({ name: i.name, qty: i.qty, rate: i.rate, taxRate: i.tax || 0 })),
       total: total || 0,
       status: 'Unpaid',

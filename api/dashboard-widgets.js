@@ -22,6 +22,7 @@ import { rollupRepeatAttempts, isUnpickedCall } from './_shared-call-logs.js';
 import { readData } from './_write-ops.js';
 import { resolveCallerPerms } from './_shared-perms.js';
 import { isWidgetAllowed } from './_shared-dashboard-widgets.js';
+import { parseDateValue } from './_shared-dates.js';
 import { verifyJwt } from './auth-pg.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
@@ -252,7 +253,10 @@ export default async function handler(req, res) {
         const due = (Number(inv.total) || 0) - paid;
         if (due <= 0.5) continue;
         total += due;
-        const dueAt = inv.dueDate ? Date.parse(inv.dueDate) : (inv.createdAt || now);
+        // Date.parse() on an epoch value gives NaN, and a NaN age falls through
+        // every bucket comparison into 60+ — so ecom invoices were reported as
+        // the most overdue regardless of their real age.
+        const dueAt = parseDateValue(inv.dueDate) ?? parseDateValue(inv.createdAt) ?? now;
         const age = Math.floor((now - dueAt) / 86400000);
         if (age <= 0) buckets.current += due;
         else if (age <= 30) buckets.d30 += due;

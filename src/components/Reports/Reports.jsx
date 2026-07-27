@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import db from '../../instant';
 import { fmt, fmtD, INDIAN_STATES, DEFAULT_STAGES, DEFAULT_SOURCES, DEFAULT_REQUIREMENTS, stageBadgeClass, getInvoiceStatus } from '../../utils/helpers';
+import { inDateRange, startOfDayMs, endOfDayMs } from '../../../api/_shared-dates';
 
 export default function Reports({ user, perms, ownerId, profile }) {
   const canExport = (perms?.can('Reports', 'create') === true) || (perms?.can('Reports', 'edit') === true);
@@ -209,11 +210,15 @@ export default function Reports({ user, perms, ownerId, profile }) {
     });
   }, [leads, canSeeAll, perms?.name, user.id, user.email, profile?.leadStages, profile?.disabledStages]);
 
-  const inRange = useCallback((dateStr) => {
-    if (!dateStr) return false;
-    const d = new Date(dateStr);
-    return d >= new Date(fromDate) && d <= new Date(toDate + 'T23:59:59');
-  }, [fromDate, toDate]);
+  // Tolerant of how the value was stored (epoch ms, 'YYYY-MM-DD', typo'd
+  // year) and correct about local midnight. `new Date(fromDate)` parsed the
+  // bound as UTC — 05:30 local in +05:30 — and any record whose own date
+  // wouldn't parse returned Invalid Date, which fails every comparison and so
+  // vanished from the report without trace.
+  const inRange = useCallback(
+    (dateStr) => inDateRange(dateStr, startOfDayMs(fromDate), endOfDayMs(toDate)),
+    [fromDate, toDate]
+  );
 
   const filteredInv = useMemo(
     () => filteredInvoicesAtSource.filter(inv => inRange(inv.date) && inv.status !== 'Draft'),
