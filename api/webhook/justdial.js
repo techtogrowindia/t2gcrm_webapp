@@ -1,5 +1,8 @@
 import { init } from '@instantdb/admin';
 import { opU, runOps, readData } from '../_write-ops.js';
+import { getLeadFormConfig, coerceLeadStage } from '../_lead-config.js';
+
+const WEBHOOK_NAME = 'justdial';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -189,6 +192,15 @@ export default async function handler(req, res) {
           if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
           const leadId = crypto.randomUUID();
+          // Integration payloads map whatever the remote source sends straight onto
+          // the lead, bypassing the validation /api/data applies. Coerce the stage
+          // to one the business actually uses, so an inbound enquiry can't land in
+          // a disabled or non-existent stage where it would be invisible in reports.
+          {
+            const sc = coerceLeadStage(lead.stage, await getLeadFormConfig(db, userId));
+            if (sc.coerced) console.warn(`[${WEBHOOK_NAME}] stage "${sc.from}" is not an enabled stage — using "${sc.stage}"`);
+            lead.stage = sc.stage;
+          }
           txs.push(opU('leads', leadId, lead));
           added++;
         } catch {
@@ -299,6 +311,15 @@ export default async function handler(req, res) {
             if (lead.sourceLeadId) sourceIdSet.add(lead.sourceLeadId);
 
             const leadId = crypto.randomUUID();
+            // Integration payloads map whatever the remote source sends straight onto
+            // the lead, bypassing the validation /api/data applies. Coerce the stage
+            // to one the business actually uses, so an inbound enquiry can't land in
+            // a disabled or non-existent stage where it would be invisible in reports.
+            {
+              const sc = coerceLeadStage(lead.stage, await getLeadFormConfig(db, userId));
+              if (sc.coerced) console.warn(`[${WEBHOOK_NAME}] stage "${sc.from}" is not an enabled stage — using "${sc.stage}"`);
+              lead.stage = sc.stage;
+            }
             txs.push(opU('leads', leadId, lead));
             added++;
           } catch {

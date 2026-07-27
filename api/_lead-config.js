@@ -79,3 +79,27 @@ export function validateLeadAgainstConfig(payload, cfg) {
   }
   return problems;
 }
+
+/**
+ * Coerce a webhook-supplied stage to one the business actually uses.
+ *
+ * Integration payloads (IndiaMART, JustDial, TradeIndia, Google Sheets) are
+ * mapped straight onto the lead — whatever the remote source sends lands in
+ * `stage`. Those writes bypass the validation /api/data applies on create and
+ * update, so an incoming value could be a stage the business has DISABLED, or
+ * one that doesn't exist at all. Either way the lead is stranded: invisible in
+ * reports, sitting outside the pipeline the team works from.
+ *
+ * Rejecting the lead would be worse than a wrong stage — an inbound enquiry
+ * must never be dropped over a bad field. So the value is coerced to the
+ * business's first enabled stage instead, and the caller notes the swap.
+ *
+ * @returns {{stage: string, coerced: boolean, from: string}}
+ */
+export function coerceLeadStage(stage, cfg) {
+  const allowed = [...cfg.stages, cfg.wonStage, cfg.lostStage].filter(Boolean);
+  const hit = allowed.find(s => String(s).toLowerCase() === String(stage || '').toLowerCase());
+  if (hit) return { stage: hit, coerced: false, from: stage };
+  const fallback = cfg.stages[0] || 'New';
+  return { stage: fallback, coerced: !!stage, from: stage || '' };
+}

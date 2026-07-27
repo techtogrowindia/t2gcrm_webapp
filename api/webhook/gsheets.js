@@ -1,5 +1,8 @@
 import { init } from '@instantdb/admin';
 import { opU, runOps, readData } from '../_write-ops.js';
+import { getLeadFormConfig, coerceLeadStage } from '../_lead-config.js';
+
+const WEBHOOK_NAME = 'gsheets';
 
 // Initialize InstantDB Admin SDK
 // We must use the Admin SDK for backend/serverless environments
@@ -176,6 +179,15 @@ export default async function handler(req, res) {
     } else {
       // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
       if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+      // Integration payloads map whatever the remote source sends straight onto
+      // the lead, bypassing the validation /api/data applies. Coerce the stage
+      // to one the business actually uses, so an inbound enquiry can't land in
+      // a disabled or non-existent stage where it would be invisible in reports.
+      {
+        const sc = coerceLeadStage(lead.stage, await getLeadFormConfig(db, userId));
+        if (sc.coerced) console.warn(`[${WEBHOOK_NAME}] stage "${sc.from}" is not an enabled stage — using "${sc.stage}"`);
+        lead.stage = sc.stage;
+      }
       txs.push(opU('leads', leadId, lead));
       console.log(`Successfully added lead ${leadId} for user ${userId}`);
     }
