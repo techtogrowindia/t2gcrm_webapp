@@ -587,6 +587,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // a "Follow Up changed" activity log exists for it in the range; attended
   // = some other activity happened; untouched = no activity at all.
   // ==================================================
+  // A year-long range produces 300+ day rows; paginate rather than render
+  // them all (matches the 25-rows/page default used across the app).
+  const [fuDayPage, setFuDayPage] = useState(1);
+  const [fuDayPageSize, setFuDayPageSize] = useState(25);
+
   const followupStatus = useMemo(() => {
     // Every lead created in the range is counted EXACTLY ONCE, in exactly one
     // status, so the table total always equals Total Leads. This used to count
@@ -670,6 +675,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
     const unreconciled = totalLeads - totals.total;
     return { days, byMember, totals, totalLeads, rescheduleEvents, unreconciled };
   }, [tab, filteredLeadsAtSource, stageLogSummary, stageMovedFrom, fromDate, toDate, wonStage]);
+
+  // A narrower date range can leave the pager stranded past the last page.
+  const fuDayTotalPages = Math.max(1, Math.ceil(followupStatus.days.length / fuDayPageSize));
+  useEffect(() => { setFuDayPage(1); }, [fromDate, toDate, tab, fuDayPageSize]);
+  const fuDaysPaged = useMemo(
+    () => followupStatus.days.slice((fuDayPage - 1) * fuDayPageSize, fuDayPage * fuDayPageSize),
+    [followupStatus.days, fuDayPage, fuDayPageSize]
+  );
 
   // ==================================================
   // #3 CUSTOMER PURCHASE REPORT — from paid invoice items, grouped by product
@@ -1744,14 +1757,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
               Rows = lead creation date, so the column totals match Total Leads · Converted = now in "{wonStage}"; Rescheduled/Attended = acted on at/after the due date; Untouched = due/overdue with no activity since; Upcoming = not due yet.
             </div>
-            <div className="tw-scroll">
+            <div className="tw-scroll" style={{ maxHeight: '55vh', overflowY: 'auto' }}>
               {followupStatus.days.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>
-                  No follow-ups due in this period.
+                  No leads created in this period.
                 </div>
               ) : (
                 <table>
-                  <thead>
+                  <thead style={{ position: 'sticky', top: 0, zIndex: 1, background: 'var(--card, #fff)', boxShadow: '0 1px 0 var(--border)' }}>
                     <tr>
                       <th>Date</th>
                       <th style={{ textAlign: 'right' }}>Converted</th>
@@ -1764,7 +1777,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {followupStatus.days.map(d => (
+                    {fuDaysPaged.map(d => (
                       <tr key={d.date}>
                         <td><strong>{fmtD(d.date)}</strong></td>
                         <td style={{ textAlign: 'right', color: '#16a34a', fontWeight: d.converted ? 700 : 400 }}>{d.converted || '-'}</td>
@@ -1776,8 +1789,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
                         <td style={{ textAlign: 'right', fontWeight: 700 }}>{d.total}</td>
                       </tr>
                     ))}
-                    <tr style={{ background: '#f9fafb' }}>
-                      <td><strong>Total</strong></td>
+                    {/* Totals cover ALL days, not just the page on screen, so
+                        this row always reconciles to Total Leads. */}
+                    <tr style={{ background: '#f9fafb', position: 'sticky', bottom: 0 }}>
+                      <td><strong>Total (all days)</strong></td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.converted}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.rescheduled}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700 }}>{followupStatus.totals.attended}</td>
@@ -1790,6 +1805,21 @@ export default function Reports({ user, perms, ownerId, profile }) {
                 </table>
               )}
             </div>
+            {fuDayTotalPages > 1 && (
+              <div style={{ padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border)', background: 'var(--bg-soft)', flexWrap: 'wrap', gap: 10 }}>
+                <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+                  Showing <strong>{(fuDayPage - 1) * fuDayPageSize + 1}</strong>–<strong>{Math.min(fuDayPage * fuDayPageSize, followupStatus.days.length)}</strong> of <strong>{followupStatus.days.length}</strong> days
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <select value={fuDayPageSize} onChange={e => { setFuDayPageSize(Number(e.target.value)); setFuDayPage(1); }} style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                    {[25, 50, 100, 500].map(n => <option key={n} value={n}>{`${n} / page`}</option>)}
+                  </select>
+                  <button className="btn btn-secondary btn-sm" disabled={fuDayPage === 1} onClick={() => setFuDayPage(p => p - 1)}>&#8249; Prev</button>
+                  <span style={{ fontSize: 12 }}>Page {fuDayPage} / {fuDayTotalPages}</span>
+                  <button className="btn btn-secondary btn-sm" disabled={fuDayPage === fuDayTotalPages} onClick={() => setFuDayPage(p => p + 1)}>Next &#8250;</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
