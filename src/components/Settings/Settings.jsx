@@ -503,13 +503,66 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     orderStatuses: 'order status',
   };
 
-  const removeItem = (key, list, idx) => {
+  /**
+   * How many records still reference this configured value.
+   * Counted server-side: Settings must never subscribe to leads (11k+ rows).
+   * Returns null when the check itself failed, which the callers treat as
+   * "don't know" and refuse to proceed silently.
+   */
+  const checkUsage = async (key, value) => {
+    try {
+      const r = await fetch('/api/field-usage', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, field: key, value }),
+      });
+      if (!r.ok) return null;
+      return await r.json();
+    } catch { return null; }
+  };
+
+  // Removing or disabling a value that records still point at doesn't move
+  // those records — it strands them. A deleted stage leaves leads pointing at
+  // something that no longer exists; a disabled one hides them from every
+  // report while they sit in the database. Both have happened here. So the
+  // count is checked first and the action is blocked until the records move.
+  const guardInUse = async (key, name, verb) => {
+    const usage = await checkUsage(key, name);
+    const typeLabel = ITEM_LABELS[key] || 'item';
+    if (usage === null) {
+      return window.confirm(
+        `Could not check whether any records still use the ${typeLabel} "${name}".
+
+` +
+        `${verb} it anyway? Records pointing at it would be left stranded.`
+      );
+    }
+    if (usage.checked && usage.count > 0) {
+      const names = usage.sample.length ? `
+
+For example: ${usage.sample.join(', ')}` : '';
+      window.alert(
+        `Cannot ${verb.toLowerCase()} "${name}" yet.
+
+` +
+        `${usage.count} ${usage.label}${usage.count === 1 ? '' : 's'} still use this ${typeLabel}.${names}
+
+` +
+        `Move them to another ${typeLabel} first, then ${verb.toLowerCase()} this one.`
+      );
+      return false;
+    }
+    const unchecked = usage.checked ? '' : `
+
+(Couldn't verify usage for this list — check manually.)`;
+    return window.confirm(`${verb} ${typeLabel} "${name}"?${unchecked}`);
+  };
+
+  const removeItem = async (key, list, idx) => {
     const item = list[idx];
     const name = typeof item === 'string'
       ? item
       : (item?.name || item?.label || (item?.rate != null ? `${item.rate}%` : '') || 'this item');
-    const typeLabel = ITEM_LABELS[key] || 'item';
-    if (!window.confirm(`Remove ${typeLabel} "${name}"? This cannot be undone.`)) return;
+    if (!(await guardInUse(key, name, 'Remove'))) return;
     saveList(key, list.filter((_, i) => i !== idx));
   };
 
@@ -1216,9 +1269,15 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
                             color: disabledStages.includes(s) ? '#4b5563' : '#047857',
                             border: `1px solid ${disabledStages.includes(s) ? '#d1d5db' : '#a7f3d0'}`
                           }}
-                          onClick={() => {
-                            const nw = disabledStages.includes(s) ? disabledStages.filter(x => x !== s) : [...disabledStages, s];
-                            saveList('disabledStages', nw);
+                          onClick={async () => {
+                            // Re-enabling is always safe; only hiding a stage
+                            // can strand the leads sitting in it.
+                            if (disabledStages.includes(s)) {
+                              saveList('disabledStages', disabledStages.filter(x => x !== s));
+                              return;
+                            }
+                            if (!(await guardInUse('stages', s, 'Disable'))) return;
+                            saveList('disabledStages', [...disabledStages, s]);
                           }}
                         >
                           {disabledStages.includes(s) ? 'Enable' : 'Disable'}
