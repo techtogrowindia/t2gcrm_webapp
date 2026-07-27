@@ -392,13 +392,19 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
         <div className="tw">
           <div className="tw-head">
             <h3>🗓 My Day</h3>
-            {items.length > 0 && <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>{d.total} item{d.total !== 1 ? 's' : ''}</span>}
+            {items.length > 0 && (
+              <span style={{ fontSize: 11, fontWeight: 600 }}>
+                {d.overdueCount > 0 && <span style={{ color: '#dc2626' }}>{d.overdueCount} overdue</span>}
+                {d.overdueCount > 0 && d.todayCount > 0 && <span style={{ color: 'var(--muted)' }}> · </span>}
+                {d.todayCount > 0 && <span style={{ color: 'var(--muted)' }}>{d.todayCount} today</span>}
+              </span>
+            )}
           </div>
           <div style={{ padding: '4px 0', maxHeight: 320, overflowY: 'auto' }}>
             {!d ? (
               <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>Loading…</div>
             ) : items.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>✓ Nothing scheduled for today</div>
+              <div style={{ textAlign: 'center', padding: 28, color: 'var(--muted)', fontSize: 12 }}>✓ Nothing due — no overdue follow-ups either</div>
             ) : items.map(it => (
               <div
                 key={`${it.kind}-${it.id}`}
@@ -406,8 +412,13 @@ export default function Dashboard({ user, ownerId, perms, planEnforcement }) {
                 className="rem-item-hover"
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
               >
-                <span style={{ fontSize: 13, width: 46, color: 'var(--muted)', fontWeight: 700, flexShrink: 0 }}>
-                  {new Date(it.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })}
+                {/* Overdue items show how long they have waited, not a clock
+                    time — "09:50" on something three weeks late reads as if it
+                    were due this morning. */}
+                <span style={{ fontSize: it.overdue ? 10 : 13, width: 46, color: it.overdue ? '#dc2626' : 'var(--muted)', fontWeight: 700, flexShrink: 0, textAlign: it.overdue ? 'center' : 'left' }}>
+                  {it.overdue
+                    ? `${Math.max(1, Math.floor((Date.now() - it.at) / 86400000))}d late`
+                    : new Date(it.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })}
                 </span>
                 <span style={{ fontSize: 14, flexShrink: 0 }}>{ICON[it.kind]}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>

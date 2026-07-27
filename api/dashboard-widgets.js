@@ -143,28 +143,50 @@ export default async function handler(req, res) {
 
     if (want.has('my-day')) {
       const items = [];
+      let overdueCount = 0, todayCount = 0;
       for (const l of leads) {
         const f = typeof l.followup === 'number' ? l.followup : Date.parse(l.followup);
-        if (!f || isNaN(f) || f < dayStartMs || f >= dayEndMs) continue;
+        if (!f || isNaN(f)) continue;
         if (!mine(l.assign)) continue;
-        items.push({ at: f, kind: 'followup', id: l.id, title: l.name, phone: l.phone || '', email: l.email || '', sub: l.phone || '', tag: l.stage || '' });
+        const due = f < dayStartMs;
+        // Overdue follow-ups belong here. Restricting My Day to strictly-today
+        // made it permanently empty for the way this business works: they carry
+        // hundreds of overdue follow-ups and schedule everything forward, so on
+        // a typical day NOBODY has a follow-up dated today. A panel that reads
+        // "nothing scheduled" while a rep has 151 overdue is worse than useless.
+        if (!due && (f < dayStartMs || f >= dayEndMs)) continue;
+        if (due) overdueCount++; else todayCount++;
+        items.push({
+          at: f, kind: 'followup', id: l.id, title: l.name,
+          phone: l.phone || '', email: l.email || '',
+          sub: l.phone || '', tag: l.stage || '', overdue: due,
+        });
       }
       for (const t of (other.tasks || [])) {
-        const due = typeof t.dueDate === 'number' ? t.dueDate : Date.parse(t.dueDate);
-        if (!due || isNaN(due) || due < dayStartMs || due >= dayEndMs) continue;
+        const dueAt = typeof t.dueDate === 'number' ? t.dueDate : Date.parse(t.dueDate);
+        if (!dueAt || isNaN(dueAt) || dueAt < dayStartMs || dueAt >= dayEndMs) continue;
         if (String(t.status || '').toLowerCase() === 'completed') continue;
         if (!mine(t.assignee)) continue;
-        items.push({ at: due, kind: 'task', id: t.id, title: t.title || t.name || 'Task', sub: t.priority || '', tag: t.status || '' });
+        todayCount++;
+        items.push({ at: dueAt, kind: 'task', id: t.id, title: t.title || t.name || 'Task', sub: t.priority || '', tag: t.status || '' });
       }
       for (const a of (other.appointments || [])) {
-        // Appointments store a 'YYYY-MM-DD' date plus 'HH:MM' — build the
-        // instant in the same local frame the caller's day window came from.
+        // Appointments store 'YYYY-MM-DD' plus 'HH:MM' — build the instant in
+        // the same local frame the caller's day window came from.
         const at = Date.parse(`${a.date}T${(a.time || '00:00')}:00`);
         if (!at || isNaN(at) || at < dayStartMs || at >= dayEndMs) continue;
+        todayCount++;
         items.push({ at, kind: 'appointment', id: a.id, title: a.customerName || 'Appointment', phone: a.customerPhone || '', sub: a.service || '', tag: a.customerPhone || '' });
       }
-      items.sort((x, y) => x.at - y.at);
-      out['my-day'] = { items: items.slice(0, 40), total: items.length };
+      // Oldest overdue first (they have waited longest), then today in time
+      // order — the sequence a rep should actually work through.
+      items.sort((x, y) => (y.overdue ? 1 : 0) - (x.overdue ? 1 : 0) || x.at - y.at);
+      out['my-day'] = {
+        items: items.slice(0, 50),
+        total: items.length,
+        overdueCount,
+        todayCount,
+      };
     }
 
     if (want.has('leads-untouched')) {
