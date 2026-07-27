@@ -8,7 +8,7 @@ const NAV_ITEMS = [
   { group: 'Finance' },
   { id: 'quotations', label: 'Quotations', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8', permKey: 'Quotations' },
   { id: 'invoices', label: 'Invoices', icon: 'M3 3h18v18H3V3z M3 9h18 M9 21V9', permKey: 'Invoices' },
-  { id: 'payments-received', label: 'Payments Received', icon: 'M12 1v22 M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6', permKey: 'Invoices' },
+  { id: 'payments-received', label: 'Payments Received', icon: 'M12 1v22 M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6', permKey: 'PaymentsReceived' },
   { id: 'pos', label: 'POS Billing', icon: 'M16 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2 M9 3h6a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z M12 11h.01 M12 14h.01 M12 17h.01', permKey: 'Invoices' },
   { id: 'amc', label: 'AMC', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z', permKey: 'AMC' },
   { id: 'expenses', label: 'Expenses', icon: 'M12 1v22 M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6', permKey: 'Expenses' },

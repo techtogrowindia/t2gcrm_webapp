@@ -19,6 +19,7 @@ const ALL_MODULES = [
   { key: 'customers', label: 'Customers', hasLimit: true, limitKey: 'maxCustomers', defaultLimit: 10000 },
   { key: 'quotations', label: 'Quotations', hasLimit: false },
   { key: 'invoices', label: 'Invoices', hasLimit: true, limitKey: 'maxInvoices', defaultLimit: -1 },
+  { key: 'paymentsReceived', label: 'Payments Received', hasLimit: false },
   { key: 'pos', label: 'POS Billing', hasLimit: false },
   { key: 'amc', label: 'AMC', hasLimit: false },
   { key: 'expenses', label: 'Expenses', hasLimit: false },
