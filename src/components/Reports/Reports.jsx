@@ -136,6 +136,8 @@ export default function Reports({ user, perms, ownerId, profile }) {
   // lastRescheduleMs] }. Previously the raw log rows, which meant ~12 MB and
   // up to 14s on a wide range to derive two numbers per lead in the browser.
   const [stageLogsData, setStageLogsData] = useState({});
+  // { leadId: ['YYYY-MM-DD', ...] } — days each lead was rescheduled AWAY from.
+  const [stageMovedFrom, setStageMovedFrom] = useState({});
   const [stageLogsLoading, setStageLogsLoading] = useState(false);
   useEffect(() => {
     if (tab !== 'followup-status' || !ownerId) return;
@@ -152,7 +154,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       body: JSON.stringify({ ownerId, startMs, endMs, mode: 'summary' }),
     })
       .then(r => r.json())
-      .then(json => setStageLogsData(json.summary || {}))
+      .then(json => { setStageLogsData(json.summary || {}); setStageMovedFrom(json.movedFrom || {}); })
       .catch(() => {})
       .finally(() => setStageLogsLoading(false));
   }, [tab, ownerId, fromDate, toDate]);
@@ -589,34 +591,55 @@ export default function Reports({ user, perms, ownerId, profile }) {
     // no follow-up date to filter by, so they're scoped by creation date within
     // the selected range instead.
     let noFollowup = 0;
-    filteredLeadsAtSource.forEach(l => {
-      const fu = l.followup ? new Date(l.followup).getTime() : null;
-      if (!fu) {
-        const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
-        if (cr && cr >= fromMs && cr <= toMs) noFollowup += 1;
-        return;
-      }
-      if (fu < fromMs || fu > toMs) return;
-      const d = new Date(fu);
-      const dayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      // Only activity that happened ON/AFTER the follow-up came due counts as
-      // "acting on it" — otherwise an old reschedule (that SET this date) would
-      // wrongly mark a now-overdue follow-up as handled, hiding it from
-      // "untouched" (the bug: everything showed as rescheduled, untouched=0).
-      const dueDayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-      // [lastActivityMs, lastRescheduleMs] — the server already folded the raw
-      // logs down to these two, applying the same 'Follow Up changed' match.
+
+    // A follow-up belongs to the day it was DUE, not the day it currently sits
+    // on. Working a lead almost always reschedules it forward, which used to
+    // move it out of the day being reported — so each day drained down to
+    // exactly the leads nobody had touched and everything read "untouched".
+    // Two sources of "was due on day D":
+    //   a) the lead's follow-up is STILL on a day in range
+    //   b) the lead was rescheduled AWAY from a day in range (movedFrom)
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const dayKeyOfMs = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+    const startOfKey = (key) => { const [y, m, dd] = key.split('-').map(Number); return new Date(y, m - 1, dd).getTime(); };
+    const keyInRange = (key) => { const t = startOfKey(key); return t >= fromMs && t <= toMs; };
+
+    // One lead can legitimately appear on several days (due Monday, moved to
+    // Wednesday, moved again) — but only once per day.
+    const seenEntry = new Set();
+    const addEntry = (l, dayKey, movedAway) => {
+      const k = `${l.id}|${dayKey}`;
+      if (seenEntry.has(k)) return;
+      seenEntry.add(k);
+      const dueDayStart = startOfKey(dayKey);
       const sum = stageLogSummary[l.id];
       const lastAct = sum ? sum[0] : 0;
       const lastResched = sum ? sum[1] : 0;
       let cat;
       if (l.stage === wonStage) cat = 'converted';
+      // Moved off this day = the rep actioned it. This is the case the old
+      // version could not see at all, because the lead had already left the day.
+      else if (movedAway) cat = 'rescheduled';
       else if (lastResched > 0 && lastResched >= dueDayStart) cat = 'rescheduled';
       else if (lastAct > 0 && lastAct >= dueDayStart) cat = 'attended';
       else if (dueDayStart > todayStart) cat = 'upcoming'; // not due yet
       else cat = 'untouched'; // due/overdue, nothing done since it came due
       bump(dayMap, dayKey, cat);
-      bump(memberMap, l.assign ? l.assign : 'Unassigned', cat);
+      bump(memberMap, l.assign ? normName(l.assign) : 'Unassigned', cat);
+    };
+
+    filteredLeadsAtSource.forEach(l => {
+      const fu = l.followup ? new Date(l.followup).getTime() : null;
+      if (!fu) {
+        // No follow-up scheduled — a gap worth surfacing. Scoped by creation
+        // date instead, since there's no follow-up date to filter by.
+        const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
+        if (cr && cr >= fromMs && cr <= toMs) noFollowup += 1;
+      } else if (fu >= fromMs && fu <= toMs) {
+        addEntry(l, dayKeyOfMs(fu), false);
+      }
+      // Days this lead was moved off, even though it no longer sits there.
+      (stageMovedFrom[l.id] || []).forEach(key => { if (keyInRange(key)) addEntry(l, key, true); });
     });
 
     const days = Object.entries(dayMap).map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
@@ -635,7 +658,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
       return cr && cr >= fromMs && cr <= toMs;
     }).length;
     return { days, byMember, totals, noFollowup, totalLeads };
-  }, [tab, filteredLeadsAtSource, stageLogSummary, fromDate, toDate, wonStage]);
+  }, [tab, filteredLeadsAtSource, stageLogSummary, stageMovedFrom, fromDate, toDate, wonStage]);
 
   // ==================================================
   // #3 CUSTOMER PURCHASE REPORT — from paid invoice items, grouped by product
