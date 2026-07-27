@@ -98,6 +98,8 @@ api/              auth.js  auth-pg.js  data.js  data-pg.js  secure-data.js
                   lead-check-duplicate.js  lead-counts.js  lead-lookup.js
                   sync-won-leads.js  attendance.js  _leads-cache.js  _call-logs-cache.js
                   _write-ops.js  cleanup-duplicates.js
+                  _shared-dates.js  _shared-perms.js  _shared-dashboard-widgets.js
+                  dashboard-widgets.js  field-usage.js
 api/cron/         process-automations.js  process-wa-amc.js  process-wa-followup.js
                   process-integrations.js
 api/webhook/      gsheets.js  indiamart.js  justdial.js  tradeindia.js
@@ -420,6 +422,10 @@ Production has 11k+ leads, 27k+ call logs. Never subscribe to large collections 
 | `POST /api/call-logs-page` | Paginated call logs + team stats (CallLogs) |
 | `POST /api/team-stats` | Per-member performance aggregates (TeamReports) |
 | `POST /api/team-activity` | Raw activity logs for date range (TeamReports drilldown) |
+| `POST /api/team-activity` `mode:'summary'` | Per-lead `[lastActivityMs, lastRescheduleMs]` + `movedFrom` (Follow-up Status) — 17x smaller than raw logs |
+| `POST /api/dashboard-widgets` | Batched data for server-backed dashboard widgets; JWT-authed, permissions resolved server-side |
+| `POST /api/field-usage` | "Do records still use this configured value?" — gates delete/disable in Settings |
+| `POST /api/leads-page` `{leadId}` | Single lead by id, after visibility filtering (deep links) |
 | `POST /api/lead-check-duplicate` | Dedup check by phone/email (Customers, LeadsView) |
 | `POST /api/sync-won-leads` | Won leads → customers sync (Customers on mount) |
 | `GET /api/data?module=leads` | **Mobile-only (legacy, unauthenticated)** |
