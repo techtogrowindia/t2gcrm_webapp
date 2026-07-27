@@ -14,6 +14,9 @@ const VIEW_TO_MODULE = {
   customers: 'customers',
   quotations: 'quotations',
   invoices: 'invoices',
+  // A receipt only exists against an invoice, so it rides the same plan module
+  // and permission rather than introducing one nobody has enabled.
+  'payments-received': 'invoices',
   pos: 'pos',
   amc: 'amc',
   expenses: 'expenses',

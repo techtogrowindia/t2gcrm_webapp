@@ -44,6 +44,7 @@ const lazyWithRetry = (importFunc) => {
 const LeadsView = lazyWithRetry(() => import('../Leads/LeadsView'));
 const Quotations = lazyWithRetry(() => import('../Finance/Quotations'));
 const Invoices = lazyWithRetry(() => import('../Finance/Invoices'));
+const PaymentsReceived = lazyWithRetry(() => import('../Finance/PaymentsReceived'));
 const POSBilling = lazyWithRetry(() => import('../Finance/POSBilling'));
 const AMC = lazyWithRetry(() => import('../Clients/AMC'));
 const Customers = lazyWithRetry(() => import('../Clients/Customers'));
@@ -678,6 +679,7 @@ export default function MainApp({ user, settings }) {
     reports: { component: <Reports user={user} perms={perms} ownerId={targetUserId} profile={profile} />, label: 'Reports' },
     'ecom-settings': { component: <EcomSettings ownerId={targetUserId} globalSettings={settings} perms={perms} />, label: 'Ecommerce' },
     'ecom-orders': { component: <EcomOrders ownerId={targetUserId} perms={perms} />, label: 'Ecommerce' },
+    'payments-received': { component: <PaymentsReceived ownerId={targetUserId} perms={perms} />, label: 'Payments Received' },
     appointments: { component: <Appointments user={user} ownerId={targetUserId} perms={perms} settings={settings} />, label: 'Appointments' },
     'appointment-settings': { component: <Appointments user={user} ownerId={targetUserId} perms={perms} initialTab="settings" settings={settings} />, label: 'Appointments' },
     distributors: { component: <Distributors user={user} ownerId={targetUserId} perms={perms} />, label: 'Distributors' },

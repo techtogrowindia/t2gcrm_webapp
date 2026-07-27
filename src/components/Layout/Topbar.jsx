@@ -7,7 +7,7 @@ const USE_PG_AUTH = import.meta.env.VITE_USE_PG_AUTH === 'true';
 
 const VIEW_TITLES = {
   dashboard: 'Dashboard', leads: 'Leads',  quotations: 'Quotations',
-  invoices: 'Invoices', amc: 'AMC Contracts',
+  invoices: 'Invoices', 'payments-received': 'Payments Received', amc: 'AMC Contracts',
   expenses: 'Expenses', products: 'Products & Services',
   projects: 'Projects & Tasks', alltasks: 'All Tasks', teams: 'Teams',
   automation: 'Automation', reports: 'Reports & Analytics', settings: 'Settings',
