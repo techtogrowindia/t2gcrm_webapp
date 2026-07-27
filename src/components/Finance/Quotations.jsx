@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
-import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
+import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, SUPPORTED_CURRENCIES, currencySymbol, autoStagePatch } from '../../utils/helpers';
 import DocumentTemplate from './DocumentTemplate';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
@@ -132,6 +132,10 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   };
   const profile = data?.userProfiles?.[0] || {};
   const wonStage = profile.wonStage || 'Won';
+  const disabledStages = profile.disabledStages || [];
+  // Stages the business switched off in Settings. The system must not move
+  // leads into them automatically — see autoStagePatch in utils/helpers.
+
   const taxRates = profile.taxRates || TAX_OPTIONS;
   const customFields = profile.customFields || [];
   
@@ -320,29 +324,23 @@ export default function Quotations({ user, perms, ownerId, settings }) {
 
     const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (form.client || '').trim().toLowerCase() && l.stage !== wonStage);
     if (lMatch) {
-       if (payload.status === 'Sent') {
-          txs.push(dbOp.update('leads', lMatch.id, { 
-             stage: 'Quotation Sent',
+              const target = payload.status === 'Sent' ? 'Quotation Sent'
+                    : (payload.status === 'Draft' || payload.status === 'Created') ? 'Quotation Created'
+                    : null;
+       if (target) {
+          const { patch, changed } = autoStagePatch(target, disabledStages, {
              email: lMatch.email || payload.email || '',
              phone: lMatch.phone || payload.phone || '',
-             stageChangedAt: Date.now()
-          }));
+          });
+          txs.push(dbOp.update('leads', lMatch.id, patch));
           txs.push(dbOp.update('activityLogs', id(), {
-             entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Quotation Sent (via Quotation)',
+             entityId: lMatch.id, entityType: 'lead',
+             text: changed
+               ? `Stage changed to ${target} (via Quotation)`
+               : `Quotation created. Stage kept as "${lMatch.stage}" — "${target}" is disabled in Settings.`,
              userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
           }));
-       } else if (payload.status === 'Draft' || payload.status === 'Created') {
-           txs.push(dbOp.update('leads', lMatch.id, { 
-              stage: 'Quotation Created',
-              email: lMatch.email || payload.email || '',
-              phone: lMatch.phone || payload.phone || '',
-              stageChangedAt: Date.now()
-           }));
-           txs.push(dbOp.update('activityLogs', id(), {
-              entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Quotation Created (via Quotation)',
-              userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
-           }));
-        }
+       }
     }
 
     try {
@@ -457,14 +455,16 @@ export default function Quotations({ user, perms, ownerId, settings }) {
       // Sync lead stage
       const lMatch = modalLeads.find(l => l.name === q.client && l.stage !== wonStage);
       if (lMatch) {
-        txs.push(dbOp.update('leads', lMatch.id, { 
-           stage: 'Invoice Created',
+                const conv = autoStagePatch('Invoice Created', disabledStages, {
            email: lMatch.email || q.email || '',
            phone: lMatch.phone || q.phone || '',
-           stageChangedAt: Date.now()
-        }));
+        });
+        txs.push(dbOp.update('leads', lMatch.id, conv.patch));
         txs.push(dbOp.update('activityLogs', id(), {
-           entityId: lMatch.id, entityType: 'lead', text: `Quotation converted to Invoice (${invNo}). Stage changed to Invoice Created.`,
+           entityId: lMatch.id, entityType: 'lead',
+           text: conv.changed
+             ? `Quotation converted to Invoice (${invNo}). Stage changed to Invoice Created.`
+             : `Quotation converted to Invoice (${invNo}). Stage kept as "${lMatch.stage}" — "Invoice Created" is disabled in Settings.`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       }

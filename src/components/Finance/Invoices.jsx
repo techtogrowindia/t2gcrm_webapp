@@ -5,7 +5,7 @@ import { useData } from '../../hooks/useData';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
 
 const USE_PG_DATA = import.meta.env.VITE_USE_PG_DATA === 'true';
-import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol } from '../../utils/helpers';
+import { fmtD, fmt, stageBadgeClass, TAX_OPTIONS, INDIAN_STATES, COUNTRIES, getInvoiceStatus, SUPPORTED_CURRENCIES, currencySymbol, autoStagePatch } from '../../utils/helpers';
 import DocumentTemplate from './DocumentTemplate';
 import { useToast } from '../../context/ToastContext';
 import SearchableSelect from '../UI/SearchableSelect';
@@ -149,6 +149,10 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   }, [partnerApplications]);
   const partnerCommissions = data?.partnerCommissions || [];
   const wonStage = profile.wonStage || 'Won';
+  const disabledStages = profile.disabledStages || [];
+  // Stages the business switched off in Settings. The system must not move
+  // leads into them automatically — see autoStagePatch in utils/helpers.
+
   const taxRates = profile.taxRates || TAX_OPTIONS;
   const customFields = profile.customFields || [];
   
@@ -354,21 +358,19 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
     const lMatch = modalLeads.find(l => (l.name || '').trim().toLowerCase() === (payload.client || '').trim().toLowerCase() && l.stage !== wonStage);
     
     if (lMatch) {
-      if (payload.status === 'Sent') {
-        txs.push(dbOp.update('leads', lMatch.id, { stage: 'Invoice Sent', stageChangedAt: Date.now() }));
+            if (payload.status === 'Sent' || payload.status === 'Draft') {
+        const target = payload.status === 'Sent' ? 'Invoice Sent' : 'Invoice Created';
+        const { patch, changed } = autoStagePatch(target, disabledStages,
+          payload.status === 'Sent' ? {} : {
+            email: lMatch.email || payload.email || '',
+            phone: lMatch.phone || payload.phone || '',
+          });
+        txs.push(dbOp.update('leads', lMatch.id, patch));
         txs.push(dbOp.update('activityLogs', id(), {
-           entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Invoice Sent (via Invoice)',
-           userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
-        }));
-      } else if (payload.status === 'Draft') {
-        txs.push(dbOp.update('leads', lMatch.id, { 
-           stage: 'Invoice Created',
-           email: lMatch.email || payload.email || '',
-           phone: lMatch.phone || payload.phone || '',
-           stageChangedAt: Date.now()
-        }));
-        txs.push(dbOp.update('activityLogs', id(), {
-           entityId: lMatch.id, entityType: 'lead', text: 'Stage changed to Invoice Created (via Invoice)',
+           entityId: lMatch.id, entityType: 'lead',
+           text: changed
+             ? `Stage changed to ${target} (via Invoice)`
+             : `Invoice recorded. Stage kept as "${lMatch.stage}" — "${target}" is disabled in Settings.`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
       } else if (payload.status === 'Paid' || payload.status === 'Partially Paid') {
@@ -376,14 +378,16 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
           name: lMatch.name, companyName: lMatch.companyName || '', email: lMatch.email || '', phone: lMatch.phone || '', userId: ownerId, actorId: user.id, createdAt: Date.now(),
           partnerId: lMatch.partnerId || '', distributorId: lMatch.distributorId || payload.distributorId || '', retailerId: lMatch.retailerId || payload.retailerId || ''
         }));
-        txs.push(dbOp.update('leads', lMatch.id, { 
-           stage: wonStage,
+                const won1 = autoStagePatch(wonStage, disabledStages, {
            email: lMatch.email || payload.email || '',
            phone: lMatch.phone || payload.phone || '',
-           stageChangedAt: Date.now()
-        }));
+        });
+        txs.push(dbOp.update('leads', lMatch.id, won1.patch));
         txs.push(dbOp.update('activityLogs', id(), {
-           entityId: lMatch.id, entityType: 'lead', text: `Lead converted to Customer. Stage changed to ${wonStage} (via Invoice save).`,
+           entityId: lMatch.id, entityType: 'lead',
+           text: won1.changed
+             ? `Lead converted to Customer. Stage changed to ${wonStage} (via Invoice save).`
+             : `Lead converted to Customer. Stage kept as "${lMatch.stage}" — "${wonStage}" is disabled in Settings.`,
            userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
         }));
         isNewCustomer = true;
@@ -637,14 +641,16 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
             name: lMatch.name, companyName: lMatch.companyName || '', email: lMatch.email || '', phone: lMatch.phone || '', userId: ownerId, actorId: user.id, createdAt: Date.now(),
             partnerId: lMatch.partnerId || payModal.distributorId || '', distributorId: lMatch.distributorId || payModal.distributorId || '', retailerId: lMatch.retailerId || payModal.retailerId || ''
          }));
-         txs.push(dbOp.update('leads', lMatch.id, { 
-            stage: wonStage,
+                  const won2 = autoStagePatch(wonStage, disabledStages, {
             email: lMatch.email || payModal.email || '', // payModal might not have email/phone, depends on where it comes from
             phone: lMatch.phone || payModal.phone || '',
-            stageChangedAt: Date.now()
-         }));
+         });
+         txs.push(dbOp.update('leads', lMatch.id, won2.patch));
          txs.push(dbOp.update('activityLogs', id(), {
-            entityId: lMatch.id, entityType: 'lead', text: `Payment received. Lead converted to Customer. Stage changed to ${wonStage} (via Invoice payment).`,
+            entityId: lMatch.id, entityType: 'lead',
+            text: won2.changed
+              ? `Payment received. Lead converted to Customer. Stage changed to ${wonStage} (via Invoice payment).`
+              : `Payment received. Lead converted to Customer. Stage kept as "${lMatch.stage}" — "${wonStage}" is disabled in Settings.`,
             userId: ownerId, actorId: user.id, userName: user.email, createdAt: Date.now()
          }));
          isNewCustomer = true;

@@ -199,3 +199,32 @@ export const getInvoiceStatus = (inv) => {
   }
   return inv.status;
 };
+
+/**
+ * Build a lead patch for an AUTOMATIC stage change, respecting the business's
+ * disabled stages.
+ *
+ * Quotations and Invoices move a lead into 'Quotation Sent', 'Invoice Created'
+ * and so on by themselves. If the business has switched that stage off in
+ * Settings, the system must not put leads into it — doing so overrode an
+ * explicit configuration, pulled the lead out of the pipeline its team works
+ * from, and (because disabled stages are filtered out of reports) made the
+ * lead vanish from analytics just as it became most valuable.
+ *
+ * Each transition is judged on its OWN target: disabling 'Quotation Sent'
+ * doesn't stop 'Quotation Created' from applying. When every stage involved is
+ * disabled, the lead simply keeps the stage it already has.
+ *
+ * Only the stage is withheld — any other fields (email/phone enrichment) still
+ * apply, and the caller still writes its activity log, so nothing is lost.
+ *
+ * @param {string} targetStage      stage the system wants to set
+ * @param {string[]} disabledStages profile.disabledStages
+ * @param {object} [extra]          other fields to update regardless
+ * @returns {{patch: object, changed: boolean}}
+ */
+export function autoStagePatch(targetStage, disabledStages, extra = {}) {
+  const off = Array.isArray(disabledStages) && disabledStages.includes(targetStage);
+  if (off) return { patch: { ...extra }, changed: false };
+  return { patch: { ...extra, stage: targetStage, stageChangedAt: Date.now() }, changed: true };
+}
