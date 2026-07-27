@@ -90,7 +90,9 @@ export default function Reports({ user, perms, ownerId, profile }) {
 
   // Deferred: subscription for non-leads tabs only; leads replaced by server fetch
   const needsLeadsData = ['leads', 'funnel', 'rev-src', 'product-enquiry', 'lead-source', 'source-team', 'stage-team', 'product-team', 'followup-status'].includes(tab);
-  const needsProductsData = tab === 'products';
+  // product-team needs the catalogue too, so products with no leads still
+  // get a row (see productTeamMatrix).
+  const needsProductsData = tab === 'products' || tab === 'product-team';
   const needsCustomersData = tab === 'customer-purchase';
   const needsStageLogs = tab === 'followup-status';
   // Stage Transitions is fetched server-side (see below), NOT via this
@@ -546,6 +548,16 @@ export default function Reports({ user, perms, ownerId, profile }) {
     const rowSet = new Set();
     const colSet = new Set();
     let total = 0;
+    // Seed rows from the CATALOGUE so a product nobody has sold yet still gets
+    // a row, at zero. Rows used to come only from products found in the leads,
+    // which silently dropped 6 of ARS's 11 products off the report — while
+    // team members with no leads DID get a column, so the table was asymmetric
+    // and looked like data was missing. Deduped: the catalogue has repeated
+    // names, and each must appear once.
+    (deferredData?.products || []).forEach(p => {
+      const nm = (p.name || '').trim();
+      if (nm) rowSet.add(nm);
+    });
     inRangeLeads.forEach(l => {
       const prod = l.productName || '(No product)';
       const col = l.assign ? normName(l.assign) : 'Unassigned';
@@ -560,7 +572,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
     const cols = [...activeCols, ...(colSet.has('Unassigned') ? ['Unassigned'] : []), ...strayCols];
     const rows = [...rowSet].sort((a, b) => a === '(No product)' ? 1 : b === '(No product)' ? -1 : a.localeCompare(b));
     return { matrix, rows, cols, total };
-  }, [tab, filteredLeadsAtSource, teamMembers, fromDate, toDate]);
+  }, [tab, filteredLeadsAtSource, teamMembers, deferredData?.products, fromDate, toDate]);
 
   // ==================================================
   // #2f FOLLOW-UP STATUS REPORT — per-day disposition of follow-ups whose
