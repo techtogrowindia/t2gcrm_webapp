@@ -1065,6 +1065,11 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     || perms?.can('Leads', 'viewAll') === true
     || teamCanSeeAllLeads;
 
+  // Product and its category belong to the Products module. A member without
+  // access to it must not be able to set them here — the bulk bar is not a
+  // side door around a permission the rest of the app enforces.
+  const canUseProducts = perms?.can('Products', 'view') !== false;
+
   const bulkFieldOptions = useMemo(() => ([
     {
       key: 'assign',
@@ -1076,8 +1081,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     { key: 'stage',       label: 'Stage',            values: activeStages.map(x => ({ v: x, l: x })) },
     { key: 'requirement', label: 'Requirement',      values: activeRequirements.map(x => ({ v: x, l: x })) },
     { key: 'source',      label: 'Source',           values: activeSources.map(x => ({ v: x, l: x })) },
-    { key: 'productCat',  label: 'Product Category', values: (productCats || []).map(x => ({ v: x, l: x })) },
-    { key: 'product',     label: 'Product',          values: products.map(pr => ({ v: pr.id, l: pr.name })) },
+    ...(canUseProducts ? [
+      { key: 'productCat',  label: 'Product Category', values: (productCats || []).map(x => ({ v: x, l: x })) },
+      { key: 'product',     label: 'Product',          values: products.map(pr => ({ v: pr.id, l: pr.name })) },
+    ] : []),
     ...customFields.map(cf => ({
       key: `custom:${cf.name}`,
       label: `${cf.name} (custom)`,
@@ -1085,12 +1092,21 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       // one gets a text box.
       values: Array.isArray(cf.options) && cf.options.length ? cf.options.map(o => ({ v: o, l: o })) : null,
     })),
-  ]), [team, activeStages, activeRequirements, activeSources, productCats, products, customFields, canSeeAllLeads, myName]);
+  ]), [team, activeStages, activeRequirements, activeSources, productCats, products, customFields, canSeeAllLeads, myName, canUseProducts]);
 
   const bulkFieldSpec = bulkFieldOptions.find(f => f.key === bulkField) || null;
 
   const bulkApply = async () => {
     if (!selectedIds.size || !bulkField || !bulkValue) return;
+    // The dropdown is filtered, but this is the write path — re-check rather
+    // than trusting the UI state, which can be stale after a permission change.
+    if (!canEdit) { toast('Permission denied: cannot edit leads', 'error'); return; }
+    if ((bulkField === 'product' || bulkField === 'productCat') && !canUseProducts) {
+      toast('Permission denied: no access to Products', 'error'); return;
+    }
+    if (bulkField === 'assign' && !canSeeAllLeads && bulkValue !== myName) {
+      toast('You can only assign leads to yourself', 'error'); return;
+    }
     const ids = [...selectedIds];
     const count = ids.length;
     const msgs = [];
@@ -1740,7 +1756,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
             <div className="bulk-bar" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)' }}>{selectedIds.size} selected</span>
               {/* Pick the field, then the value. Any field can be bulk-set,
-                  including custom ones, without adding a dropdown per field. */}
+                  including custom ones, without adding a dropdown per field.
+                  Hidden entirely without edit rights — Delete Selected below
+                  has its own check, so the bar can still be useful. */}
+              {canEdit && (<>
               <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
                       value={bulkField} onChange={e => { setBulkField(e.target.value); setBulkValue(''); }}>
                 <option value="">Choose field...</option>
@@ -1762,6 +1781,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   )
               )}
               {bulkField && bulkValue && <button className="btn btn-primary btn-sm" onClick={bulkApply}>Apply to {selectedIds.size}</button>}
+              </>)}
               {canDelete && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={bulkDelete}>🗑 Delete Selected</button>}
               <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedIds(new Set()); setBulkField(''); setBulkValue(''); }}>✕ Clear</button>
             </div>
