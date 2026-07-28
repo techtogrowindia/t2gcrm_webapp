@@ -1734,7 +1734,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div style={{ fontSize: 11, color: followupStatus.unreconciled ? '#dc2626' : 'var(--muted)', fontWeight: followupStatus.unreconciled ? 700 : 400 }}>
             {followupStatus.unreconciled
               ? `⚠ ${followupStatus.unreconciled} lead(s) unaccounted for — the statuses below do not add up to Total Leads. Please report this.`
-              : `Converted + Rescheduled + Attended + Converted + Rescheduled + Attended + the four Untouched columns = ${followupStatus.totals.total}, matching Total Leads. Every lead is counted once.`}
+              : `Converted + Rescheduled + Attended + the four Untouched columns = ${followupStatus.totals.total}, matching Total Leads. Every lead is counted once.`}
           </div>
 
           <div className="tw">
