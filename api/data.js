@@ -3,6 +3,7 @@ import { pgRunOps } from './data-pg.js';
 import { readData } from './_write-ops.js';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getLeadFormConfig, validateLeadAgainstConfig } from './_lead-config.js';
+import { resolveAssigneeId } from './_assignee.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -70,6 +71,26 @@ const ENTITY_TYPE_MAP = {
   'callLogs': 'callLog',
   'attendance': 'attendance',
 };
+
+// Modules whose records carry an assignee. Tasks use `assignTo` rather than
+// `assign` and are handled separately.
+const ASSIGNABLE = new Set(['leads', 'customers', 'quotations', 'invoices', 'amc']);
+
+// Resolve an assignee name to a teamMembers.id. Team lists are small and this
+// only runs on writes that actually set an assignee, so it isn't a hot path.
+async function lookupAssigneeId(db, ownerId, name) {
+  try {
+    const { teamMembers } = await readData(db, ownerId, {
+      teamMembers: { $: { where: { userId: ownerId } } },
+    });
+    return resolveAssigneeId(name, teamMembers || []);
+  } catch (e) {
+    // Never fail a write because the id couldn't be resolved — the name is
+    // still stored, and the backfill will pick this row up later.
+    console.error('[assignee] id lookup failed:', e?.message || e);
+    return null;
+  }
+}
 
 async function getStatsTx(db, ownerId, actorId, type) {
   const today = new Date().toISOString().split('T')[0];
@@ -396,6 +417,12 @@ export default async function handler(req, res) {
       if (module === 'leads' && payload.assign) {
         payload.assignedAt = payload.createdAt;
       }
+      // Stamp the assignee's ID alongside the name. Names break on rename;
+      // the id doesn't. Written for every assignable module so nothing new
+      // is created without one. See api/_assignee.js.
+      if (ASSIGNABLE.has(module) && payload.assign) {
+        payload.assignedToId = await lookupAssigneeId(db, ownerId, payload.assign);
+      }
 
       // Handle Task Numbering
       if (module === 'tasks') {
@@ -465,6 +492,14 @@ export default async function handler(req, res) {
       // real person — clearing the assignee (assign = '') must not set a date.
       if (module === 'leads' && updates.assign) {
         updates.assignedAt = Date.now();
+      }
+      // Keep the id in step with the name on every reassignment, including
+      // clearing it (assign = '' -> assignedToId = null), so the two can
+      // never disagree.
+      if (ASSIGNABLE.has(module) && updates.assign !== undefined) {
+        updates.assignedToId = updates.assign
+          ? await lookupAssigneeId(db, ownerId, updates.assign)
+          : null;
       }
 
       const ops = [
