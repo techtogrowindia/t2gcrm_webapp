@@ -923,11 +923,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
     } else if (tab === 'followup-status') {
       const rows = [
         ['--- By Team Member (who has not acted) ---'],
-        ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Due Today', 'Overdue', 'Upcoming', 'No Follow-up', 'Total'],
+        ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Untouched (Today)', 'Untouched (Overdue)', 'Upcoming', 'No Follow-up', 'Total'],
         ...followupStatus.byMember.map(m => [m.member, m.converted, m.rescheduled, m.attended, m.duetoday, m.untouched, m.upcoming, m.nofollowup, m.total]),
         [''],
         ['--- By Day ---'],
-        ['Date', 'Converted', 'Rescheduled', 'Attended', 'Due Today', 'Overdue', 'Upcoming', 'No Follow-up', 'Total'],
+        ['Date', 'Converted', 'Rescheduled', 'Attended', 'Untouched (Today)', 'Untouched (Overdue)', 'Upcoming', 'No Follow-up', 'Total'],
         ...followupStatus.days.map(d => [fmtD(d.date), d.converted, d.rescheduled, d.attended, d.duetoday, d.untouched, d.upcoming, d.nofollowup, d.total]),
         ['Total', followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.duetoday, followupStatus.totals.untouched, followupStatus.totals.upcoming, followupStatus.totals.nofollowup, followupStatus.totals.total],
       ];
@@ -1697,15 +1697,15 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
             <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>{followupStatus.rescheduleEvents} reschedule events</div></div>
             <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
-            <div className="stat-card sc-yellow"><div className="lbl">Due Today</div><div className="val">{followupStatus.totals.duetoday}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not actioned yet</div></div>
-            <div className="stat-card sc-red"><div className="lbl">Overdue</div><div className="val">{followupStatus.totals.untouched}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>came due before today</div></div>
+            <div className="stat-card sc-yellow"><div className="lbl">Untouched (Today)</div><div className="val">{followupStatus.totals.duetoday}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not actioned yet</div></div>
+            <div className="stat-card sc-red"><div className="lbl">Untouched (Overdue)</div><div className="val">{followupStatus.totals.untouched}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>came due before today</div></div>
             <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Upcoming</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not due yet</div></div>
             <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">No Follow-up</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.nofollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>none scheduled</div></div>
           </div>
           <div style={{ fontSize: 11, color: followupStatus.unreconciled ? '#dc2626' : 'var(--muted)', fontWeight: followupStatus.unreconciled ? 700 : 400 }}>
             {followupStatus.unreconciled
               ? `⚠ ${followupStatus.unreconciled} lead(s) unaccounted for — the statuses below do not add up to Total Leads. Please report this.`
-              : `Converted + Rescheduled + Attended + Due Today + Overdue + Upcoming + No Follow-up = ${followupStatus.totals.total}, matching Total Leads. Every lead is counted once.`}
+              : `Converted + Rescheduled + Attended + Untouched (Today) + Untouched (Overdue) + Upcoming + No Follow-up = ${followupStatus.totals.total}, matching Total Leads. Every lead is counted once.`}
           </div>
 
           <div className="tw">
@@ -1713,7 +1713,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
               Every lead created in this range appears exactly once, so the Total column adds up to Total Leads.
               "Unassigned" covers leads with no team member set · "No Follow-up" = no follow-up date scheduled at all ·
-              "Due Today" = due today and not actioned yet (today's workload, not a miss) · "Overdue" = came due before today and still untouched — the number to chase ·
+              "Untouched (Today)" = due today, nobody has actioned it yet — today's workload, not a miss · "Untouched (Overdue)" = came due before today and still nobody has touched it — the number to chase ·
               "Attended" = overdue but worked since it came due · "Rescheduled" = moved to a future date during this range ·
               "Upcoming" = due in the future. Sorted by Untouched.
             </div>
@@ -1728,8 +1728,8 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Converted</th>
                       <th style={{ textAlign: 'right' }}>Rescheduled</th>
                       <th style={{ textAlign: 'right' }}>Attended</th>
-                      <th style={{ textAlign: 'right' }}>Due Today</th>
-                      <th style={{ textAlign: 'right', background: '#fef2f2' }}>Overdue</th>
+                      <th style={{ textAlign: 'right' }}>Untouched (Today)</th>
+                      <th style={{ textAlign: 'right', background: '#fef2f2' }}>Untouched (Overdue)</th>
                       <th style={{ textAlign: 'right' }}>Upcoming</th>
                       <th style={{ textAlign: 'right' }}>No Follow-up</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
@@ -1769,7 +1769,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div className="tw">
             <div className="tw-head"><h3>Follow-up Status by Day</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Rows = lead creation date, so the column totals match Total Leads · Converted = now in "{wonStage}" · Due Today = due today and not actioned yet · Overdue = came due before today and still untouched · Attended = overdue but worked since · Rescheduled = moved to a future date during this range · Upcoming = due in the future.
+              Rows = lead creation date, so the column totals match Total Leads · Converted = now in "{wonStage}" · Untouched (Today) = due today, not actioned yet · Untouched (Overdue) = came due before today and still untouched · Attended = overdue but worked since · Rescheduled = moved to a future date during this range · Upcoming = due in the future.
             </div>
             <div className="tw-scroll" style={{ maxHeight: '55vh', overflowY: 'auto' }}>
               {followupStatus.days.length === 0 ? (
@@ -1784,8 +1784,8 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Converted</th>
                       <th style={{ textAlign: 'right' }}>Rescheduled</th>
                       <th style={{ textAlign: 'right' }}>Attended</th>
-                      <th style={{ textAlign: 'right' }}>Due Today</th>
-                      <th style={{ textAlign: 'right' }}>Overdue</th>
+                      <th style={{ textAlign: 'right' }}>Untouched (Today)</th>
+                      <th style={{ textAlign: 'right' }}>Untouched (Overdue)</th>
                       <th style={{ textAlign: 'right' }}>Upcoming</th>
                       <th style={{ textAlign: 'right' }}>No Follow-up</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
