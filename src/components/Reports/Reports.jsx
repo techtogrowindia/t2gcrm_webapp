@@ -619,6 +619,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
     const dayKeyOfMs = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
     const startOfKey = (key) => { const [y, m, dd] = key.split('-').map(Number); return new Date(y, m - 1, dd).getTime(); };
 
+    const NO_DATE_KEY = 'no-date';
     const dayMap = {};
     const memberMap = {};
     const bump = (map, key, cat) => {
@@ -627,11 +628,21 @@ export default function Reports({ user, perms, ownerId, profile }) {
       map[key][cat] += 1;
     };
 
-    // The population is fixed here and nowhere else: leads CREATED in range.
-    // Total Leads is this same list, so the two can never drift apart.
+    // The population is fixed here and nowhere else, and it is driven by the
+    // FOLLOW-UP date, never the creation date. Scoping by creation date meant
+    // "Today" listed leads created today rather than leads due today, so a rep
+    // with 15 follow-ups due showed zero — the report answered a question
+    // nobody was asking.
+    //
+    // Two categories are deliberately NOT range-limited, because they are
+    // backlogs you always need to see whatever period is selected:
+    //   * overdue and untouched — ignoring these is how they stay ignored
+    //   * no follow-up date at all — there is no date to filter them by
     const inRange = filteredLeadsAtSource.filter(l => {
-      const cr = l.createdAt ? new Date(l.createdAt).getTime() : null;
-      return cr && cr >= fromMs && cr <= toMs;
+      const fu = l.followup ? new Date(l.followup).getTime() : null;
+      if (!fu) return true;                                  // nothing scheduled
+      if (startOfKey(dayKeyOfMs(fu)) < todayStart) return true; // overdue backlog
+      return fu >= fromMs && fu <= toMs;                     // due within the range
     });
 
     // Reschedules are still surfaced, as an event count rather than by
@@ -682,10 +693,14 @@ export default function Reports({ user, perms, ownerId, profile }) {
         }
       }
       bump(memberMap, l.assign ? normName(l.assign) : 'Unassigned', cat);
-      bump(dayMap, dayKeyOfMs(new Date(l.createdAt).getTime()), cat);
+      bump(dayMap, fu ? dayKeyOfMs(fu) : NO_DATE_KEY, cat);
     });
 
-    const days = Object.entries(dayMap).map(([date, v]) => ({ date, ...v })).sort((a, b) => a.date.localeCompare(b.date));
+    const days = Object.entries(dayMap).map(([date, v]) => ({ date, ...v })).sort((a, b) => {
+      if (a.date === NO_DATE_KEY) return 1;   // always last — it isn't a date
+      if (b.date === NO_DATE_KEY) return -1;
+      return a.date.localeCompare(b.date);
+    });
     // Members sorted by untouched-first (who has the most unactioned leads).
     const byMember = Object.entries(memberMap).map(([member, v]) => ({ member, ...v }))
       .sort((a, b) => (b.untouched - a.untouched) || (b.total - a.total));
@@ -943,7 +958,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
         [''],
         ['--- By Day ---'],
         ['Date', 'Converted', 'Rescheduled', 'Attended', 'Untouched (Today)', 'Untouched (Overdue)', 'Untouched (Upcoming)', 'Untouched (No follow-up date)', 'Total'],
-        ...followupStatus.days.map(d => [fmtD(d.date), d.converted, d.rescheduled, d.attended, d.duetoday, d.untouched, d.upcoming, d.nofollowup, d.total]),
+        ...followupStatus.days.map(d => [d.date === 'no-date' ? 'No follow-up date' : fmtD(d.date), d.converted, d.rescheduled, d.attended, d.duetoday, d.untouched, d.upcoming, d.nofollowup, d.total]),
         ['Total', followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.duetoday, followupStatus.totals.untouched, followupStatus.totals.upcoming, followupStatus.totals.nofollowup, followupStatus.totals.total],
       ];
       exportCSV(rows[0], rows.slice(1), `Followup_Status_${fromDate}_to_${toDate}`);
@@ -1708,7 +1723,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
               exclusive and sum to Total Leads, so the report reconciles on its
               face. Anything that doesn't add up is a bug, and says so below. */}
           <div className="stat-grid">
-            <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>created in range</div></div>
+            <div className="stat-card" style={{ background: '#eef2ff' }}><div className="lbl" style={{ color: '#4338ca' }}>Total Leads</div><div className="val" style={{ color: '#4338ca' }}>{followupStatus.totalLeads}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>due in range + backlog</div></div>
             <div className="stat-card sc-green"><div className="lbl">Converted</div><div className="val">{followupStatus.totals.converted}</div></div>
             <div className="stat-card sc-yellow"><div className="lbl">Rescheduled</div><div className="val">{followupStatus.totals.rescheduled}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>{followupStatus.rescheduleEvents} reschedule events</div></div>
             <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
@@ -1740,7 +1755,9 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div className="tw">
             <div className="tw-head"><h3>By Team Member</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Every lead created in this range appears exactly once, so the Total column adds up to Total Leads.
+              Filtered by FOLLOW-UP date, not creation date: leads due in the selected period, plus everything
+              already overdue and everything with nothing scheduled — those two are backlogs, so they show whatever
+              period you pick. Every lead appears exactly once, so the Total column adds up to Total Leads.
               "Unassigned" covers leads with no team member set · "Untouched (No follow-up date)" = nothing scheduled AND nobody has worked it in this period ·
               "Untouched (Today)" = due today, nobody has actioned it yet — today's workload, not a miss · "Untouched (Overdue)" = came due before today and still nobody has touched it — the number to chase ·
               "Attended" = overdue but worked since it came due · "Rescheduled" = moved to a future date during this range ·
@@ -1798,7 +1815,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div className="tw">
             <div className="tw-head"><h3>Follow-up Status by Day</h3></div>
             <div style={{ padding: '12px 16px 4px', fontSize: 11, color: 'var(--muted)' }}>
-              Rows = lead creation date, so the column totals match Total Leads · Converted = now in "{wonStage}" · Untouched (Today) = due today, not actioned yet · Untouched (Overdue) = came due before today and still untouched · Attended = overdue but worked since · Rescheduled = moved to a future date during this range · Upcoming = due in the future.
+              Rows = follow-up due date (leads with no date are grouped separately), so the column totals match Total Leads · Converted = now in "{wonStage}" · Untouched (Today) = due today, not actioned yet · Untouched (Overdue) = came due before today and still untouched · Attended = overdue but worked since · Rescheduled = moved to a future date during this range · Upcoming = due in the future.
             </div>
             <div className="tw-scroll" style={{ maxHeight: '55vh', overflowY: 'auto' }}>
               {followupStatus.days.length === 0 ? (
@@ -1823,7 +1840,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                   <tbody>
                     {fuDaysPaged.map(d => (
                       <tr key={d.date}>
-                        <td><strong>{fmtD(d.date)}</strong></td>
+                        <td><strong>{d.date === 'no-date' ? 'No follow-up date' : fmtD(d.date)}</strong></td>
                         <td style={{ textAlign: 'right', color: '#16a34a', fontWeight: d.converted ? 700 : 400 }}>{d.converted || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#d97706', fontWeight: d.rescheduled ? 700 : 400 }}>{d.rescheduled || '-'}</td>
                         <td style={{ textAlign: 'right', color: '#7c3aed', fontWeight: d.attended ? 700 : 400 }}>{d.attended || '-'}</td>
