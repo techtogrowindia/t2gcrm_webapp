@@ -213,6 +213,52 @@ Prod is on PG, so the live path is `/api/auth-pg`; route the frontend through `A
 ### userProfiles WhatsApp Fields
 `waApiToken`, `waPhoneId`, `whatsappTemplates[]`, `waNotifPhone` (owner recipient, include country code)
 
+## Mobile App (Flutter)
+
+**Repo:** https://github.com/techtogrowindia/T2GCRM_MobileApp — cloned into
+`mobile/` (its own git repo; `CRM-PRO` was the origin it was forked from).
+Flutter 3.38.5, package `crm_call_logger`. Screens: Leads, Call Logs,
+Attendance.
+
+**Mobile reads the API, never web components** — so every business-logic change
+on web must be mirrored server-side in the same commit (see Web ↔ API Parity).
+
+### Lead form config — use `/api/lead-form-config`
+`GET /api/lead-form-config?ownerId=X` is the ONLY endpoint that returns the full
+per-business form config: `stages`, `sources`, `requirements`, `productCats`,
+`customFields`, `assignees`, `wonStage`, `lostStage`.
+
+⚠️ Querying `settings` via `/api/data-pg` or `/api/secure-data` returns neither
+`customFields` nor `productCats`. The app did that for months, which is why
+custom fields never appeared on mobile however a business configured them.
+
+### Lead CRUD from mobile
+| Action | Method | Endpoint |
+|---|---|---|
+| List | `GET` | `/api/data?module=leads&ownerId=X` |
+| Create | `POST` | `/api/data?module=leads` |
+| Update | **`PATCH`** | `/api/data?module=leads` (PUT returns 405) |
+| Delete | `DELETE` | `/api/data` |
+
+- Writes are **validated against the business config** — an unknown source or
+  stage is rejected with `Invalid lead field(s)`, naming the config endpoint.
+- Product is stored as BOTH `productName` and `productId`. Reports group on the
+  name, so a free-text value will not tally.
+- Custom fields go in `custom: { "<field name>": value }`.
+- `assignedToId` is stamped server-side when `assign` is set — do not send it.
+
+### Testing
+Use `techtogrowindia@gmail.com` = tenant `4fe042a3-118c-43b6-b321-7dc31646a1d7`
+on **dev** (`https://dev.t2gcrm.in`). Note it has NO custom fields configured, so
+custom-field rendering must be checked against a tenant that does (ARS,
+`b4561e12-...`). `techtogrow2024@gmail.com` is a DIFFERENT tenant
+(`b7c3576d-...`) — don't confuse the two.
+
+⚠️ `flutter pub get` needs **Developer Mode** enabled on Windows (symlink
+support): `start ms-settings:developers`. Without it the SDK can't resolve and
+`flutter analyze` reports thousands of false errors. `dart format --output=none
+<file>` still parse-checks a file without it.
+
 ## Lead Integrations
 
 | Source | Webhook | Auth | Dedup |
