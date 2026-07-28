@@ -23,18 +23,42 @@ const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
 // Settings list key -> where that value is referenced.
 //   source 'leads'  reads the cached leads array
 //   source 'query'  reads a smaller collection directly
+// Each entry is a LIST of probes, because one value is usually referenced from
+// more than one collection — a custom field appears on customers as well as
+// leads, and a product name is copied onto quotation and invoice line items.
+// Checking only the first one is how a value gets deleted while records still
+// point at it.
+const itemNamed = (name) => (rec) =>
+  (rec.items || []).some(i => norm(i?.name) === norm(name)) ? name : null;
+const customUsed = (rec, name) => (rec.custom && rec.custom[name] ? name : null);
+
 const FIELDS = {
-  stages:         { source: 'leads', pick: (l) => l.stage,       label: 'lead' },
-  sources:        { source: 'leads', pick: (l) => l.source,      label: 'lead' },
-  requirements:   { source: 'leads', pick: (l) => l.requirement, label: 'lead' },
-  productCats:    { source: 'leads', pick: (l) => l.productCat,  label: 'lead' },
-  // Custom fields live under leads.custom[<name>]; a value is "in use" when any
-  // lead has a non-empty entry for that field, whatever the entry says.
-  customFields:   { source: 'leads', pick: (l, name) => (l.custom && l.custom[name] ? name : null), label: 'lead' },
-  expCats:        { source: 'query', collection: 'expenses', pick: (e) => e.category, label: 'expense' },
-  productUnits:   { source: 'query', collection: 'products', pick: (p) => p.unit,     label: 'product' },
-  taskStatuses:   { source: 'query', collection: 'tasks',    pick: (t) => t.status,   label: 'task' },
-  orderStatuses:  { source: 'query', collection: 'orders',   pick: (o) => o.status,   label: 'order' },
+  stages:        [{ source: 'leads', pick: (l) => l.stage,       label: 'lead' }],
+  sources:       [{ source: 'leads', pick: (l) => l.source,      label: 'lead' }],
+  requirements:  [{ source: 'leads', pick: (l) => l.requirement, label: 'lead' }],
+  productCats:   [
+    { source: 'leads', pick: (l) => l.productCat, label: 'lead' },
+    { source: 'query', collection: 'products', pick: (p) => p.category, label: 'product' },
+  ],
+  // A value is "in use" when any record has a non-empty entry for that field,
+  // whatever the entry says.
+  customFields:  [
+    { source: 'leads', pick: customUsed, label: 'lead' },
+    { source: 'query', collection: 'customers', pick: customUsed, label: 'customer' },
+  ],
+  // The product itself. Deleting one leaves leads and documents pointing at a
+  // name that no longer exists.
+  products:      [
+    // Leads hold the product NAME in `productName` — that's the field the
+    // Leads list and the product reports read (LeadsView.jsx:996).
+    { source: 'leads', pick: (l) => l.productName, label: 'lead' },
+    { source: 'query', collection: 'quotes',   pick: (q, n) => itemNamed(n)(q), label: 'quotation' },
+    { source: 'query', collection: 'invoices', pick: (i, n) => itemNamed(n)(i), label: 'invoice' },
+  ],
+  expCats:       [{ source: 'query', collection: 'expenses', pick: (e) => e.category, label: 'expense' }],
+  productUnits:  [{ source: 'query', collection: 'products', pick: (p) => p.unit,     label: 'product' }],
+  taskStatuses:  [{ source: 'query', collection: 'tasks',    pick: (t) => t.status,   label: 'task' }],
+  orderStatuses: [{ source: 'query', collection: 'orders',   pick: (o) => o.status,   label: 'order' }],
 };
 
 const norm = (v) => String(v ?? '').trim().toLowerCase();
@@ -55,26 +79,42 @@ export default async function handler(req, res) {
     if (!spec) return res.status(200).json({ checked: false, count: 0, label: 'record', sample: [] });
     if (!value) return res.status(400).json({ error: 'value required' });
 
-    let rows;
-    if (spec.source === 'leads') {
-      rows = await getLeadsForOwner(ownerId);
-    } else {
-      const db = init({ appId: APP_ID, adminToken: ADMIN_TOKEN });
-      const r = await readData(db, ownerId, {
-        [spec.collection]: { $: { where: { userId: ownerId } } },
-      });
-      rows = r[spec.collection] || [];
+    const target = norm(value);
+    let db = null;
+    let total = 0;
+    const breakdown = {};   // { lead: 12, customer: 3, quotation: 1 }
+    const sample = [];
+
+    for (const probe of spec) {
+      let rows;
+      if (probe.source === 'leads') {
+        rows = await getLeadsForOwner(ownerId);
+      } else {
+        db = db || init({ appId: APP_ID, adminToken: ADMIN_TOKEN });
+        const r = await readData(db, ownerId, {
+          [probe.collection]: { $: { where: { userId: ownerId } } },
+        });
+        rows = r[probe.collection] || [];
+      }
+      const matches = (rows || []).filter(r => norm(probe.pick(r, value)) === target);
+      if (!matches.length) continue;
+      total += matches.length;
+      breakdown[probe.label] = (breakdown[probe.label] || 0) + matches.length;
+      for (const m of matches.slice(0, 5)) {
+        if (sample.length < 5) sample.push(m.name || m.title || m.client || m.no || '(unnamed)');
+      }
     }
 
-    const target = norm(value);
-    const matches = rows.filter(r => norm(spec.pick(r, value)) === target);
+    // `label` is the collection contributing the most, so single-source
+    // callers keep reading naturally ("12 leads still use this stage").
+    const label = Object.entries(breakdown).sort((a, b) => b[1] - a[1])[0]?.[0] || spec[0].label;
 
     return res.status(200).json({
       checked: true,
-      count: matches.length,
-      label: spec.label,
-      // A few names so the warning can be specific rather than just a number.
-      sample: matches.slice(0, 5).map(r => r.name || r.title || r.client || r.no || '(unnamed)'),
+      count: total,
+      label,
+      breakdown,          // lets the caller spell out every collection
+      sample,             // a few names, so the warning is specific
     });
   } catch (err) {
     console.error('field-usage error:', err);

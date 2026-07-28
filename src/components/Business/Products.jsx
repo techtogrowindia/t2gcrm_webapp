@@ -187,11 +187,44 @@ export default function Products({ user, perms, ownerId, planEnforcement }) {
     setAdjustForm({ delta: 0, reason: 'Purchase' });
   };
 
-  const del = async (pid) => { 
+  const del = async (pid) => {
     if (!canDelete) { toast('Permission denied: cannot delete products', 'error'); return; }
-    if (!confirm('Delete?')) return; 
-    await dbWrite(dbOp.delete('products', pid)); 
-    toast('Deleted', 'error'); 
+    const prod = (products || []).find(p => p.id === pid);
+    const pname = (prod?.name || '').trim();
+
+    // Leads and documents reference a product by NAME, so deleting one leaves
+    // them pointing at something that no longer exists. Check first and refuse
+    // while anything still uses it — same rule Settings applies to stages and
+    // custom fields. Counted server-side; never subscribe to leads here.
+    if (pname) {
+      let usage = null;
+      try {
+        const r = await fetch('/api/field-usage', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerId, field: 'products', value: pname }),
+        });
+        if (r.ok) usage = await r.json();
+      } catch { /* fall through to the "couldn't verify" path below */ }
+
+      if (usage === null) {
+        // Don't know — say so rather than deleting on a silent failure.
+        if (!confirm(`Could not check whether anything still uses "${pname}".\n\nDelete anyway? Records pointing at it would be left stranded.`)) return;
+      } else if (usage.checked && usage.count > 0) {
+        const where = Object.entries(usage.breakdown || {})
+          .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`).join(' and ');
+        const eg = usage.sample?.length ? `\n\nFor example: ${usage.sample.join(', ')}` : '';
+        alert(
+          `Cannot delete "${pname}" yet.\n\n` +
+          `${where || usage.count} still use this product.${eg}\n\n` +
+          `Move them to another product first, then delete this one.`
+        );
+        return;
+      }
+    }
+
+    if (!confirm(`Delete "${pname || 'this product'}"?`)) return;
+    await dbWrite(dbOp.delete('products', pid));
+    toast('Deleted', 'error');
   };
 
   const handleCSVFile = (e) => {

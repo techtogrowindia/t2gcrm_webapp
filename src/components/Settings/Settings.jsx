@@ -544,7 +544,9 @@ For example: ${usage.sample.join(', ')}` : '';
         `Cannot ${verb.toLowerCase()} "${name}" yet.
 
 ` +
-        `${usage.count} ${usage.label}${usage.count === 1 ? '' : 's'} still use this ${typeLabel}.${names}
+        `${usage.breakdown && Object.keys(usage.breakdown).length > 1
+            ? Object.entries(usage.breakdown).map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`).join(' and ')
+            : `${usage.count} ${usage.label}${usage.count === 1 ? '' : 's'}`} still use this ${typeLabel}.${names}
 
 ` +
         `Move them to another ${typeLabel} first, then ${verb.toLowerCase()} this one.`
