@@ -6,13 +6,29 @@ const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
 
 // POST /api/rename-assignee
-// When a team member is renamed, leads (and tasks) store the assignee by NAME,
-// so they'd orphan. This cascades old name -> new name across the owner's leads
-// and tasks. Runs server-side because the leads table is too large to load in
-// the browser. Routes to Postgres or InstantDB via the shared write path.
+// Leads, quotes, invoices, AMC contracts and tasks all store the assignee by
+// NAME, so renaming a team member orphans every record still pointing at the
+// old one — they disappear from that member's lists and from name-based
+// reports. This cascades old name -> new name across all of them.
+//
+// Runs server-side because the leads table is far too large to load in the
+// browser. Routes to Postgres or InstantDB via the shared write path.
 //
 // Body: { ownerId, oldName, newName }
-// Returns: { updated, tasksUpdated }
+// Returns: { updated, tasksUpdated, byCollection: {...}, total }
+
+// Every place an assignee name is stored. Adding another is one line here.
+// `field` must be the EXACT doc key the app reads: tasks use `assignTo`, and
+// writing `assignedTo` instead (as this did) silently creates a junk field
+// while leaving the real one stale — the rename appears to work and doesn't.
+const ASSIGNEE_FIELDS = [
+  { collection: 'leads',    field: 'assign' },
+  { collection: 'quotes',   field: 'assign' },
+  { collection: 'invoices', field: 'assign' },
+  { collection: 'amc',      field: 'assign' },
+  { collection: 'tasks',    field: 'assignTo' },
+];
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   try {
@@ -24,37 +40,42 @@ export default async function handler(req, res) {
     const oldTrim = norm(oldName);
     const newTrim = norm(newName);
     if (!oldTrim || !newTrim || oldTrim === newTrim) {
-      return res.status(200).json({ updated: 0, tasksUpdated: 0 });
+      return res.status(200).json({ updated: 0, tasksUpdated: 0, byCollection: {}, total: 0 });
     }
 
     const db = init({ appId: APP_ID, adminToken: ADMIN_TOKEN });
-
-    // Match leads case-insensitively + trimmed, so stray spaces/casing on the old
-    // value are also remapped to the clean new name.
-    const leads = await getLeadsForOwner(ownerId);
+    // Match case-insensitively and trimmed, so stray spacing or casing on the
+    // old value is remapped to the clean new name as well.
     const oldKey = oldTrim.toLowerCase();
-    const leadsToFix = leads.filter(l => norm(l.assign).toLowerCase() === oldKey);
-
-    // Tasks reference the assignee by name too (field: assignedTo).
-    const taskData = await readData(db, ownerId, { tasks: { $: { where: { userId: ownerId } } } });
-    const tasksToFix = (taskData.tasks || []).filter(t => norm(t.assignedTo).toLowerCase() === oldKey);
-
     const BATCH = 200;
-    let updated = 0;
-    for (let i = 0; i < leadsToFix.length; i += BATCH) {
-      const chunk = leadsToFix.slice(i, i + BATCH);
-      await runOps(db, ownerId, chunk.map(l => opU('leads', l.id, { assign: newTrim })));
-      updated += chunk.length;
-    }
-    let tasksUpdated = 0;
-    for (let i = 0; i < tasksToFix.length; i += BATCH) {
-      const chunk = tasksToFix.slice(i, i + BATCH);
-      await runOps(db, ownerId, chunk.map(t => opU('tasks', t.id, { assignedTo: newTrim })));
-      tasksUpdated += chunk.length;
+    const byCollection = {};
+
+    for (const { collection, field } of ASSIGNEE_FIELDS) {
+      // Leads come from the shared cache — that table is too big for a plain read.
+      const rows = collection === 'leads'
+        ? await getLeadsForOwner(ownerId)
+        : (await readData(db, ownerId, { [collection]: { $: { where: { userId: ownerId } } } }))[collection] || [];
+
+      const toFix = (rows || []).filter(r => norm(r[field]).toLowerCase() === oldKey);
+      let n = 0;
+      for (let i = 0; i < toFix.length; i += BATCH) {
+        const chunk = toFix.slice(i, i + BATCH);
+        await runOps(db, ownerId, chunk.map(r => opU(collection, r.id, { [field]: newTrim })));
+        n += chunk.length;
+      }
+      byCollection[collection] = n;
     }
 
-    console.log(`[rename-assignee] ${ownerId}: "${oldTrim}" -> "${newTrim}" — leads ${updated}, tasks ${tasksUpdated}`);
-    return res.status(200).json({ updated, tasksUpdated });
+    const total = Object.values(byCollection).reduce((a, b) => a + b, 0);
+    console.log(`[rename-assignee] ${ownerId}: "${oldTrim}" -> "${newTrim}" —`,
+      Object.entries(byCollection).map(([c, n]) => `${c} ${n}`).join(', '));
+    // updated / tasksUpdated kept so any existing caller keeps working.
+    return res.status(200).json({
+      updated: byCollection.leads || 0,
+      tasksUpdated: byCollection.tasks || 0,
+      byCollection,
+      total,
+    });
   } catch (err) {
     console.error('rename-assignee error:', err);
     return res.status(500).json({ error: err.message });

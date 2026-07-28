@@ -170,20 +170,32 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     const payload = { ...form, name: trimmedName, email: normalizedEmail, userId: ownerId };
     if (editData) {
       const oldName = (editData.name || '').trim();
-      await dbWrite(dbOp.update('teamMembers', editData.id, payload));
-      // Renamed? Cascade the new name onto all their leads so name-based
-      // assignment/reports don't orphan. Server-side (leads table is too large
-      // to load here); routes to PG or InstantDB via the shared write path.
-      if (oldName && oldName !== trimmedName) {
+      const renaming = oldName && oldName !== trimmedName;
+      if (renaming) {
+        // Move the records FIRST, then commit the rename. The old order renamed
+        // the member and then cascaded, so a failed cascade left every lead,
+        // quote, invoice and AMC pointing at a name nobody had — they vanished
+        // from that member's lists with no warning. Failing here changes
+        // nothing at all, so it's safe to retry.
+        let d;
         try {
           const r = await fetch('/api/rename-assignee', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ownerId, oldName, newName: trimmedName }),
           });
-          const d = await r.json().catch(() => ({}));
-          toast(`Member updated — reassigned ${d.updated ?? 0} lead(s) to "${trimmedName}"`, 'success');
-        } catch { toast('Member updated, but lead reassignment failed — please retry', 'warning'); }
+          // A non-2xx used to fall through as a success toast reading
+          // "reassigned 0 lead(s)", which looks like "nothing to move".
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+          d = await r.json();
+        } catch (e) {
+          toast(`Rename cancelled — could not move this member's records (${e.message}). Nothing was changed.`, 'error');
+          return;
+        }
+        await dbWrite(dbOp.update('teamMembers', editData.id, payload));
+        const moved = Object.entries(d.byCollection || {}).filter(([, n]) => n > 0).map(([c, n]) => `${n} ${c}`);
+        toast(`Renamed to "${trimmedName}" — moved ${d.total ?? 0} record(s)${moved.length ? ': ' + moved.join(', ') : ''}`, 'success');
       } else {
+        await dbWrite(dbOp.update('teamMembers', editData.id, payload));
         toast('Member updated', 'success');
       }
     }
