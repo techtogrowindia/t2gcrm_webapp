@@ -1056,8 +1056,23 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   // Every field that can be bulk-set, and where its values come from.
   // Custom fields are included by name, so adding one in Settings makes it
   // bulk-editable with no code change.
+  // A member restricted to their own leads must not be able to hand them to
+  // someone else — they'd lose sight of the lead entirely, and the whole point
+  // of the restriction is that other members' books are not theirs to move.
+  // Same rule the read path uses (see /api/leads-page visibility).
+  const canSeeAllLeads = !!perms?.isOwner
+    || perms?.can('Leads', 'delete') === true
+    || perms?.can('Leads', 'viewAll') === true
+    || teamCanSeeAllLeads;
+
   const bulkFieldOptions = useMemo(() => ([
-    { key: 'assign',      label: 'Assignee',         values: team.map(t => ({ v: t.name, l: t.name })) },
+    {
+      key: 'assign',
+      label: 'Assignee',
+      // Restricted members may still claim an unassigned lead, but only for
+      // themselves — so the list is just them.
+      values: (canSeeAllLeads ? team : team.filter(t => t.name === myName)).map(t => ({ v: t.name, l: t.name })),
+    },
     { key: 'stage',       label: 'Stage',            values: activeStages.map(x => ({ v: x, l: x })) },
     { key: 'requirement', label: 'Requirement',      values: activeRequirements.map(x => ({ v: x, l: x })) },
     { key: 'source',      label: 'Source',           values: activeSources.map(x => ({ v: x, l: x })) },
@@ -1070,7 +1085,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       // one gets a text box.
       values: Array.isArray(cf.options) && cf.options.length ? cf.options.map(o => ({ v: o, l: o })) : null,
     })),
-  ]), [team, activeStages, activeRequirements, activeSources, productCats, products, customFields]);
+  ]), [team, activeStages, activeRequirements, activeSources, productCats, products, customFields, canSeeAllLeads, myName]);
 
   const bulkFieldSpec = bulkFieldOptions.find(f => f.key === bulkField) || null;
 
