@@ -675,7 +675,10 @@ export default function Reports({ user, perms, ownerId, profile }) {
           // otherwise it's simply scheduled ahead.
           const reschedInRange = (lastResched >= fromMs && lastResched <= toMs)
             || movedDays.some(k => { const t = startOfKey(k); return t >= fromMs && t <= toMs; });
-          cat = reschedInRange ? 'rescheduled' : 'upcoming';
+          const workedInRange = lastAct >= fromMs && lastAct <= toMs;
+          if (reschedInRange) cat = 'rescheduled';        // date moved = worked
+          else if (workedInRange) cat = 'attended';       // called/noted, date left alone
+          else cat = 'upcoming';                          // genuinely nobody has touched it
         }
       }
       bump(memberMap, l.assign ? normName(l.assign) : 'Unassigned', cat);
@@ -935,11 +938,11 @@ export default function Reports({ user, perms, ownerId, profile }) {
     } else if (tab === 'followup-status') {
       const rows = [
         ['--- By Team Member (who has not acted) ---'],
-        ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Untouched (Today)', 'Untouched (Overdue)', 'Upcoming', 'Untouched (No follow-up date)', 'Total'],
+        ['Team Member', 'Converted', 'Rescheduled', 'Attended', 'Untouched (Today)', 'Untouched (Overdue)', 'Untouched (Upcoming)', 'Untouched (No follow-up date)', 'Total'],
         ...followupStatus.byMember.map(m => [m.member, m.converted, m.rescheduled, m.attended, m.duetoday, m.untouched, m.upcoming, m.nofollowup, m.total]),
         [''],
         ['--- By Day ---'],
-        ['Date', 'Converted', 'Rescheduled', 'Attended', 'Untouched (Today)', 'Untouched (Overdue)', 'Upcoming', 'Untouched (No follow-up date)', 'Total'],
+        ['Date', 'Converted', 'Rescheduled', 'Attended', 'Untouched (Today)', 'Untouched (Overdue)', 'Untouched (Upcoming)', 'Untouched (No follow-up date)', 'Total'],
         ...followupStatus.days.map(d => [fmtD(d.date), d.converted, d.rescheduled, d.attended, d.duetoday, d.untouched, d.upcoming, d.nofollowup, d.total]),
         ['Total', followupStatus.totals.converted, followupStatus.totals.rescheduled, followupStatus.totals.attended, followupStatus.totals.duetoday, followupStatus.totals.untouched, followupStatus.totals.upcoming, followupStatus.totals.nofollowup, followupStatus.totals.total],
       ];
@@ -1711,7 +1714,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
             <div className="stat-card sc-purple"><div className="lbl">Attended</div><div className="val">{followupStatus.totals.attended}</div></div>
             <div className="stat-card sc-yellow"><div className="lbl">Untouched (Today)</div><div className="val">{followupStatus.totals.duetoday}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not actioned yet</div></div>
             <div className="stat-card sc-red"><div className="lbl">Untouched (Overdue)</div><div className="val">{followupStatus.totals.untouched}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>came due before today</div></div>
-            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Upcoming</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>not due yet</div></div>
+            <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Untouched (Upcoming)</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.upcoming}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>due later, not worked</div></div>
             <div className="stat-card" style={{ background: '#f8fafc' }}><div className="lbl">Untouched (No follow-up date)</div><div className="val" style={{ color: '#475569' }}>{followupStatus.totals.nofollowup}</div><div style={{ fontSize: 10, color: 'var(--muted)' }}>nothing scheduled, not worked</div></div>
           </div>
           {(() => {
@@ -1731,7 +1734,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
           <div style={{ fontSize: 11, color: followupStatus.unreconciled ? '#dc2626' : 'var(--muted)', fontWeight: followupStatus.unreconciled ? 700 : 400 }}>
             {followupStatus.unreconciled
               ? `⚠ ${followupStatus.unreconciled} lead(s) unaccounted for — the statuses below do not add up to Total Leads. Please report this.`
-              : `Converted + Rescheduled + Attended + Untouched (Today) + Untouched (Overdue) + Untouched (No follow-up date) + Upcoming = ${followupStatus.totals.total}, matching Total Leads. Every lead is counted once.`}
+              : `Converted + Rescheduled + Attended + Converted + Rescheduled + Attended + the four Untouched columns = ${followupStatus.totals.total}, matching Total Leads. Every lead is counted once.`}
           </div>
 
           <div className="tw">
@@ -1741,7 +1744,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
               "Unassigned" covers leads with no team member set · "Untouched (No follow-up date)" = nothing scheduled AND nobody has worked it in this period ·
               "Untouched (Today)" = due today, nobody has actioned it yet — today's workload, not a miss · "Untouched (Overdue)" = came due before today and still nobody has touched it — the number to chase ·
               "Attended" = overdue but worked since it came due · "Rescheduled" = moved to a future date during this range ·
-              "Upcoming" = due in the future. Sorted by Untouched.
+              "Untouched (Upcoming)" = due in the future and nobody has worked it yet. Every "Untouched" column means the same thing — nobody did anything in this period. Sorted by Untouched (Overdue).
             </div>
             <div className="tw-scroll">
               {followupStatus.byMember.length === 0 ? (
@@ -1756,7 +1759,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right' }}>Untouched (Today)</th>
                       <th style={{ textAlign: 'right', background: '#fef2f2' }}>Untouched (Overdue)</th>
-                      <th style={{ textAlign: 'right' }}>Upcoming</th>
+                      <th style={{ textAlign: 'right' }}>Untouched (Upcoming)</th>
                       <th style={{ textAlign: 'right' }}>Untouched (No follow-up date)</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
                     </tr>
@@ -1812,7 +1815,7 @@ export default function Reports({ user, perms, ownerId, profile }) {
                       <th style={{ textAlign: 'right' }}>Attended</th>
                       <th style={{ textAlign: 'right' }}>Untouched (Today)</th>
                       <th style={{ textAlign: 'right' }}>Untouched (Overdue)</th>
-                      <th style={{ textAlign: 'right' }}>Upcoming</th>
+                      <th style={{ textAlign: 'right' }}>Untouched (Upcoming)</th>
                       <th style={{ textAlign: 'right' }}>Untouched (No follow-up date)</th>
                       <th style={{ textAlign: 'right' }}>Total</th>
                     </tr>
