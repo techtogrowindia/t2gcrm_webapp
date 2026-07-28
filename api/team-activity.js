@@ -74,6 +74,12 @@ function summarise(logs) {
   for (const l of logs) {
     const eid = l.entityId;
     if (!eid || eid === 'bulk') continue;
+    // A lead's own creation entry is not work. Counting it marked every lead
+    // as "worked" the moment it existed, which made "attended" meaningless and
+    // hid the leads nobody had actually touched. Creation entries for other
+    // entities (quotation, invoice) ARE work and are attached to those
+    // records, not the lead, so only lead-creation is skipped.
+    if (l.action === 'created' && l.entityType === 'lead') continue;
     const t = l.createdAt || 0;
     let e = summary[eid];
     if (!e) e = summary[eid] = [0, 0];
