@@ -60,7 +60,12 @@ export default function Sidebar({ isSuperadmin, isExpired, perms, settings, plan
     // Plan-level module check (team members only — owners bypass)
     if (!isSuperadmin && !planEnforcement.isViewAllowed(item.id)) return false;
     if (item.id === 'dashboard') return perms?.can('Dashboard', 'view') !== false;
-    return perms?.can(item.permKey, 'list') !== false;
+    // 'view' means "has ANY permission for this module" (usePermissions.js),
+    // which is the question a nav item asks. Do NOT change this back to
+    // 'list': Reports and Integrations have no 'list' action to grant, so
+    // asking for it hid them from every team member no matter what the owner
+    // ticked. Modules with nothing granted still return false and stay hidden.
+    return perms?.can(item.permKey, 'view') !== false;
   });
 
   return (

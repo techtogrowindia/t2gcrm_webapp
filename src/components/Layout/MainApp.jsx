@@ -713,10 +713,12 @@ export default function MainApp({ user, settings }) {
     // Role-based guard (team members only)
     if (perms.isOwner) return;
 
-    const canSeeCurrent = activeView === 'dashboard' ? perms.can('Dashboard', 'view') : 
+    // 'view' = has ANY permission for the module. Must match Sidebar.jsx, or a
+    // section shows in the nav and then bounces the user away when opened.
+    const canSeeCurrent = activeView === 'dashboard' ? perms.can('Dashboard', 'view') :
                         activeView === 'userprofile' ? true :
                         activeView === 'settings' ? false :
-                        perms.can(permKey, 'list');
+                        perms.can(permKey, 'view');
 
     if (!canSeeCurrent) {
       const firstAvailableKey = Object.keys(views).find(key => {
@@ -727,7 +729,7 @@ export default function MainApp({ user, settings }) {
         if (key === 'settings') return false;
         // Also check plan enforcement
         if (planEnforcement && !isSuperadmin && !planEnforcement.isViewAllowed(key)) return false;
-        return perms.can(conf.label, 'list');
+        return perms.can(conf.label, 'view');
       });
 
       if (firstAvailableKey && firstAvailableKey !== activeView) {
