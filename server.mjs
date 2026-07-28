@@ -24,6 +24,7 @@ import fieldUsageHandler from './api/field-usage.js';
 import syncWonLeadsHandler from './api/sync-won-leads.js';
 import renameAssigneeHandler from './api/rename-assignee.js';
 import leadCheckDuplicateHandler from './api/lead-check-duplicate.js';
+import leadLookupHandler from './api/lead-lookup.js';
 import leadFormConfigHandler from './api/lead-form-config.js';
 import attendanceHandler from './api/attendance.js';
 import bookHandler from './api/appointments/book.js';
@@ -87,6 +88,10 @@ app.all('/api/field-usage', wrap(fieldUsageHandler));
 app.all('/api/sync-won-leads', wrap(syncWonLeadsHandler));
 app.all('/api/rename-assignee', wrap(renameAssigneeHandler));
 app.all('/api/lead-check-duplicate', wrap(leadCheckDuplicateHandler));
+// The mobile app calls this on every incoming call to show whether the caller
+// is already a lead. The file existed but was never routed, so it 404'd and the
+// app's checkLeadExists silently returned false every time.
+app.all('/api/lead-lookup', wrap(leadLookupHandler));
 app.all('/api/lead-form-config', wrap(leadFormConfigHandler));
 app.all('/api/attendance', wrap(attendanceHandler));
 app.all('/api/finance', wrap(financeHandler));

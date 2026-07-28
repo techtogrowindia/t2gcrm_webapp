@@ -17,3 +17,4 @@ mobile/android/.gradle/
 
 # Claude Code per-machine local settings — never commit
 .claude/settings.local.json
+mobile/
