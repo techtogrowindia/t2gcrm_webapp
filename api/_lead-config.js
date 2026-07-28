@@ -31,8 +31,15 @@ export function resolveLeadFormConfig(p = {}) {
     requirements: nonEmpty(p.requirements, DEFAULT_REQUIREMENTS),
     productCats: Array.isArray(p.productCats) ? p.productCats : [],
     customFields: Array.isArray(p.customFields) ? p.customFields : [],
-    wonStage: p.wonStage || allStages[allStages.length - 1] || 'Won',
-    lostStage: p.lostStage || 'Lost',
+    // Falling straight back to the LAST stage is wrong: businesses append
+    // stages over time, so the last one is usually whatever was added most
+    // recently ("Subsidy", "Competitors", "Lost") rather than the winning one.
+    // ARS had no wonStage set, so mobile counted its 6 "Subsidy" leads as won
+    // and ignored the 129 actually in "Won", while the web read it correctly.
+    // Look for a stage literally named Won first — same order as the web
+    // (src/components/Reports/Reports.jsx) so the two can never disagree.
+    wonStage: p.wonStage || allStages.find(s => /^won$/i.test(String(s).trim())) || allStages[allStages.length - 1] || 'Won',
+    lostStage: p.lostStage || allStages.find(s => /^lost$/i.test(String(s).trim())) || 'Lost',
   };
 }
 
