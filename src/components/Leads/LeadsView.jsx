@@ -72,10 +72,11 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   const [form, setForm] = useState(EMPTY_LEAD);
   const [saving, setSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [pendingBulkAssign, setPendingBulkAssign] = useState('');
-  const [pendingBulkStage, setPendingBulkStage] = useState('');
-  const [pendingBulkReq, setPendingBulkReq] = useState('');
-  const [pendingBulkProduct, setPendingBulkProduct] = useState(''); // holds a product id
+  // Bulk edit: pick a field, then a value. Replaces one dropdown per field,
+  // which meant only the four hardcoded ones could ever be bulk-set — custom
+  // fields and source had no way in at all.
+  const [bulkField, setBulkField] = useState('');
+  const [bulkValue, setBulkValue] = useState('');   // for 'product' this holds the product id
   const [colModal, setColModal] = useState(false);
   const [tempCols, setTempCols] = useState([]);
   const [tempStages, setTempStages] = useState([]);
@@ -1052,31 +1053,73 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     }
   };
 
+  // Every field that can be bulk-set, and where its values come from.
+  // Custom fields are included by name, so adding one in Settings makes it
+  // bulk-editable with no code change.
+  const bulkFieldOptions = useMemo(() => ([
+    { key: 'assign',      label: 'Assignee',         values: team.map(t => ({ v: t.name, l: t.name })) },
+    { key: 'stage',       label: 'Stage',            values: activeStages.map(x => ({ v: x, l: x })) },
+    { key: 'requirement', label: 'Requirement',      values: activeRequirements.map(x => ({ v: x, l: x })) },
+    { key: 'source',      label: 'Source',           values: activeSources.map(x => ({ v: x, l: x })) },
+    { key: 'productCat',  label: 'Product Category', values: (productCats || []).map(x => ({ v: x, l: x })) },
+    { key: 'product',     label: 'Product',          values: products.map(pr => ({ v: pr.id, l: pr.name })) },
+    ...customFields.map(cf => ({
+      key: `custom:${cf.name}`,
+      label: `${cf.name} (custom)`,
+      // A custom field with a fixed option list gets a dropdown; a free-text
+      // one gets a text box.
+      values: Array.isArray(cf.options) && cf.options.length ? cf.options.map(o => ({ v: o, l: o })) : null,
+    })),
+  ]), [team, activeStages, activeRequirements, activeSources, productCats, products, customFields]);
+
+  const bulkFieldSpec = bulkFieldOptions.find(f => f.key === bulkField) || null;
+
   const bulkApply = async () => {
-    if (!selectedIds.size || (!pendingBulkAssign && !pendingBulkStage && !pendingBulkReq && !pendingBulkProduct)) return;
+    if (!selectedIds.size || !bulkField || !bulkValue) return;
     const ids = [...selectedIds];
     const count = ids.length;
     const msgs = [];
 
-    // Resolve the selected product's name (bulk dropdown holds the id).
-    const bulkProduct = pendingBulkProduct ? products.find(p => p.id === pendingBulkProduct) : null;
+    const isCustom = bulkField.startsWith('custom:');
+    const customName = isCustom ? bulkField.slice('custom:'.length) : null;
+    // Resolve the selected product's name (the dropdown holds the id).
+    const bulkProduct = bulkField === 'product' ? products.find(p => p.id === bulkValue) : null;
 
-    // Build the shared update payload once
+    // Build the shared update payload once.
     const updates = {};
-    if (pendingBulkAssign) { updates.assign = pendingBulkAssign; updates.assignedAt = Date.now(); }
-    // Guard the raw value: the picker excludes disabled stages, but this is the
-    // write path and a stale/blocked value must not reach the database.
-    const bulkStage = sanitizeStage(pendingBulkStage, disabledStages);
-    if (bulkStage) { updates.stage = bulkStage; updates.stageChangedAt = Date.now(); }
-    if (pendingBulkReq) { updates.requirement = pendingBulkReq; }
-    if (pendingBulkProduct) { updates.productId = pendingBulkProduct; updates.productName = bulkProduct?.name || ''; }
+    let label = '';
+    if (bulkField === 'assign') {
+      updates.assign = bulkValue;
+      updates.assignedAt = Date.now();
+      // Keep the member id in step with the name — assignment is moving off
+      // names, and a bulk write that set only the name would undo that.
+      updates.assignedToId = (team.find(t => t.name === bulkValue) || {}).id || null;
+      label = `assigned to **${bulkValue}**`;
+    } else if (bulkField === 'stage') {
+      // Guard the raw value: the picker excludes disabled stages, but this is
+      // the write path and a stale/blocked value must not reach the database.
+      const bulkStage = sanitizeStage(bulkValue, disabledStages);
+      if (!bulkStage) { toast('That stage is disabled — pick another', 'error'); return; }
+      updates.stage = bulkStage;
+      updates.stageChangedAt = Date.now();
+      label = `stage set to **${bulkStage}**`;
+    } else if (bulkField === 'product') {
+      updates.productId = bulkValue;
+      updates.productName = bulkProduct?.name || '';
+      label = `product set to **${bulkProduct?.name || ''}**`;
+    } else if (!isCustom) {
+      updates[bulkField] = bulkValue;
+      label = `${bulkFieldSpec?.label || bulkField} set to **${bulkValue}**`;
+    } else {
+      label = `${customName} set to **${bulkValue}**`;
+    }
 
     // Track leads that need Won-stage customer conversion (rare, only for subset)
     const wonConversions = [];
-    if (pendingBulkStage && isWon(pendingBulkStage)) {
+    if (bulkField === 'stage' && isWon(bulkValue)) {
       for (const lid of ids) {
         const lead = leads.find(l => l.id === lid);
-        if (lead && lead.stage !== pendingBulkStage) wonConversions.push(lead);
+        if (lead && lead.stage !== bulkValue) wonConversions.push(lead);
       }
     }
 
@@ -1088,28 +1131,26 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     for (let i = 0; i < batches.length; i += PARALLEL) {
       const group = batches.slice(i, i + PARALLEL);
       await Promise.all(group.map(batch =>
-        dbWrite(batch.map(lid => dbOp.update('leads', lid, updates)))
+        dbWrite(batch.map(lid => {
+          if (!isCustom) return dbOp.update('leads', lid, updates);
+          // `custom` is a single object, so writing it wholesale would drop
+          // every other custom value on that lead. Merge per lead instead.
+          const lead = leads.find(l => l.id === lid);
+          return dbOp.update('leads', lid, {
+            custom: { ...(lead?.custom || {}), [customName]: bulkValue },
+          });
+        }))
       ));
     }
 
     // Single summary activity log for the entire bulk operation
     // (replaces the previous 2N per-lead log writes — at 1000 leads that's 2000 → 1 row)
-    const summaryParts = [];
-    if (pendingBulkAssign) summaryParts.push(`assigned to **${pendingBulkAssign}**`);
-    if (pendingBulkStage) summaryParts.push(`stage set to **${pendingBulkStage}**`);
-    if (pendingBulkReq) summaryParts.push(`requirement set to **${pendingBulkReq}**`);
-    if (pendingBulkProduct) summaryParts.push(`product set to **${bulkProduct?.name || ''}**`);
     await dbWrite(dbOp.update('activityLogs', id(), {
       entityType: 'lead', entityId: 'bulk',
       entityName: `Bulk: ${count} leads`, action: 'bulk-update',
-      text: `Bulk updated ${count} leads — ${summaryParts.join(', ')}`,
+      text: `Bulk updated ${count} leads — ${label}`,
       count,
-      bulkFields: {
-        ...(pendingBulkAssign ? { assign: pendingBulkAssign } : {}),
-        ...(pendingBulkStage ? { stage: sanitizeStage(pendingBulkStage, disabledStages) || undefined } : {}),
-        ...(pendingBulkReq ? { requirement: pendingBulkReq } : {}),
-        ...(pendingBulkProduct ? { productId: pendingBulkProduct, productName: bulkProduct?.name || '' } : {}),
-      },
+      bulkFields: isCustom ? { [`custom.${customName}`]: bulkValue } : { ...updates },
       userId: ownerId, actorId: user.id, userName: user.email,
       teamMemberId: myTeamMember?.id || null, createdAt: Date.now(),
     }));
@@ -1119,14 +1160,9 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       await convertToCustomer(lead, true);
     }
 
-    if (pendingBulkAssign) msgs.push(`Assigned to ${pendingBulkAssign}`);
-    if (pendingBulkStage) msgs.push(`Stage → ${pendingBulkStage}`);
-    if (pendingBulkReq) msgs.push(`Requirement → ${pendingBulkReq}`);
-    if (pendingBulkProduct) msgs.push(`Product → ${bulkProduct?.name || ''}`);
-    setPendingBulkAssign('');
-    setPendingBulkStage('');
-    setPendingBulkReq('');
-    setPendingBulkProduct('');
+    msgs.push(`${bulkFieldSpec?.label || bulkField} → ${bulkProduct?.name || bulkValue}`);
+    setBulkField('');
+    setBulkValue('');
     setSelectedIds(new Set());
     toast(`${count} leads: ${msgs.join(', ')}`, 'success');
     refetchPage();
@@ -1688,27 +1724,31 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
           {selectedIds.size > 0 && (
             <div className="bulk-bar" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)' }}>{selectedIds.size} selected</span>
-              <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }} value={pendingBulkAssign} onChange={e => setPendingBulkAssign(e.target.value)}>
-                <option value="">Assign To...</option>
-                {team.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+              {/* Pick the field, then the value. Any field can be bulk-set,
+                  including custom ones, without adding a dropdown per field. */}
+              <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
+                      value={bulkField} onChange={e => { setBulkField(e.target.value); setBulkValue(''); }}>
+                <option value="">Choose field...</option>
+                {bulkFieldOptions.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
               </select>
-              <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }} value={pendingBulkStage} onChange={e => setPendingBulkStage(e.target.value)}>
-                <option value="">Change Stage...</option>
-                {activeStages.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-              <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }} value={pendingBulkReq} onChange={e => setPendingBulkReq(e.target.value)}>
-                <option value="">Change Requirement...</option>
-                {activeRequirements.map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
-              {products.length > 0 && (
-                <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }} value={pendingBulkProduct} onChange={e => setPendingBulkProduct(e.target.value)}>
-                  <option value="">Assign Product...</option>
-                  {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+              {bulkField && (
+                bulkFieldSpec?.values
+                  ? (
+                    <select style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, minWidth: 160 }}
+                            value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
+                      <option value="">Choose value...</option>
+                      {bulkFieldSpec.values.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+                    </select>
+                  ) : (
+                    // Free-text custom field — no fixed options to offer.
+                    <input style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, minWidth: 160 }}
+                           placeholder={`Enter ${bulkFieldSpec?.label || 'value'}...`}
+                           value={bulkValue} onChange={e => setBulkValue(e.target.value)} />
+                  )
               )}
-              {(pendingBulkAssign || pendingBulkStage || pendingBulkReq || pendingBulkProduct) && <button className="btn btn-primary btn-sm" onClick={bulkApply}>Apply</button>}
+              {bulkField && bulkValue && <button className="btn btn-primary btn-sm" onClick={bulkApply}>Apply to {selectedIds.size}</button>}
               {canDelete && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={bulkDelete}>🗑 Delete Selected</button>}
-              <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedIds(new Set()); setPendingBulkAssign(''); setPendingBulkStage(''); setPendingBulkReq(''); setPendingBulkProduct(''); }}>✕ Clear</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => { setSelectedIds(new Set()); setBulkField(''); setBulkValue(''); }}>✕ Clear</button>
             </div>
           )}
 
