@@ -73,6 +73,20 @@ npm run build    # Production build
 npm start        # Express server (port 3000)
 ```
 
+**⚠️ THE DEPLOY SCRIPTS SILENTLY BUILD STALE CODE.** `~/restart-t2gcrm.sh` and
+`~/dev-restart-t2gcrm.sh` run `git pull origin main`, which fails with
+`fatal: could not read Username for 'https://github.com'` — and the script
+carries on to `npm run build` and restart anyway. The deploy *looks* successful
+while serving the previous code. This has burned multiple sessions.
+
+**ALWAYS verify after deploying** — never trust the script's output:
+```bash
+git -C /var/www/t2gcrm log --oneline -1     # must match origin/main
+```
+For an API-only change, also confirm the behaviour changed: a `git pull` updates
+files but does NOT reload Node. Fix the root cause once with
+`git config --global credential.helper store` + one manual `git pull`.
+
 **VPS deployment:**
 - **API-only change** (`api/*.js`, `server.mjs`): `git pull` + `pm2 restart t2gcrm` — no build needed
 - **Frontend change** (`src/**`): `git pull` + `npm run build` + `pm2 restart t2gcrm`
@@ -213,6 +227,23 @@ Prod is on PG, so the live path is `/api/auth-pg`; route the frontend through `A
 ### userProfiles WhatsApp Fields
 `waApiToken`, `waPhoneId`, `whatsappTemplates[]`, `waNotifPhone` (owner recipient, include country code)
 
+## Lead Assignment — by NAME, never email
+
+`lead.assign` holds the team member's **name** everywhere. Reports, team stats,
+visibility filters and the web all match on it.
+
+- **The server normalises on write** (`api/_assignee.js` → `resolveAssignee`,
+  called from `api/data.js`): an assignee arriving as a name OR an email is
+  stored as the canonical **name** plus `assignedToId`. Any client sending an
+  email is repaired automatically — this is why it's done server-side.
+- **Never filter leads by email.** The mobile app queried
+  `assign == staffEmail`, so leads assigned on the web never appeared in it.
+- **Owners have no team-member record**, so they have no name of their own. Get
+  the assignee list from `/api/lead-form-config` → `assignees`, not from the
+  logged-in user, or an owner sees their raw email address.
+- `assignedToId` is the migration target (see the memory note); reads still
+  match on name, so both must stay in sync.
+
 ## Mobile App (Flutter)
 
 **Repo:** https://github.com/techtogrowindia/T2GCRM_MobileApp — cloned into
@@ -231,6 +262,17 @@ per-business form config: `stages`, `sources`, `requirements`, `productCats`,
 ⚠️ Querying `settings` via `/api/data-pg` or `/api/secure-data` returns neither
 `customFields` nor `productCats`. The app did that for months, which is why
 custom fields never appeared on mobile however a business configured them.
+
+**Use the exact key names it returns.** The app read `labels`/`leadLabels`/`b0`
+for the Requirement list — the endpoint returns **`requirements`** — so every
+business silently got the hardcoded `Hot/Warm/Cold` fallback instead of its own
+list. Same class of bug as querying `settings` and never seeing `customFields`.
+A wrong key here fails *silently into a default*, which is why it went unnoticed.
+
+**Custom field `options` may be a LIST or a comma-separated STRING.** Real data
+uses both (ARS stores `"Chennai, Coimbatore, ..."` for District). Handle both, or
+dropdown fields render as free-text boxes. `type: 'number'` fields want a
+numeric keypad.
 
 ### Lead CRUD from mobile
 | Action | Method | Endpoint |
