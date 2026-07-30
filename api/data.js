@@ -3,7 +3,7 @@ import { pgRunOps } from './data-pg.js';
 import { readData } from './_write-ops.js';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getLeadFormConfig, validateLeadAgainstConfig } from './_lead-config.js';
-import { resolveAssigneeId } from './_assignee.js';
+import { resolveAssignee } from './_assignee.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -76,19 +76,22 @@ const ENTITY_TYPE_MAP = {
 // `assign` and are handled separately.
 const ASSIGNABLE = new Set(['leads', 'customers', 'quotations', 'invoices', 'amc']);
 
-// Resolve an assignee name to a teamMembers.id. Team lists are small and this
-// only runs on writes that actually set an assignee, so it isn't a hot path.
-async function lookupAssigneeId(db, ownerId, name) {
+// Normalise an assignee to the canonical member NAME + id. The value may
+// arrive as a name (web) or an EMAIL (mobile, whose picker is keyed by email),
+// and storing it verbatim is why leads created on mobile showed a raw email on
+// the web and never matched the app's own "my leads" filter.
+// Team lists are small and this only runs on writes that set an assignee.
+async function normaliseAssignee(db, ownerId, value) {
   try {
     const { teamMembers } = await readData(db, ownerId, {
       teamMembers: { $: { where: { userId: ownerId } } },
     });
-    return resolveAssigneeId(name, teamMembers || []);
+    return resolveAssignee(value, teamMembers || []);
   } catch (e) {
-    // Never fail a write because the id couldn't be resolved — the name is
-    // still stored, and the backfill will pick this row up later.
-    console.error('[assignee] id lookup failed:', e?.message || e);
-    return null;
+    // Never fail a write over this — keep the value as sent and let the
+    // backfill pick the row up later.
+    console.error('[assignee] lookup failed:', e?.message || e);
+    return { name: String(value ?? '').trim(), id: null };
   }
 }
 
@@ -421,7 +424,9 @@ export default async function handler(req, res) {
       // the id doesn't. Written for every assignable module so nothing new
       // is created without one. See api/_assignee.js.
       if (ASSIGNABLE.has(module) && payload.assign) {
-        payload.assignedToId = await lookupAssigneeId(db, ownerId, payload.assign);
+        const a = await normaliseAssignee(db, ownerId, payload.assign);
+        payload.assign = a.name;          // an email becomes the member's name
+        payload.assignedToId = a.id;
       }
 
       // Handle Task Numbering
@@ -497,9 +502,13 @@ export default async function handler(req, res) {
       // clearing it (assign = '' -> assignedToId = null), so the two can
       // never disagree.
       if (ASSIGNABLE.has(module) && updates.assign !== undefined) {
-        updates.assignedToId = updates.assign
-          ? await lookupAssigneeId(db, ownerId, updates.assign)
-          : null;
+        if (updates.assign) {
+          const a = await normaliseAssignee(db, ownerId, updates.assign);
+          updates.assign = a.name;
+          updates.assignedToId = a.id;
+        } else {
+          updates.assignedToId = null;
+        }
       }
 
       const ops = [

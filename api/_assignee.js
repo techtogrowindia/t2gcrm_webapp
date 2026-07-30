@@ -37,13 +37,31 @@ export function resolveAssigneeId(name, teamMembers) {
 }
 
 /**
- * The assignee fields to write. Call this wherever `assign` is set so the id
- * is never allowed to drift from the name.
- * Returns `assignedToId: null` for an unknown name rather than omitting it —
- * an explicit null records "no member matches", which the backfill can spot.
+ * Resolve an assignee value that may be a NAME **or an EMAIL** to the canonical
+ * member. The mobile app's picker is keyed by email while the web uses the
+ * name, so `assign` ended up holding both — leads created on mobile displayed a
+ * raw email on the web, and the app's own "my leads" filter never matched a
+ * lead the web had assigned.
+ *
+ * @returns {{name: string, id: string|null}} the member's canonical NAME (what
+ *          the whole app matches on) and id. Falls back to the value as given
+ *          when it matches no member, so a hand-typed assignee isn't discarded.
  */
-export function assigneeFields(name, teamMembers) {
-  return { assign: norm(name), assignedToId: resolveAssigneeId(name, teamMembers) };
+export function resolveAssignee(value, teamMembers) {
+  const k = key(value);
+  if (!k) return { name: '', id: null };
+  const hit = (teamMembers || []).find(m => key(m.name) === k || key(m.email) === k);
+  return hit ? { name: norm(hit.name), id: hit.id } : { name: norm(value), id: null };
+}
+
+/**
+ * The assignee fields to write. Call this wherever `assign` is set so the id
+ * is never allowed to drift from the name, and so an email is stored as the
+ * member's name rather than verbatim.
+ */
+export function assigneeFields(value, teamMembers) {
+  const { name, id } = resolveAssignee(value, teamMembers);
+  return { assign: name, assignedToId: id };
 }
 
 /**
