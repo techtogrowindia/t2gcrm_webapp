@@ -87,6 +87,16 @@ For an API-only change, also confirm the behaviour changed: a `git pull` updates
 files but does NOT reload Node. Fix the root cause once with
 `git config --global credential.helper store` + one manual `git pull`.
 
+**⚠️ Prod & dev deploy from `main` ONLY.** A fix committed to a worktree/feature
+branch does NOT ship — `git pull` on `/var/www/t2gcrm` pulls `main`, so the
+build succeeds while the fix stays absent (burned a deploy 2026-07-31). Before
+telling anyone to deploy, prove the fix is on main:
+```bash
+git merge-base --is-ancestor <fix-sha> origin/main && echo IN MAIN || echo NOT DEPLOYABLE
+```
+If not, cherry-pick/merge the fix commits onto `main` first (additive — verify no
+newer file got reverted).
+
 **VPS deployment:**
 - **API-only change** (`api/*.js`, `server.mjs`): `git pull` + `pm2 restart t2gcrm` — no build needed
 - **Frontend change** (`src/**`): `git pull` + `npm run build` + `pm2 restart t2gcrm`
