@@ -1,6 +1,11 @@
 import { getCallLogsForOwner } from './_call-logs-cache.js';
 import { getLeadsForOwner } from './_leads-cache.js';
-import { rollupRepeatAttempts, normalizePhone } from './_shared-call-logs.js';
+import {
+  rollupRepeatAttempts,
+  normalizePhone,
+  buildLeadPhoneIndex,
+  findLeadByPhone,
+} from './_shared-call-logs.js';
 
 // Local alias kept for the existing phone-group code below.
 const normalize = normalizePhone;
@@ -152,6 +157,17 @@ export default async function handler(req, res) {
     const p = Math.max(1, Number(page) || 1);
     const items = pageSize === 'all' ? grouped : grouped.slice((p - 1) * ps, p * ps);
 
+    // ─── Lead index (shared by the summary and the row enrichment) ────────
+    // Both MUST use the same matcher. When the summary counted `leadId` alone
+    // while the rows matched on phone, a call whose lead was found by phone
+    // showed its lead name in the table yet landed in "Unknown" in the summary.
+    const leads = await getLeadsForOwner(ownerId);
+    const leadById = Object.fromEntries(leads.map(l => [l.id, l]));
+    const leadByPhone = buildLeadPhoneIndex(leads);
+    const matchLeadFor = (log) => (
+      log.leadId ? (leadById[log.leadId] || null) : findLeadByPhone(leadByPhone, log.phone)
+    );
+
     // ─── Team summary stats (mirrors CallLogs.jsx `teamCallStats` useMemo) ─
     // Defaults to "today" if no date filter applied (uses client-provided summaryDate)
     const teamStats = team.map(m => {
@@ -174,8 +190,8 @@ export default async function handler(req, res) {
         email: m.email,
         total: memberInScope.length,
         connected: memberInScope.filter(l => l.duration && Number(l.duration) > 0).length,
-        toLeads: memberInScope.filter(l => l.leadId).length,
-        toUnknown: memberInScope.filter(l => !l.leadId).length,
+        toLeads: memberInScope.filter(l => matchLeadFor(l)).length,
+        toUnknown: memberInScope.filter(l => !matchLeadFor(l)).length,
         outgoing: memberInScope.filter(l => l.direction === 'Outgoing').length,
         incoming: memberInScope.filter(l => l.direction === 'Incoming').length,
         missed: memberInScope.filter(l => l.direction === 'Missed').length,
@@ -185,17 +201,8 @@ export default async function handler(req, res) {
 
     // ─── Enrich items with matched-lead info (small fields only) ──────────
     // Only enrich the current page slice — keeps response small.
-    const leads = await getLeadsForOwner(ownerId);
-    const leadById = Object.fromEntries(leads.map(l => [l.id, l]));
-    const leadByPhone = {};
-    for (const l of leads) {
-      const n = normalize(l.phone);
-      if (n.length >= 7 && !leadByPhone[n]) leadByPhone[n] = l;
-    }
     const enrichedItems = items.map(log => {
-      const match = log.leadId
-        ? leadById[log.leadId] || null
-        : leadByPhone[normalize(log.phone)] || null;
+      const match = matchLeadFor(log);
       return match
         ? { ...log, matchedLeadId: match.id, matchedLeadName: match.name }
         : log;
