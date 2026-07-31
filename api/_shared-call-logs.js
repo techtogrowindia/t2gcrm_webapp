@@ -20,6 +20,40 @@ export const isUnpickedCall = (l) => !l.duration || Number(l.duration) === 0;
 // Last-10-digits phone key so formatting/country-code drift doesn't split a group.
 export const normalizePhone = (p) => (p ? String(p).replace(/\D/g, '').slice(-10) : '');
 
+// A phone key shorter than this can't identify anybody. Guards the empty-string
+// key in particular: without it a lead with no phone indexes under '' and then
+// matches every call that also has no phone.
+const MIN_PHONE_KEY_LEN = 7;
+
+/**
+ * Index leads by normalized phone for call matching.
+ *
+ * Lead matching used to be done inline in two places with `replace(/\D/g,'')`
+ * and NO `.slice(-10)`, which required the call and the lead to store the number
+ * in the identical format. Any `+91`/leading-zero difference — in either
+ * direction — meant `leadId` was never stamped, while the read path (last 10)
+ * still matched, so a row displayed its lead but counted as "Unknown" in the
+ * Team Member Call Summary. On ARS this misfiled 124 of 149 "Unknown" calls in
+ * a single day.
+ *
+ * First-wins on collision, matching the leads index in call-logs-page.js.
+ */
+export function buildLeadPhoneIndex(leads) {
+  const index = {};
+  for (const l of leads || []) {
+    const k = normalizePhone(l?.phone);
+    if (k.length >= MIN_PHONE_KEY_LEN && !index[k]) index[k] = l;
+  }
+  return index;
+}
+
+/** Look up a lead for a call's phone. Returns null when the number is unusable. */
+export function findLeadByPhone(index, phone) {
+  const k = normalizePhone(phone);
+  if (k.length < MIN_PHONE_KEY_LEN) return null;
+  return index[k] || null;
+}
+
 /**
  * Repeat-attempt rollup. Collapses runs of consecutive UNPICKED (duration 0)
  * calls to the same phone + direction + staffEmail within 24h into a single

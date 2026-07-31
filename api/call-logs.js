@@ -3,7 +3,7 @@ import { init, tx, id } from '@instantdb/admin';
 import { getLeadsForOwner } from './_leads-cache.js';
 import { getCallLogsForOwner, invalidateCallLogsCache } from './_call-logs-cache.js';
 import { opU, opD, runOps, readData } from './_write-ops.js';
-import { rollupRepeatAttempts } from './_shared-call-logs.js';
+import { rollupRepeatAttempts, buildLeadPhoneIndex, findLeadByPhone } from './_shared-call-logs.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -181,12 +181,11 @@ export default async function handler(req, res) {
       }
 
       // Enrich with lead info
-      const leadMap = Object.fromEntries((leads || []).map(l => [l.phone?.replace(/\D/g, ''), l]));
+      const leadMap = buildLeadPhoneIndex(leads);
       const enriched = logs.map(log => {
-        const cleanPhone = log.phone?.replace(/\D/g, '') || '';
         const matchedLead = log.leadId
           ? (leads || []).find(l => l.id === log.leadId)
-          : leadMap[cleanPhone] || null;
+          : findLeadByPhone(leadMap, log.phone);
         return {
           ...log,
           matchedLeadName: matchedLead?.name || null,
@@ -260,7 +259,7 @@ export default async function handler(req, res) {
             ? readData(db, ownerId, { callLogSyncState: { $: { where: { ownerId, deviceId } } } })
             : Promise.resolve({ callLogSyncState: [] }),
         ]);
-        const leadMap = Object.fromEntries((leads || []).map(l => [l.phone?.replace(/\D/g, ''), l]));
+        const leadMap = buildLeadPhoneIndex(leads);
 
         // Device sync state: the server's record of what this device already sent.
         const syncStateRecord = syncStateResult.callLogSyncState?.[0] || null;
@@ -312,8 +311,7 @@ export default async function handler(req, res) {
         }
 
         const callOps = accepted.map(entry => {
-          const cleanPhone = entry.phone?.replace(/\D/g, '') || '';
-          const matched = leadMap[cleanPhone] || null;
+          const matched = findLeadByPhone(leadMap, entry.phone);
           return opU('callLogs', entry._id, {
             phone: entry.phone || '',
             contactName: entry.contactName || matched?.name || '',
@@ -389,8 +387,7 @@ export default async function handler(req, res) {
         getLeadsForOwner(ownerId),
         getCallLogsForOwner(ownerId),
       ]);
-      const cleanPhone = singleData.phone?.replace(/\D/g, '') || '';
-      const matched = (leads || []).find(l => l.phone?.replace(/\D/g, '') === cleanPhone);
+      const matched = findLeadByPhone(buildLeadPhoneIndex(leads), singleData.phone);
 
       const singleStableId = stableCallLogId({ ...singleData, createdAt: singleData.createdAt || now });
       if (existingLogs.some(l => l.id === singleStableId)) {
