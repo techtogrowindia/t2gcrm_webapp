@@ -2,6 +2,7 @@ import { init, tx, id } from '@instantdb/admin';
 import { pgRunOps } from './data-pg.js';
 import { readData } from './_write-ops.js';
 import { getLeadsForOwner } from './_leads-cache.js';
+import { rawQuery } from './db-pg.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -227,6 +228,42 @@ export default async function handler(req, res) {
           isOwner = true;
         } else if (params.isOwner === true || params.isOwner === 'true') {
           isOwner = true;
+        }
+
+        // 3. Owners authenticate with actorId = their CREDENTIAL id (auth-pg
+        //    returns credentialId, not the tenant id), which matches no
+        //    teamMembers row. Without this branch an owner falls through to the
+        //    restricted filter below and sees only unassigned leads — their own
+        //    data appearing to vanish. Confirm the credential is a non-team,
+        //    non-partner credential whose email owns THIS tenant before trusting
+        //    it (the credentials table has no RLS, so the tenant check matters).
+        if (!isOwner && !resolvedTm && actorId && actorId !== ownerId && USE_PG_DATA) {
+          try {
+            const { rows } = await rawQuery(
+              `SELECT 1 FROM credentials c
+                 JOIN accounts a ON a.id = $2 AND lower(a.email) = lower(c.email)
+                WHERE c.id = $1 AND c.is_team = false AND c.is_partner = false`,
+              [actorId, ownerId]
+            );
+            if (rows.length) isOwner = true;
+          } catch (e) {
+            console.error('[leads-visibility] owner-credential lookup failed:', e.message);
+          }
+        }
+
+        // A non-owner actorId that matched no team member, no email, and is not
+        // an owner credential is a STALE or forged caller — e.g. a team member
+        // deleted and recreated, so the app still holds the old id. Do NOT fall
+        // through to the filter below: with an empty name/email it silently
+        // returns only unassigned leads, which looks exactly like "my leads
+        // vanished". Fail closed so the app forces a fresh sign-in. Scoped to the
+        // PG path (the live one) and to a supplied-but-unresolved actorId, so the
+        // legacy "ownerId only" call is unaffected.
+        if (USE_PG_DATA && actorId && actorId !== ownerId && !isOwner && !resolvedTm) {
+          return res.status(401).json({
+            error: 'Your session is no longer recognized. Please sign out and sign in again.',
+            code: 'SESSION_STALE',
+          });
         }
 
         const leadsPerms = (rolePerms && rolePerms.Leads) || [];

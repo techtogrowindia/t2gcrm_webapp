@@ -1,6 +1,7 @@
 import { getLeadsForOwner } from './_leads-cache.js';
 import { init } from '@instantdb/admin';
 import { tenantQuery } from './db-pg.js';
+import { samePhone } from './_phone.js';
 
 const APP_ID = process.env.VITE_INSTANT_APP_ID;
 const ADMIN_TOKEN = process.env.INSTANT_ADMIN_TOKEN;
@@ -24,7 +25,6 @@ export default async function handler(req, res) {
     if (!ownerId) return res.status(400).json({ error: 'ownerId required' });
     if (!phone && !email) return res.status(400).json({ error: 'phone or email required' });
 
-    const normalPhone = (phone || '').trim().toLowerCase();
     const normalEmail = (email || '').trim().toLowerCase();
 
     // leads — already migrated via _leads-cache.js
@@ -43,14 +43,18 @@ export default async function handler(req, res) {
       customers = result.customers || [];
     }
 
+    // Phone is matched on its last-10-digit key so a lead saved as +91… still
+    // matches a lookup for the bare number (and vice-versa). Exact-string
+    // matching here let the mobile dedup check miss +91 / leading-0 variants and
+    // create duplicate leads — the very thing the no-duplicates policy forbids.
     const matchingLead = leads.find(l => {
-      if (normalPhone && (l.phone || '').trim().toLowerCase() === normalPhone) return true;
+      if (phone && samePhone(l.phone, phone)) return true;
       if (normalEmail && (l.email || '').trim().toLowerCase() === normalEmail) return true;
       return false;
     }) || null;
 
     const matchingCustomer = customers.find(c => {
-      if (normalPhone && (c.phone || '').trim().toLowerCase() === normalPhone) return true;
+      if (phone && samePhone(c.phone, phone)) return true;
       if (normalEmail && (c.email || '').trim().toLowerCase() === normalEmail) return true;
       return false;
     }) || null;

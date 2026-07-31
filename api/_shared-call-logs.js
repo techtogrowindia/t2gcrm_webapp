@@ -9,6 +9,8 @@
 // rule, change it HERE — do not re-inline it in a consumer.
 // ===================================================================
 
+import { phoneKey, MIN_PHONE_KEY_LEN } from './_phone.js';
+
 // Consecutive unpicked attempts to the same number within this window
 // collapse into one synthetic row.
 export const REPEAT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -17,13 +19,10 @@ export const REPEAT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
 // sends outcome:'Connected' on zero-duration calls (see CLAUDE.md).
 export const isUnpickedCall = (l) => !l.duration || Number(l.duration) === 0;
 
-// Last-10-digits phone key so formatting/country-code drift doesn't split a group.
-export const normalizePhone = (p) => (p ? String(p).replace(/\D/g, '').slice(-10) : '');
-
-// A phone key shorter than this can't identify anybody. Guards the empty-string
-// key in particular: without it a lead with no phone indexes under '' and then
-// matches every call that also has no phone.
-const MIN_PHONE_KEY_LEN = 7;
+// Last-10-digits phone key so formatting/country-code drift doesn't split a
+// group. Kept as a named export for existing importers; the rule lives in
+// _phone.js so leads, customers and call logs all match numbers identically.
+export const normalizePhone = phoneKey;
 
 /**
  * Index leads by normalized phone for call matching.
