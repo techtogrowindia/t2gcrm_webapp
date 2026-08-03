@@ -21,7 +21,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
   const clientMatch = data.clientDetails || {}; 
   // Prefer the split frozen onto the document at issue time; the live customer
   // lookup is only a fallback for documents saved before those fields existed.
-  const { isInterState } = resolveGstSplit(data, profile, clientMatch);
+  const { isInterState, known: gstKnown } = resolveGstSplit(data, profile, clientMatch);
 
   const A4_STYLE = preview ? {
     width: '210mm',
@@ -52,17 +52,24 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
       const posLabel = gstStateLabel(buyerState);
       const billStateLabel = gstStateLabel(clientMatch.state || buyerState);
       const rcm = data.reverseCharge ? 'Yes' : 'No';
+      // Document title is user-selectable (Settings → Templates). "Bill of Supply"
+      // is for composition/exempt supplies — no GST is charged, so the tax columns,
+      // per-rate lines and HSN tax summary are suppressed. Quotes stay "QUOTATION";
+      // a GST-registered taxable supplier must use "Tax Invoice".
+      const isBoS = isInv && profile?.invoiceDocTitle === 'Bill of Supply';
+      const docTitle = isInv ? String(profile?.invoiceDocTitle || 'Tax Invoice').toUpperCase() : 'QUOTATION';
+      const showTax = !isBoS;
       const th = { border: bc, padding: '5px 6px', fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', textAlign: 'center', background: '#f0f0f0' };
       const td = { border: bc, padding: '5px 6px', fontSize: '10px', verticalAlign: 'top' };
       const cell = { display: 'flex', justifyContent: 'space-between', padding: '4px 8px', borderBottom: bc, fontSize: '10px' };
       // Per-rate tax lines for the totals block (CGST/SGST halves, or full IGST).
       const rateSummary = Object.entries(ptots.taxesByRate).sort((a, b) => Number(a[0]) - Number(b[0]));
       const totalLines = [
-        ['Taxable Value', moneyNo(ptots.sub - ptots.discAmt)],
+        [showTax ? 'Taxable Value' : 'Amount', moneyNo(ptots.sub - ptots.discAmt)],
         ...(ptots.discAmt > 0 ? [['Discount', '(-) ' + moneyNo(ptots.discAmt)]] : []),
-        ...rateSummary.flatMap(([rate, amt]) => isInterState
+        ...(showTax ? rateSummary.flatMap(([rate, amt]) => isInterState
           ? [[`IGST ${rate}%`, moneyNo(amt)]]
-          : [[`CGST ${Number(rate) / 2}%`, moneyNo(amt / 2)], [`SGST ${Number(rate) / 2}%`, moneyNo(amt / 2)]]),
+          : [[`CGST ${Number(rate) / 2}%`, moneyNo(amt / 2)], [`SGST ${Number(rate) / 2}%`, moneyNo(amt / 2)]]) : []),
         ...(ptots.roundOff ? [['Round Off', moneyNo(ptots.roundOff)]] : []),
       ];
       const shipToText = data.shipTo
@@ -71,7 +78,10 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
       return (
         <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', color: '#000', border: bc }}>
           <div style={{ textAlign: 'center', fontSize: '8px', borderBottom: bc, padding: '2px' }}>ORIGINAL FOR RECIPIENT</div>
-          <div style={{ textAlign: 'center', fontWeight: 800, fontSize: '15px', padding: '6px', borderBottom: bc, letterSpacing: '1px' }}>{isInv ? 'TAX INVOICE' : 'QUOTATION'}</div>
+          <div style={{ textAlign: 'center', fontWeight: 800, fontSize: '15px', padding: '6px', borderBottom: bc, letterSpacing: '1px' }}>{docTitle}</div>
+          {showTax && !gstKnown && (
+            <div style={{ textAlign: 'center', fontSize: '9px', padding: '3px 6px', borderBottom: bc, background: '#fff7ed', color: '#9a3412' }}>⚠ Place of supply not set — tax split defaulted to CGST/SGST. Set the client's state before issuing.</div>
+          )}
 
           {/* Supplier + document meta */}
           <div style={{ display: 'flex', borderBottom: bc }}>
@@ -90,7 +100,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                 ...(isInv && data.dueDate ? [['Due Date', fmtD(data.dueDate)]] : []),
                 ...(!isInv && data.validUntil ? [['Valid Until', fmtD(data.validUntil)]] : []),
                 ['Place of Supply', posLabel || '—'],
-                ['Reverse Charge', rcm],
+                ...(showTax ? [['Reverse Charge', rcm]] : []),
               ].map(([k, v], i) => (
                 <div key={i} style={{ display: 'flex', borderBottom: bc, fontSize: '10px' }}>
                   <div style={{ width: '45%', padding: '4px 6px', fontWeight: 600, borderRight: bc }}>{k}</div>
@@ -123,10 +133,10 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               <th style={{ ...th, width: '58px' }}>HSN/SAC</th>
               <th style={{ ...th, width: '44px' }}>Qty</th>
               <th style={{ ...th, width: '62px' }}>Rate</th>
-              <th style={{ ...th, width: '66px' }}>Taxable</th>
-              {isInterState
+              {showTax && <th style={{ ...th, width: '66px' }}>Taxable</th>}
+              {showTax && (isInterState
                 ? <th style={{ ...th, width: '74px' }}>IGST</th>
-                : (<><th style={{ ...th, width: '62px' }}>CGST</th><th style={{ ...th, width: '62px' }}>SGST</th></>)}
+                : (<><th style={{ ...th, width: '62px' }}>CGST</th><th style={{ ...th, width: '62px' }}>SGST</th></>))}
               <th style={{ ...th, width: '76px' }}>Amount</th>
             </tr></thead>
             <tbody>
@@ -140,13 +150,13 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                     <td style={{ ...td, textAlign: 'center' }}>{it.hsn || '-'}</td>
                     <td style={{ ...td, textAlign: 'center' }}>{it.qty} {it.unit || ''}</td>
                     <td style={{ ...td, textAlign: 'right' }}>{moneyNo(it.rate)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{moneyNo(li.taxable)}</td>
-                    {isInterState
+                    {showTax && <td style={{ ...td, textAlign: 'right' }}>{moneyNo(li.taxable)}</td>}
+                    {showTax && (isInterState
                       ? <td style={{ ...td, textAlign: 'right' }}>{li.tax === 0 ? '-' : <>{moneyNo(li.tax)}<div style={{ fontSize: '8px', color: '#555' }}>({li.taxRate}%)</div></>}</td>
                       : (<>
                         <td style={{ ...td, textAlign: 'right' }}>{li.tax === 0 ? '-' : <>{moneyNo(li.tax / 2)}{half}</>}</td>
                         <td style={{ ...td, textAlign: 'right' }}>{li.tax === 0 ? '-' : <>{moneyNo(li.tax / 2)}{half}</>}</td>
-                      </>)}
+                      </>))}
                     <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{moneyNo(li.taxable + li.tax)}</td>
                   </tr>
                 );
@@ -168,7 +178,8 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
             </div>
           </div>
 
-          {/* HSN-wise tax summary */}
+          {/* HSN-wise tax summary — tax invoice only (a Bill of Supply has no tax) */}
+          {showTax && (
           <table style={{ width: '100%', borderCollapse: 'collapse', borderBottom: bc }}>
             <thead><tr>
               <th style={{ ...th, textAlign: 'left' }}>HSN/SAC</th>
@@ -192,6 +203,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               ))}
             </tbody>
           </table>
+          )}
 
           {/* Bank details + declaration/signatory */}
           <div style={{ display: 'flex' }}>
@@ -206,8 +218,13 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               </>)}
             </div>
             <div style={{ width: '50%', padding: '8px', fontSize: '10px' }}>
+              {isBoS && (
+                <div style={{ fontSize: '9px', color: '#9a3412', marginBottom: 8, fontWeight: 600 }}>
+                  This is a Bill of Supply. No GST is charged on the supplies listed above.
+                </div>
+              )}
               <div style={{ fontSize: '9px', color: '#333', marginBottom: 24 }}>
-                <strong>Declaration:</strong> We declare that this {isInv ? 'invoice' : 'quotation'} shows the actual price of the goods/services described and that all particulars are true and correct.
+                <strong>Declaration:</strong> We declare that this {isBoS ? 'bill of supply' : (isInv ? 'invoice' : 'quotation')} shows the actual price of the goods/services described and that all particulars are true and correct.
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontWeight: 700 }}>For {profile.bizName}</div>

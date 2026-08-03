@@ -90,6 +90,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
     qrCode: profile?.qrCode || null,
     invoiceTemplate: profile?.invoiceTemplate || 'Spreadsheet',
     quotationTemplate: profile?.quotationTemplate || 'Spreadsheet',
+    invoiceDocTitle: profile?.invoiceDocTitle || 'Tax Invoice',
     logoWatermark: profile?.logoWatermark === true,
   });
   const [smtpHost, setSmtpHost] = useState(profile?.smtpHost || '');
@@ -151,6 +152,7 @@ export default function Settings({ user, profile, isExpired, initialTab, ownerId
         qrCode: profile.qrCode || null,
         invoiceTemplate: profile.invoiceTemplate || 'Classic',
         quotationTemplate: profile.quotationTemplate || 'Classic',
+        invoiceDocTitle: profile.invoiceDocTitle || 'Tax Invoice',
         logoWatermark: profile.logoWatermark === true,
       });
       setSmtpHost(profile.smtpHost || '');
@@ -2078,6 +2080,17 @@ For example: ${usage.sample.join(', ')}` : '';
                             </div>
                           ))}
                        </div>
+                    </div>
+                    <div>
+                       <h4 style={{ marginBottom: 4 }}>Invoice Document Title</h4>
+                       <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 15 }}>
+                         Title on the <strong>GST format</strong> template. Pick <strong>Bill of Supply</strong> for composition-scheme or exempt supplies — GST is not charged and the tax columns are hidden. A GST-registered business making taxable supplies must use <strong>Tax Invoice</strong>.
+                       </div>
+                       <select value={fin.invoiceDocTitle} onChange={e => setFin(f => ({ ...f, invoiceDocTitle: e.target.value }))} style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14, background: '#fff' }}>
+                         <option value="Tax Invoice">Tax Invoice (default)</option>
+                         <option value="Bill of Supply">Bill of Supply (no GST)</option>
+                         <option value="Invoice">Invoice</option>
+                       </select>
                     </div>
                  </div>
 

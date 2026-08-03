@@ -339,13 +339,23 @@ export function nextPaymentNo(invoices, prefix = 'PAY-', startAt = 1) {
  * so rather than presenting a confident split it cannot justify.
  */
 export function resolveGstSplit(doc = {}, profile = {}, clientMatch = null) {
-  const norm = (v) => String(v || '').trim().toLowerCase();
+  const norm = (v) => String(v || '').trim().replace(/\s+/g, ' ').toLowerCase();
   const supplier = doc.supplierState || profile.bizState || '';
   const buyer = doc.placeOfSupply || clientMatch?.state || '';
   if (!norm(supplier) || !norm(buyer)) {
-    // Unknown: keep the historical CGST+SGST presentation so nothing changes
-    // shape unexpectedly, but report known:false so the UI can flag it.
+    // A state is missing on one side — we genuinely cannot tell inter- from
+    // intra-state. Keep the historical CGST+SGST presentation so the layout
+    // doesn't change shape, but report known:false so the document can flag it
+    // prominently instead of silently charging the wrong tax type.
     return { isInterState: false, supplier, buyer, known: false };
   }
-  return { isInterState: norm(supplier) !== norm(buyer), supplier, buyer, known: true };
+  // Compare by the official 2-digit GST state code, which is what the law keys
+  // on — robust to name spelling ("Tamil Nadu" vs "Tamilnadu"). Fall back to a
+  // normalised name match only when a state name isn't in the code table.
+  const supCode = gstStateCode(supplier);
+  const buyCode = gstStateCode(buyer);
+  const isInterState = (supCode && buyCode)
+    ? supCode !== buyCode
+    : norm(supplier) !== norm(buyer);
+  return { isInterState, supplier, buyer, known: true };
 }

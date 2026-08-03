@@ -55,8 +55,8 @@ function buildCtx(data, profile) {
   const clientMatch = data.clientDetails || {};
   // Prefer the split frozen onto the document at issue time; the live customer
   // lookup is only a fallback for documents saved before those fields existed.
-  const { isInterState } = resolveGstSplit(data, profile, clientMatch);
-  return { items, docCurrency, money, moneyNo, ptots, clientMatch, isInterState };
+  const { isInterState, known: gstKnown } = resolveGstSplit(data, profile, clientMatch);
+  return { items, docCurrency, money, moneyNo, ptots, clientMatch, isInterState, gstKnown };
 }
 
 // ─────────────────────────── Standard templates (Classic / Modern / Minimal) ──
@@ -769,8 +769,13 @@ const gz = StyleSheet.create({
 
 function GstDoc({ data, profile, type, settings }) {
   const ctx = buildCtx(data, profile);
-  const { items, money, moneyNo, ptots, clientMatch, isInterState, docCurrency } = ctx;
+  const { items, money, moneyNo, ptots, clientMatch, isInterState, docCurrency, gstKnown } = ctx;
   const isInv = type === 'Invoice';
+  // Bill of Supply (composition/exempt) charges no GST — suppress tax columns,
+  // per-rate lines and the HSN tax summary. Title is user-selectable.
+  const isBoS = isInv && profile?.invoiceDocTitle === 'Bill of Supply';
+  const docTitle = isInv ? String(profile?.invoiceDocTitle || 'Tax Invoice').toUpperCase() : 'QUOTATION';
+  const showTax = !isBoS;
   const supplierStateLabel = gstStateLabel(data.supplierState || profile?.bizState || '');
   const buyerState = data.placeOfSupply || clientMatch.state || '';
   const posLabel = gstStateLabel(buyerState);
@@ -785,7 +790,10 @@ function GstDoc({ data, profile, type, settings }) {
         <LogoWatermark profile={profile} />
         <View style={gz.frame}>
           <Text style={gz.band}>ORIGINAL FOR RECIPIENT</Text>
-          <Text style={gz.title}>{isInv ? 'TAX INVOICE' : 'QUOTATION'}</Text>
+          <Text style={gz.title}>{docTitle}</Text>
+          {showTax && !gstKnown ? (
+            <Text style={{ textAlign: 'center', fontSize: 8, padding: 3, borderBottomWidth: 1, borderColor: '#000', backgroundColor: '#fff7ed', color: '#9a3412' }}>Place of supply not set — tax split defaulted to CGST/SGST. Set the client&#39;s state before issuing.</Text>
+          ) : null}
 
           {/* Supplier + document meta */}
           <View style={gz.row}>
@@ -804,7 +812,7 @@ function GstDoc({ data, profile, type, settings }) {
                 ...(isInv && data.dueDate ? [['Due Date', fmtD(data.dueDate)]] : []),
                 ...(!isInv && data.validUntil ? [['Valid Until', fmtD(data.validUntil)]] : []),
                 ['Place of Supply', posLabel || '—'],
-                ['Reverse Charge', data.reverseCharge ? 'Yes' : 'No'],
+                ...(showTax ? [['Reverse Charge', data.reverseCharge ? 'Yes' : 'No']] : []),
               ].map(([k, v], i) => (
                 <View style={gz.metaRow} key={i}><Text style={gz.metaKey}>{k}</Text><Text style={gz.metaVal}>{v}</Text></View>
               ))}
@@ -833,8 +841,8 @@ function GstDoc({ data, profile, type, settings }) {
             <Text style={[gz.th, gz.cHsn]}>HSN/SAC</Text>
             <Text style={[gz.th, gz.cQty]}>Qty</Text>
             <Text style={[gz.th, gz.cRate]}>Rate</Text>
-            <Text style={[gz.th, gz.cTaxable]}>Taxable</Text>
-            {isInterState ? <Text style={[gz.th, gz.cGst]}>IGST</Text> : (<><Text style={[gz.th, gz.cGst]}>CGST</Text><Text style={[gz.th, gz.cGst]}>SGST</Text></>)}
+            {showTax ? <Text style={[gz.th, gz.cTaxable]}>Taxable</Text> : null}
+            {showTax ? (isInterState ? <Text style={[gz.th, gz.cGst]}>IGST</Text> : (<><Text style={[gz.th, gz.cGst]}>CGST</Text><Text style={[gz.th, gz.cGst]}>SGST</Text></>)) : null}
             <Text style={[gz.th, gz.cAmt, { borderRightWidth: 0 }]}>Amount</Text>
           </View>
           {items.map((it, i) => {
@@ -849,13 +857,13 @@ function GstDoc({ data, profile, type, settings }) {
                 <Text style={[gz.td, gz.cHsn]}>{it.hsn || '-'}</Text>
                 <Text style={[gz.td, gz.cQty]}>{Number(it.qty)} {it.unit || ''}</Text>
                 <Text style={[gz.td, gz.cRate]}>{moneyNo(it.rate)}</Text>
-                <Text style={[gz.td, gz.cTaxable]}>{moneyNo(li.taxable)}</Text>
-                {isInterState ? (
+                {showTax ? <Text style={[gz.td, gz.cTaxable]}>{moneyNo(li.taxable)}</Text> : null}
+                {showTax ? (isInterState ? (
                   <View style={[gz.td, gz.cGst]}><Text>{li.tax === 0 ? '-' : moneyNo(li.tax)}</Text>{li.tax !== 0 ? <Text style={gz.sub}>({li.taxRate}%)</Text> : null}</View>
                 ) : (<>
                   <View style={[gz.td, gz.cGst]}><Text>{li.tax === 0 ? '-' : moneyNo(li.tax / 2)}</Text>{li.tax !== 0 ? <Text style={gz.sub}>({li.taxRate / 2}%)</Text> : null}</View>
                   <View style={[gz.td, gz.cGst]}><Text>{li.tax === 0 ? '-' : moneyNo(li.tax / 2)}</Text>{li.tax !== 0 ? <Text style={gz.sub}>({li.taxRate / 2}%)</Text> : null}</View>
-                </>)}
+                </>)) : null}
                 <Text style={[gz.td, gz.cAmt, { borderRightWidth: 0, fontWeight: 'bold' }]}>{moneyNo(li.taxable + li.tax)}</Text>
               </View>
             );
@@ -868,22 +876,23 @@ function GstDoc({ data, profile, type, settings }) {
               <Text style={{ fontStyle: 'italic' }}>{numberToWords(ptots.total, docCurrency)}</Text>
             </View>
             <View style={gz.sumCell}>
-              <View style={gz.sumRow}><Text>Taxable Value</Text><Text>{moneyNo(ptots.sub - ptots.discAmt)}</Text></View>
+              <View style={gz.sumRow}><Text>{showTax ? 'Taxable Value' : 'Amount'}</Text><Text>{moneyNo(ptots.sub - ptots.discAmt)}</Text></View>
               {ptots.discAmt > 0 ? <View style={gz.sumRow}><Text>Discount</Text><Text>(-) {moneyNo(ptots.discAmt)}</Text></View> : null}
-              {rateSummary.map(([rate, amt]) => isInterState
+              {showTax ? rateSummary.map(([rate, amt]) => isInterState
                 ? <View style={gz.sumRow} key={rate}><Text>IGST {rate}%</Text><Text>{moneyNo(amt)}</Text></View>
                 : (
                   <React.Fragment key={rate}>
                     <View style={gz.sumRow}><Text>CGST {Number(rate) / 2}%</Text><Text>{moneyNo(amt / 2)}</Text></View>
                     <View style={gz.sumRow}><Text>SGST {Number(rate) / 2}%</Text><Text>{moneyNo(amt / 2)}</Text></View>
                   </React.Fragment>
-                ))}
+                )) : null}
               {ptots.roundOff ? <View style={gz.sumRow}><Text>Round Off</Text><Text>{moneyNo(ptots.roundOff)}</Text></View> : null}
               <View style={gz.sumTotal}><Text>Total</Text><Text>{money(ptots.total)}</Text></View>
             </View>
           </View>
 
-          {/* HSN-wise tax summary */}
+          {/* HSN-wise tax summary — tax invoice only (a Bill of Supply has no tax) */}
+          {showTax ? (<>
           <View style={gz.thead}>
             <Text style={[gz.th, { flex: 1, textAlign: 'left' }]}>HSN/SAC</Text>
             <Text style={[gz.th, gz.cTaxable]}>Taxable</Text>
@@ -898,6 +907,7 @@ function GstDoc({ data, profile, type, settings }) {
               <Text style={[gz.td, gz.cGst, { borderRightWidth: 0, fontWeight: 'bold' }]}>{moneyNo(h.tax)}</Text>
             </View>
           ))}
+          </>) : null}
 
           {/* Bank details + declaration / signatory */}
           <View style={gz.footRow}>
@@ -912,7 +922,8 @@ function GstDoc({ data, profile, type, settings }) {
               </>) : null}
             </View>
             <View style={gz.signCell}>
-              <Text style={{ fontSize: 8, color: '#333', marginBottom: 22 }}><Text style={{ fontWeight: 'bold' }}>Declaration: </Text>We declare that this {isInv ? 'invoice' : 'quotation'} shows the actual price of the goods/services described and that all particulars are true and correct.</Text>
+              {isBoS ? <Text style={{ fontSize: 8, color: '#9a3412', fontWeight: 'bold', marginBottom: 6 }}>This is a Bill of Supply. No GST is charged on the supplies listed above.</Text> : null}
+              <Text style={{ fontSize: 8, color: '#333', marginBottom: 22 }}><Text style={{ fontWeight: 'bold' }}>Declaration: </Text>We declare that this {isBoS ? 'bill of supply' : (isInv ? 'invoice' : 'quotation')} shows the actual price of the goods/services described and that all particulars are true and correct.</Text>
               <Text style={{ textAlign: 'right', fontWeight: 'bold' }}>For {profile?.bizName}</Text>
               <Text style={{ textAlign: 'right', marginTop: 28 }}>Authorised Signatory</Text>
             </View>
