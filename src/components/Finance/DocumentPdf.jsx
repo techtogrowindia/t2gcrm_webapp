@@ -873,7 +873,7 @@ function GstDoc({ data, profile, type, settings }) {
           <View style={gz.totWrap}>
             <View style={gz.wordsCell}>
               <Text style={gz.label}>Amount in words</Text>
-              <Text style={{ fontStyle: 'italic' }}>{numberToWords(ptots.total, docCurrency)}</Text>
+              <Text style={{ fontSize: 9 }}>{numberToWords(ptots.total, docCurrency)}</Text>
             </View>
             <View style={gz.sumCell}>
               <View style={gz.sumRow}><Text>{showTax ? 'Taxable Value' : 'Amount'}</Text><Text>{moneyNo(ptots.sub - ptots.discAmt)}</Text></View>
