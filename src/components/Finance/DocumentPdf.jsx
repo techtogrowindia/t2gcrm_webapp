@@ -729,8 +729,10 @@ function FormalDoc({ data, profile, type, settings }) {
 // missing from the other templates: place of supply + state codes, reverse
 // charge, HSN-wise tax summary, amount in words, declaration + signatory.
 const gz = StyleSheet.create({
-  page: { padding: 22, fontFamily: 'NotoSans', fontSize: 9, color: '#000', lineHeight: 1.35 },
-  frame: { borderWidth: 1, borderColor: '#000' },
+  page: { padding: 18, fontFamily: 'NotoSans', fontSize: 9, color: '#000', lineHeight: 1.35 },
+  // Absolute, `fixed` border repeats and CLOSES on every page (single bordered
+  // View can't close across a page break) — same trick as the Spreadsheet doc.
+  frame: { position: 'absolute', top: 16, left: 16, right: 16, bottom: 16, borderWidth: 1, borderColor: '#000' },
   band: { textAlign: 'center', fontSize: 7, paddingVertical: 2, borderBottomWidth: 1, borderColor: '#000' },
   title: { textAlign: 'center', fontSize: 14, fontWeight: 'bold', paddingVertical: 5, borderBottomWidth: 1, borderColor: '#000' },
   row: { flexDirection: 'row' },
@@ -750,12 +752,12 @@ const gz = StyleSheet.create({
   td: { borderRightWidth: 1, borderColor: '#000', padding: 4, fontSize: 8.5 },
   cNo: { width: 20, textAlign: 'center' },
   cDesc: { flex: 1 },
-  cHsn: { width: 50, textAlign: 'center' },
-  cQty: { width: 40, textAlign: 'center' },
-  cRate: { width: 50, textAlign: 'right' },
-  cTaxable: { width: 55, textAlign: 'right' },
-  cGst: { width: 50, textAlign: 'right' },
-  cAmt: { width: 58, textAlign: 'right' },
+  cHsn: { width: 44, textAlign: 'center' },
+  cQty: { width: 36, textAlign: 'center' },
+  cRate: { width: 56, textAlign: 'right' },
+  cTaxable: { width: 70, textAlign: 'right' },
+  cGst: { width: 64, textAlign: 'right' },
+  cAmt: { width: 74, textAlign: 'right' },
   sub: { fontSize: 7, color: '#555' },
   totWrap: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#000' },
   wordsCell: { width: '58%', borderRightWidth: 1, borderColor: '#000', padding: 6 },
@@ -788,8 +790,9 @@ function GstDoc({ data, profile, type, settings }) {
     <Document title={`${type} ${data.no || ''}`.trim()}>
       <Page size="A4" style={gz.page}>
         <LogoWatermark profile={profile} />
-        <View style={[gz.frame, { flexGrow: 1 }]}>
-          <Text style={gz.band}>ORIGINAL FOR RECIPIENT</Text>
+        {/* Fixed page border — repeats + closes on every page */}
+        <View style={gz.frame} fixed />
+        <Text style={gz.band}>ORIGINAL FOR RECIPIENT</Text>
           <Text style={gz.title}>{docTitle}</Text>
           {showTax && !gstKnown ? (
             <Text style={{ textAlign: 'center', fontSize: 8, padding: 3, borderBottomWidth: 1, borderColor: '#000', backgroundColor: '#fff7ed', color: '#9a3412' }}>Place of supply not set — tax split defaulted to CGST/SGST. Set the client&#39;s state before issuing.</Text>
@@ -878,7 +881,7 @@ function GstDoc({ data, profile, type, settings }) {
           ) : null}
 
           {/* Amount in words + totals */}
-          <View style={gz.totWrap}>
+          <View style={gz.totWrap} wrap={false}>
             <View style={gz.wordsCell}>
               <Text style={gz.label}>Amount in words</Text>
               <Text style={{ fontSize: 9 }}>{numberToWords(ptots.total, docCurrency)}</Text>
@@ -894,13 +897,16 @@ function GstDoc({ data, profile, type, settings }) {
                     <View style={gz.sumRow}><Text>SGST {Number(rate) / 2}%</Text><Text>{moneyNo(amt / 2)}</Text></View>
                   </React.Fragment>
                 )) : null}
+              {parseFloat(data.deliveryCharge) > 0 ? <View style={gz.sumRow}><Text>Delivery Charges</Text><Text>{moneyNo(parseFloat(data.deliveryCharge))}</Text></View> : null}
+              {parseFloat(data.deliveryCharge) > 0 && parseFloat(data.deliveryTaxRate) > 0 ? <View style={gz.sumRow}><Text>Delivery Tax ({data.deliveryTaxRate}%)</Text><Text>{moneyNo((parseFloat(data.deliveryCharge) || 0) * (parseFloat(data.deliveryTaxRate) || 0) / 100)}</Text></View> : null}
+              {data.adj && Number(data.adj) !== 0 ? <View style={gz.sumRow}><Text>Adjustment</Text><Text>{Number(data.adj) > 0 ? '(+) ' : '(-) '}{moneyNo(Math.abs(Number(data.adj)))}</Text></View> : null}
               {ptots.roundOff ? <View style={gz.sumRow}><Text>Round Off</Text><Text>{moneyNo(ptots.roundOff)}</Text></View> : null}
               <View style={gz.sumTotal}><Text>Total</Text><Text>{money(ptots.total)}</Text></View>
             </View>
           </View>
 
           {/* HSN-wise tax summary — tax invoice only (a Bill of Supply has no tax) */}
-          {showTax ? (<>
+          {showTax ? (<View wrap={false}>
           <View style={gz.thead}>
             <Text style={[gz.th, { flex: 1, textAlign: 'left' }]}>HSN/SAC</Text>
             <Text style={[gz.th, gz.cTaxable]}>Taxable</Text>
@@ -915,13 +921,13 @@ function GstDoc({ data, profile, type, settings }) {
               <Text style={[gz.td, gz.cGst, { borderRightWidth: 0, fontWeight: 'bold' }]}>{moneyNo(h.tax)}</Text>
             </View>
           ))}
-          </>) : null}
+          </View>) : null}
 
           {/* Spacer — grows to push the footer to the bottom of the fixed page */}
           <View style={{ flexGrow: 1 }} />
 
           {/* Bank details + declaration / signatory — pinned to page bottom */}
-          <View style={gz.footRow}>
+          <View style={gz.footRow} wrap={false}>
             <View style={gz.bankCell}>
               {(profile?.bankName || profile?.qrCode) ? (<>
                 <Text style={gz.label}>Bank Details</Text>
@@ -936,10 +942,10 @@ function GstDoc({ data, profile, type, settings }) {
               {isBoS ? <Text style={{ fontSize: 8, color: '#9a3412', fontWeight: 'bold', marginBottom: 6 }}>This is a Bill of Supply. No GST is charged on the supplies listed above.</Text> : null}
               <Text style={{ fontSize: 8, color: '#333', marginBottom: 22 }}><Text style={{ fontWeight: 'bold' }}>Declaration: </Text>We declare that this {isBoS ? 'bill of supply' : (isInv ? 'invoice' : 'quotation')} shows the actual price of the goods/services described and that all particulars are true and correct.</Text>
               <Text style={{ textAlign: 'right', fontWeight: 'bold' }}>For {profile?.bizName}</Text>
-              <Text style={{ textAlign: 'right', marginTop: 28 }}>Authorised Signatory</Text>
+              {profile?.signature ? <Image src={profile.signature} style={{ height: 40, width: 90, objectFit: 'contain', alignSelf: 'flex-end', marginTop: 4 }} /> : null}
+              <Text style={{ textAlign: 'right', marginTop: profile?.signature ? 2 : 28 }}>Authorised Signatory</Text>
             </View>
           </View>
-        </View>
         {settings?.showBranding !== false ? (
           <Text style={{ fontSize: 8, color: '#555', marginTop: 6 }}>POWERED BY {settings?.brandName || 'T2GCRM'}</Text>
         ) : null}

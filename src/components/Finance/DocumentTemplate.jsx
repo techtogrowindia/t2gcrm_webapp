@@ -70,6 +70,9 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
         ...(showTax ? rateSummary.flatMap(([rate, amt]) => isInterState
           ? [[`IGST ${rate}%`, moneyNo(amt)]]
           : [[`CGST ${Number(rate) / 2}%`, moneyNo(amt / 2)], [`SGST ${Number(rate) / 2}%`, moneyNo(amt / 2)]]) : []),
+        ...(parseFloat(data.deliveryCharge) > 0 ? [['Delivery Charges', moneyNo(parseFloat(data.deliveryCharge))]] : []),
+        ...(parseFloat(data.deliveryCharge) > 0 && parseFloat(data.deliveryTaxRate) > 0 ? [[`Delivery Tax (${data.deliveryTaxRate}%)`, moneyNo((parseFloat(data.deliveryCharge) || 0) * (parseFloat(data.deliveryTaxRate) || 0) / 100)]] : []),
+        ...(data.adj && Number(data.adj) !== 0 ? [['Adjustment', (Number(data.adj) > 0 ? '(+) ' : '(-) ') + moneyNo(Math.abs(Number(data.adj)))]] : []),
         ...(ptots.roundOff ? [['Round Off', moneyNo(ptots.roundOff)]] : []),
       ];
       const shipToText = data.shipTo
@@ -179,7 +182,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
           )}
 
           {/* Amount in words + totals */}
-          <div style={{ display: 'flex', borderTop: bc, borderBottom: bc }}>
+          <div style={{ display: 'flex', borderTop: bc, borderBottom: bc, pageBreakInside: 'avoid' }}>
             <div style={{ width: '58%', borderRight: bc, padding: '8px', fontSize: '10px' }}>
               <div style={{ fontWeight: 700, marginBottom: 4 }}>Amount in words</div>
               <div style={{ fontStyle: 'italic' }}>{numberToWords(ptots.total, docCurrency)}</div>
@@ -194,7 +197,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
 
           {/* HSN-wise tax summary — tax invoice only (a Bill of Supply has no tax) */}
           {showTax && (
-          <table style={{ width: '100%', borderCollapse: 'collapse', borderBottom: bc }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', borderBottom: bc, pageBreakInside: 'avoid' }}>
             <thead><tr>
               <th style={{ ...th, textAlign: 'left' }}>HSN/SAC</th>
               <th style={th}>Taxable Value</th>
@@ -223,7 +226,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
           <div style={{ flex: 1 }} />
 
           {/* Bank details + declaration/signatory — pinned to page bottom */}
-          <div style={{ display: 'flex', borderTop: bc }}>
+          <div style={{ display: 'flex', borderTop: bc, pageBreakInside: 'avoid' }}>
             <div style={{ width: '50%', borderRight: bc, padding: '8px', fontSize: '10px' }}>
               {(profile.bankName || profile.qrCode) && (<>
                 <div style={{ fontWeight: 700, marginBottom: 3 }}>Bank Details</div>
@@ -245,7 +248,8 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontWeight: 700 }}>For {profile.bizName}</div>
-                <div style={{ marginTop: 32 }}>Authorised Signatory</div>
+                {profile.signature && <img src={profile.signature} alt="Signature" style={{ height: '46px', objectFit: 'contain', display: 'block', marginLeft: 'auto', marginTop: 4 }} />}
+                <div style={{ marginTop: profile.signature ? 2 : 32 }}>Authorised Signatory</div>
               </div>
             </div>
           </div>
