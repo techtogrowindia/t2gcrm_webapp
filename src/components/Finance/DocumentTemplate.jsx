@@ -1,5 +1,5 @@
 import React from 'react';
-import { fmt, fmtD, numberToWords, currencySymbol, resolveGstSplit } from '../../utils/helpers';
+import { fmt, fmtD, numberToWords, currencySymbol, resolveGstSplit, gstStateLabel } from '../../utils/helpers';
 import { computeDocTotals } from '../../utils/docTotals';
 
 export default function DocumentTemplate({ data, profile, type = 'Invoice', preview = false, settings }) {
@@ -44,6 +44,180 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
   };
 
   const renderContent = () => {
+    if (t === 'GST') {
+      const isInv = type === 'Invoice';
+      const bc = '1px solid #000';
+      const supplierStateLabel = gstStateLabel(data.supplierState || profile?.bizState || '');
+      const buyerState = data.placeOfSupply || clientMatch.state || '';
+      const posLabel = gstStateLabel(buyerState);
+      const billStateLabel = gstStateLabel(clientMatch.state || buyerState);
+      const rcm = data.reverseCharge ? 'Yes' : 'No';
+      const th = { border: bc, padding: '5px 6px', fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', textAlign: 'center', background: '#f0f0f0' };
+      const td = { border: bc, padding: '5px 6px', fontSize: '10px', verticalAlign: 'top' };
+      const cell = { display: 'flex', justifyContent: 'space-between', padding: '4px 8px', borderBottom: bc, fontSize: '10px' };
+      // Per-rate tax lines for the totals block (CGST/SGST halves, or full IGST).
+      const rateSummary = Object.entries(ptots.taxesByRate).sort((a, b) => Number(a[0]) - Number(b[0]));
+      const totalLines = [
+        ['Taxable Value', moneyNo(ptots.sub - ptots.discAmt)],
+        ...(ptots.discAmt > 0 ? [['Discount', '(-) ' + moneyNo(ptots.discAmt)]] : []),
+        ...rateSummary.flatMap(([rate, amt]) => isInterState
+          ? [[`IGST ${rate}%`, moneyNo(amt)]]
+          : [[`CGST ${Number(rate) / 2}%`, moneyNo(amt / 2)], [`SGST ${Number(rate) / 2}%`, moneyNo(amt / 2)]]),
+        ...(ptots.roundOff ? [['Round Off', moneyNo(ptots.roundOff)]] : []),
+      ];
+      const shipToText = data.shipTo
+        ? data.shipTo
+        : [(clientMatch.companyName || data.companyName || data.client), clientMatch.address].filter(Boolean).join('\n');
+      return (
+        <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', color: '#000', border: bc }}>
+          <div style={{ textAlign: 'center', fontSize: '8px', borderBottom: bc, padding: '2px' }}>ORIGINAL FOR RECIPIENT</div>
+          <div style={{ textAlign: 'center', fontWeight: 800, fontSize: '15px', padding: '6px', borderBottom: bc, letterSpacing: '1px' }}>{isInv ? 'TAX INVOICE' : 'QUOTATION'}</div>
+
+          {/* Supplier + document meta */}
+          <div style={{ display: 'flex', borderBottom: bc }}>
+            <div style={{ width: '58%', borderRight: bc, padding: '8px' }}>
+              {profile.logo && <img src={profile.logo} alt="" style={{ height: '46px', maxWidth: '160px', objectFit: 'contain', marginBottom: '6px', display: 'block' }} />}
+              <div style={{ fontSize: '14px', fontWeight: 800 }}>{profile.bizName}</div>
+              {profile.address && <div style={{ fontSize: '10px', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{profile.address}</div>}
+              {profile.gstin && <div style={{ fontSize: '10px', fontWeight: 700, marginTop: 3 }}>GSTIN: {profile.gstin}</div>}
+              {supplierStateLabel && <div style={{ fontSize: '10px' }}>State: {supplierStateLabel}</div>}
+              {(profile.phone || profile.email) && <div style={{ fontSize: '10px', marginTop: 3 }}>{[profile.phone, profile.email].filter(Boolean).join('  •  ')}</div>}
+            </div>
+            <div style={{ width: '42%' }}>
+              {[
+                [isInv ? 'Invoice No.' : 'Quote No.', data.no],
+                ['Date', fmtD(data.date)],
+                ...(isInv && data.dueDate ? [['Due Date', fmtD(data.dueDate)]] : []),
+                ...(!isInv && data.validUntil ? [['Valid Until', fmtD(data.validUntil)]] : []),
+                ['Place of Supply', posLabel || '—'],
+                ['Reverse Charge', rcm],
+              ].map(([k, v], i) => (
+                <div key={i} style={{ display: 'flex', borderBottom: bc, fontSize: '10px' }}>
+                  <div style={{ width: '45%', padding: '4px 6px', fontWeight: 600, borderRight: bc }}>{k}</div>
+                  <div style={{ width: '55%', padding: '4px 6px' }}>{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Bill To / Ship To */}
+          <div style={{ display: 'flex', borderBottom: bc }}>
+            <div style={{ width: '50%', borderRight: bc, padding: '8px' }}>
+              <div style={{ fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>Bill To</div>
+              <div style={{ fontSize: '12px', fontWeight: 700 }}>{clientMatch.companyName || data.companyName || data.client}</div>
+              {clientMatch.address && <div style={{ fontSize: '10px', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{clientMatch.address}</div>}
+              {clientMatch.gstin && <div style={{ fontSize: '10px', fontWeight: 700, marginTop: 3 }}>GSTIN: {clientMatch.gstin}</div>}
+              {billStateLabel && <div style={{ fontSize: '10px' }}>State: {billStateLabel}</div>}
+            </div>
+            <div style={{ width: '50%', padding: '8px' }}>
+              <div style={{ fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>Ship To</div>
+              <div style={{ fontSize: '10px', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{shipToText}</div>
+            </div>
+          </div>
+
+          {/* Line items */}
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={{ ...th, width: '22px' }}>#</th>
+              <th style={{ ...th, textAlign: 'left' }}>Description</th>
+              <th style={{ ...th, width: '58px' }}>HSN/SAC</th>
+              <th style={{ ...th, width: '44px' }}>Qty</th>
+              <th style={{ ...th, width: '62px' }}>Rate</th>
+              <th style={{ ...th, width: '66px' }}>Taxable</th>
+              {isInterState
+                ? <th style={{ ...th, width: '74px' }}>IGST</th>
+                : (<><th style={{ ...th, width: '62px' }}>CGST</th><th style={{ ...th, width: '62px' }}>SGST</th></>)}
+              <th style={{ ...th, width: '76px' }}>Amount</th>
+            </tr></thead>
+            <tbody>
+              {items.map((it, i) => {
+                const li = ptots.perItem[i] || { taxable: 0, tax: 0, taxRate: 0 };
+                const half = <div style={{ fontSize: '8px', color: '#555' }}>({li.taxRate / 2}%)</div>;
+                return (
+                  <tr key={i}>
+                    <td style={{ ...td, textAlign: 'center' }}>{i + 1}</td>
+                    <td style={td}><div style={{ fontWeight: 600 }}>{it.name}</div>{it.desc && <div style={{ fontSize: '9px', color: '#333' }}>{it.desc}</div>}</td>
+                    <td style={{ ...td, textAlign: 'center' }}>{it.hsn || '-'}</td>
+                    <td style={{ ...td, textAlign: 'center' }}>{it.qty} {it.unit || ''}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{moneyNo(it.rate)}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{moneyNo(li.taxable)}</td>
+                    {isInterState
+                      ? <td style={{ ...td, textAlign: 'right' }}>{li.tax === 0 ? '-' : <>{moneyNo(li.tax)}<div style={{ fontSize: '8px', color: '#555' }}>({li.taxRate}%)</div></>}</td>
+                      : (<>
+                        <td style={{ ...td, textAlign: 'right' }}>{li.tax === 0 ? '-' : <>{moneyNo(li.tax / 2)}{half}</>}</td>
+                        <td style={{ ...td, textAlign: 'right' }}>{li.tax === 0 ? '-' : <>{moneyNo(li.tax / 2)}{half}</>}</td>
+                      </>)}
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{moneyNo(li.taxable + li.tax)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {/* Amount in words + totals */}
+          <div style={{ display: 'flex', borderTop: bc, borderBottom: bc }}>
+            <div style={{ width: '58%', borderRight: bc, padding: '8px', fontSize: '10px' }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Amount in words</div>
+              <div style={{ fontStyle: 'italic' }}>{numberToWords(ptots.total, docCurrency)}</div>
+            </div>
+            <div style={{ width: '42%' }}>
+              {totalLines.map(([k, v], i) => (
+                <div key={i} style={cell}><span>{k}</span><span>{v}</span></div>
+              ))}
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 8px', fontWeight: 800, fontSize: '12px' }}><span>Total</span><span>{money(ptots.total)}</span></div>
+            </div>
+          </div>
+
+          {/* HSN-wise tax summary */}
+          <table style={{ width: '100%', borderCollapse: 'collapse', borderBottom: bc }}>
+            <thead><tr>
+              <th style={{ ...th, textAlign: 'left' }}>HSN/SAC</th>
+              <th style={th}>Taxable Value</th>
+              {isInterState ? <th style={th}>IGST</th> : (<><th style={th}>CGST</th><th style={th}>SGST</th></>)}
+              <th style={th}>Total Tax</th>
+            </tr></thead>
+            <tbody>
+              {ptots.hsnSummary.map((h, i) => (
+                <tr key={i}>
+                  <td style={td}>{h.hsn || '-'}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{moneyNo(h.taxable)}</td>
+                  {isInterState
+                    ? <td style={{ ...td, textAlign: 'right' }}>{moneyNo(h.tax)} <span style={{ fontSize: '8px', color: '#555' }}>({h.taxRate}%)</span></td>
+                    : (<>
+                      <td style={{ ...td, textAlign: 'right' }}>{moneyNo(h.tax / 2)} <span style={{ fontSize: '8px', color: '#555' }}>({h.taxRate / 2}%)</span></td>
+                      <td style={{ ...td, textAlign: 'right' }}>{moneyNo(h.tax / 2)} <span style={{ fontSize: '8px', color: '#555' }}>({h.taxRate / 2}%)</span></td>
+                    </>)}
+                  <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{moneyNo(h.tax)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Bank details + declaration/signatory */}
+          <div style={{ display: 'flex' }}>
+            <div style={{ width: '50%', borderRight: bc, padding: '8px', fontSize: '10px' }}>
+              {(profile.bankName || profile.qrCode) && (<>
+                <div style={{ fontWeight: 700, marginBottom: 3 }}>Bank Details</div>
+                {profile.bankName && <div>Bank: {profile.bankName}</div>}
+                {profile.accountNo && <div>A/C No: {profile.accountNo}</div>}
+                {profile.ifsc && <div>IFSC: {profile.ifsc}</div>}
+                {profile.bankExtra && <div>{profile.bankExtra}</div>}
+                {profile.qrCode && <img src={profile.qrCode} alt="QR" style={{ height: '78px', marginTop: 6 }} />}
+              </>)}
+            </div>
+            <div style={{ width: '50%', padding: '8px', fontSize: '10px' }}>
+              <div style={{ fontSize: '9px', color: '#333', marginBottom: 24 }}>
+                <strong>Declaration:</strong> We declare that this {isInv ? 'invoice' : 'quotation'} shows the actual price of the goods/services described and that all particulars are true and correct.
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontWeight: 700 }}>For {profile.bizName}</div>
+                <div style={{ marginTop: 32 }}>Authorised Signatory</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     if (t === 'Spreadsheet') {
       const colNo = '40px', colQty = '60px', colRate = '100px', colGst = '80px', colAmt = '120px';
       

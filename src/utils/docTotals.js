@@ -27,14 +27,33 @@ export function computeDocTotals(items, data) {
     acc[r] = (acc[r] || 0) + taxAmt;
     return acc;
   }, {});
+  // Per-line taxable value (post-apportioned-discount) and tax — computed with
+  // the SAME discountFactor as the totals so the GST-format template's HSN-wise
+  // summary reconciles to the invoice total exactly. Grouped by HSN + rate,
+  // which is how a GST tax invoice's HSN summary must be presented.
+  const perItem = list.map(it => {
+    const taxable = (it.qty || 0) * (it.rate || 0) * discountFactor;
+    const rate = it.taxRate || 0;
+    return { hsn: it.hsn || '', taxRate: rate, taxable, tax: taxable * rate / 100 };
+  });
+  const hsnSummary = Object.values(perItem.reduce((acc, li) => {
+    const key = `${li.hsn}|${li.taxRate}`;
+    if (!acc[key]) acc[key] = { hsn: li.hsn, taxRate: li.taxRate, taxable: 0, tax: 0 };
+    acc[key].taxable += li.taxable;
+    acc[key].tax += li.tax;
+    return acc;
+  }, {}));
+
   const deliveryAmt = parseFloat(data.deliveryCharge) || 0;
   const deliveryTax = deliveryAmt * (parseFloat(data.deliveryTaxRate) || 0) / 100;
   const total = Math.round(sub - discAmt + taxTotal + deliveryAmt + deliveryTax + (parseFloat(data.adj) || 0));
+  // Rounding adjustment GST invoices display as a "Round Off" line.
+  const roundOff = total - (sub - discAmt + taxTotal + deliveryAmt + deliveryTax + (parseFloat(data.adj) || 0));
 
   let rawPayments = [];
   try { rawPayments = Array.isArray(data.payments) ? data.payments : JSON.parse(data.payments || '[]'); } catch (e) {}
   const paymentsTotal = rawPayments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
   const balanceDue = Math.max(0, total - paymentsTotal);
 
-  return { sub, taxTotal, taxesByRate, discAmt, total, paymentsTotal, balanceDue };
+  return { sub, taxTotal, taxesByRate, discAmt, total, paymentsTotal, balanceDue, perItem, hsnSummary, roundOff };
 }

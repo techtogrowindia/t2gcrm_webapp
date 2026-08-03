@@ -124,6 +124,41 @@ export const INDIAN_STATES = [
   "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal"
 ];
 
+// Official 2-digit GST state codes, keyed by the INDIAN_STATES names above.
+// Used by the GST-format invoice/quote template to print the state code that
+// Rule 46 requires alongside the state name and place of supply.
+export const GST_STATE_CODES = {
+  "Jammu and Kashmir": "01", "Himachal Pradesh": "02", "Punjab": "03",
+  "Chandigarh": "04", "Uttarakhand": "05", "Haryana": "06", "Delhi": "07",
+  "Rajasthan": "08", "Uttar Pradesh": "09", "Bihar": "10", "Sikkim": "11",
+  "Arunachal Pradesh": "12", "Nagaland": "13", "Manipur": "14", "Mizoram": "15",
+  "Tripura": "16", "Meghalaya": "17", "Assam": "18", "West Bengal": "19",
+  "Jharkhand": "20", "Odisha": "21", "Chhattisgarh": "22", "Madhya Pradesh": "23",
+  "Gujarat": "24", "Dadra and Nagar Haveli and Daman and Diu": "26",
+  "Maharashtra": "27", "Karnataka": "29", "Goa": "30", "Lakshadweep": "31",
+  "Kerala": "32", "Tamil Nadu": "33", "Puducherry": "34",
+  "Andaman and Nicobar Islands": "35", "Telangana": "36", "Andhra Pradesh": "37",
+  "Ladakh": "38",
+};
+
+const _normStateName = (s) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const _GST_STATE_BY_NORM = Object.fromEntries(
+  Object.entries(GST_STATE_CODES).map(([n, c]) => [_normStateName(n), c])
+);
+
+// 2-digit GST code for a state name (case/space-insensitive), or '' if unknown.
+export function gstStateCode(name) {
+  return _GST_STATE_BY_NORM[_normStateName(name)] || '';
+}
+
+// "Tamil Nadu (33)" when the code is known, else the raw name; '' for empty.
+export function gstStateLabel(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const code = gstStateCode(raw);
+  return code ? `${raw} (${code})` : raw;
+}
+
 // Common Countries
 export const COUNTRIES = [
   "India", "United States", "United Kingdom", "Canada", "Australia", 

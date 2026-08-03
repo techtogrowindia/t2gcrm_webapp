@@ -2061,6 +2061,7 @@ For example: ${usage.sample.join(', ')}` : '';
                        <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 15 }}>Applies to both invoices and quotations.</div>
                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15 }}>
                           {[
+                            { id: 'GST', name: 'GST format' },
                             { id: 'Classic', name: 'Classic' },
                             { id: 'Modern', name: 'Modern' },
                             { id: 'Minimal', name: 'Minimal' },

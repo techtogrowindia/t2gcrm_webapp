@@ -27,7 +27,7 @@ import React from 'react';
 import { Buffer } from 'buffer';
 if (typeof window !== 'undefined' && !window.Buffer) window.Buffer = Buffer;
 import { Document, Page, View, Text, Image, StyleSheet, Font, pdf } from '@react-pdf/renderer';
-import { fmt, fmtD, numberToWords, currencySymbol, resolveGstSplit } from '../../utils/helpers';
+import { fmt, fmtD, numberToWords, currencySymbol, resolveGstSplit, gstStateLabel } from '../../utils/helpers';
 import { computeDocTotals } from '../../utils/docTotals';
 import NotoRegular from '../../assets/fonts/NotoSans-Regular.ttf';
 import NotoBold from '../../assets/fonts/NotoSans-Bold.ttf';
@@ -722,6 +722,210 @@ function FormalDoc({ data, profile, type, settings }) {
   );
 }
 
+// ───────────────────────────────────────── GST-compliant tax invoice ──
+// Mirrors the `GST` branch in DocumentTemplate.jsx. Uses the border-collapse
+// trick (frame draws the outer box; each cell draws only its right/bottom edge)
+// for clean single-line rules. Carries every Rule 46 field the audit found
+// missing from the other templates: place of supply + state codes, reverse
+// charge, HSN-wise tax summary, amount in words, declaration + signatory.
+const gz = StyleSheet.create({
+  page: { padding: 22, fontFamily: 'NotoSans', fontSize: 9, color: '#000', lineHeight: 1.35 },
+  frame: { borderWidth: 1, borderColor: '#000' },
+  band: { textAlign: 'center', fontSize: 7, paddingVertical: 2, borderBottomWidth: 1, borderColor: '#000' },
+  title: { textAlign: 'center', fontSize: 14, fontWeight: 'bold', paddingVertical: 5, borderBottomWidth: 1, borderColor: '#000' },
+  row: { flexDirection: 'row' },
+  bizBox: { width: '58%', borderRightWidth: 1, borderColor: '#000', padding: 6 },
+  metaBox: { width: '42%' },
+  metaRow: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#000' },
+  metaKey: { width: '45%', padding: 4, fontWeight: 'bold', borderRightWidth: 1, borderColor: '#000' },
+  metaVal: { width: '55%', padding: 4 },
+  partyRow: { flexDirection: 'row', borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#000' },
+  partyCell: { width: '50%', padding: 6 },
+  label: { fontSize: 7, fontWeight: 'bold', textTransform: 'uppercase', marginBottom: 2 },
+  bizName: { fontSize: 12, fontWeight: 'bold' },
+  line: { fontSize: 9, marginTop: 1 },
+  thead: { flexDirection: 'row', backgroundColor: '#eee', borderBottomWidth: 1, borderColor: '#000' },
+  th: { borderRightWidth: 1, borderColor: '#000', padding: 4, fontSize: 7.5, fontWeight: 'bold', textAlign: 'center' },
+  tr: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#000' },
+  td: { borderRightWidth: 1, borderColor: '#000', padding: 4, fontSize: 8.5 },
+  cNo: { width: 20, textAlign: 'center' },
+  cDesc: { flex: 1 },
+  cHsn: { width: 50, textAlign: 'center' },
+  cQty: { width: 40, textAlign: 'center' },
+  cRate: { width: 50, textAlign: 'right' },
+  cTaxable: { width: 55, textAlign: 'right' },
+  cGst: { width: 50, textAlign: 'right' },
+  cAmt: { width: 58, textAlign: 'right' },
+  sub: { fontSize: 7, color: '#555' },
+  totWrap: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#000' },
+  wordsCell: { width: '58%', borderRightWidth: 1, borderColor: '#000', padding: 6 },
+  sumCell: { width: '42%' },
+  sumRow: { flexDirection: 'row', justifyContent: 'space-between', padding: 4, borderBottomWidth: 1, borderColor: '#000' },
+  sumTotal: { flexDirection: 'row', justifyContent: 'space-between', padding: 5, fontWeight: 'bold', fontSize: 11 },
+  footRow: { flexDirection: 'row' },
+  bankCell: { width: '50%', borderRightWidth: 1, borderColor: '#000', padding: 6 },
+  signCell: { width: '50%', padding: 6 },
+});
+
+function GstDoc({ data, profile, type, settings }) {
+  const ctx = buildCtx(data, profile);
+  const { items, money, moneyNo, ptots, clientMatch, isInterState, docCurrency } = ctx;
+  const isInv = type === 'Invoice';
+  const supplierStateLabel = gstStateLabel(data.supplierState || profile?.bizState || '');
+  const buyerState = data.placeOfSupply || clientMatch.state || '';
+  const posLabel = gstStateLabel(buyerState);
+  const billStateLabel = gstStateLabel(clientMatch.state || buyerState);
+  const rateSummary = Object.entries(ptots.taxesByRate).sort((a, b) => Number(a[0]) - Number(b[0]));
+  const shipToText = data.shipTo
+    ? data.shipTo
+    : [(clientMatch.companyName || data.companyName || data.client), clientMatch.address].filter(Boolean).join('\n');
+  return (
+    <Document title={`${type} ${data.no || ''}`.trim()}>
+      <Page size="A4" style={gz.page}>
+        <LogoWatermark profile={profile} />
+        <View style={gz.frame}>
+          <Text style={gz.band}>ORIGINAL FOR RECIPIENT</Text>
+          <Text style={gz.title}>{isInv ? 'TAX INVOICE' : 'QUOTATION'}</Text>
+
+          {/* Supplier + document meta */}
+          <View style={gz.row}>
+            <View style={gz.bizBox}>
+              {profile?.logo ? <Image src={profile.logo} style={{ height: 40, width: 120, objectFit: 'contain', marginBottom: 5 }} /> : null}
+              <Text style={gz.bizName}>{profile?.bizName}</Text>
+              {profile?.address ? <Text style={gz.line}>{profile.address}</Text> : null}
+              {profile?.gstin ? <Text style={[gz.line, { fontWeight: 'bold', marginTop: 2 }]}>GSTIN: {profile.gstin}</Text> : null}
+              {supplierStateLabel ? <Text style={gz.line}>State: {supplierStateLabel}</Text> : null}
+              {(profile?.phone || profile?.email) ? <Text style={gz.line}>{[profile?.phone, profile?.email].filter(Boolean).join('  •  ')}</Text> : null}
+            </View>
+            <View style={gz.metaBox}>
+              {[
+                [isInv ? 'Invoice No.' : 'Quote No.', data.no],
+                ['Date', fmtD(data.date)],
+                ...(isInv && data.dueDate ? [['Due Date', fmtD(data.dueDate)]] : []),
+                ...(!isInv && data.validUntil ? [['Valid Until', fmtD(data.validUntil)]] : []),
+                ['Place of Supply', posLabel || '—'],
+                ['Reverse Charge', data.reverseCharge ? 'Yes' : 'No'],
+              ].map(([k, v], i) => (
+                <View style={gz.metaRow} key={i}><Text style={gz.metaKey}>{k}</Text><Text style={gz.metaVal}>{v}</Text></View>
+              ))}
+            </View>
+          </View>
+
+          {/* Bill To / Ship To */}
+          <View style={gz.partyRow}>
+            <View style={[gz.partyCell, { borderRightWidth: 1, borderColor: '#000' }]}>
+              <Text style={gz.label}>Bill To</Text>
+              <Text style={{ fontSize: 11, fontWeight: 'bold' }}>{clientMatch.companyName || data.companyName || data.client}</Text>
+              {clientMatch.address ? <Text style={gz.line}>{clientMatch.address}</Text> : null}
+              {clientMatch.gstin ? <Text style={[gz.line, { fontWeight: 'bold', marginTop: 2 }]}>GSTIN: {clientMatch.gstin}</Text> : null}
+              {billStateLabel ? <Text style={gz.line}>State: {billStateLabel}</Text> : null}
+            </View>
+            <View style={gz.partyCell}>
+              <Text style={gz.label}>Ship To</Text>
+              <Text style={gz.line}>{shipToText}</Text>
+            </View>
+          </View>
+
+          {/* Line items */}
+          <View style={gz.thead}>
+            <Text style={[gz.th, gz.cNo]}>#</Text>
+            <Text style={[gz.th, gz.cDesc, { textAlign: 'left' }]}>Description</Text>
+            <Text style={[gz.th, gz.cHsn]}>HSN/SAC</Text>
+            <Text style={[gz.th, gz.cQty]}>Qty</Text>
+            <Text style={[gz.th, gz.cRate]}>Rate</Text>
+            <Text style={[gz.th, gz.cTaxable]}>Taxable</Text>
+            {isInterState ? <Text style={[gz.th, gz.cGst]}>IGST</Text> : (<><Text style={[gz.th, gz.cGst]}>CGST</Text><Text style={[gz.th, gz.cGst]}>SGST</Text></>)}
+            <Text style={[gz.th, gz.cAmt, { borderRightWidth: 0 }]}>Amount</Text>
+          </View>
+          {items.map((it, i) => {
+            const li = ptots.perItem[i] || { taxable: 0, tax: 0, taxRate: 0 };
+            return (
+              <View style={gz.tr} key={i} wrap={false}>
+                <Text style={[gz.td, gz.cNo]}>{i + 1}</Text>
+                <View style={[gz.td, gz.cDesc]}>
+                  <Text style={{ fontWeight: 'bold' }}>{it.name}</Text>
+                  {it.desc ? <Text style={gz.sub}>{it.desc}</Text> : null}
+                </View>
+                <Text style={[gz.td, gz.cHsn]}>{it.hsn || '-'}</Text>
+                <Text style={[gz.td, gz.cQty]}>{Number(it.qty)} {it.unit || ''}</Text>
+                <Text style={[gz.td, gz.cRate]}>{moneyNo(it.rate)}</Text>
+                <Text style={[gz.td, gz.cTaxable]}>{moneyNo(li.taxable)}</Text>
+                {isInterState ? (
+                  <View style={[gz.td, gz.cGst]}><Text>{li.tax === 0 ? '-' : moneyNo(li.tax)}</Text>{li.tax !== 0 ? <Text style={gz.sub}>({li.taxRate}%)</Text> : null}</View>
+                ) : (<>
+                  <View style={[gz.td, gz.cGst]}><Text>{li.tax === 0 ? '-' : moneyNo(li.tax / 2)}</Text>{li.tax !== 0 ? <Text style={gz.sub}>({li.taxRate / 2}%)</Text> : null}</View>
+                  <View style={[gz.td, gz.cGst]}><Text>{li.tax === 0 ? '-' : moneyNo(li.tax / 2)}</Text>{li.tax !== 0 ? <Text style={gz.sub}>({li.taxRate / 2}%)</Text> : null}</View>
+                </>)}
+                <Text style={[gz.td, gz.cAmt, { borderRightWidth: 0, fontWeight: 'bold' }]}>{moneyNo(li.taxable + li.tax)}</Text>
+              </View>
+            );
+          })}
+
+          {/* Amount in words + totals */}
+          <View style={gz.totWrap}>
+            <View style={gz.wordsCell}>
+              <Text style={gz.label}>Amount in words</Text>
+              <Text style={{ fontStyle: 'italic' }}>{numberToWords(ptots.total, docCurrency)}</Text>
+            </View>
+            <View style={gz.sumCell}>
+              <View style={gz.sumRow}><Text>Taxable Value</Text><Text>{moneyNo(ptots.sub - ptots.discAmt)}</Text></View>
+              {ptots.discAmt > 0 ? <View style={gz.sumRow}><Text>Discount</Text><Text>(-) {moneyNo(ptots.discAmt)}</Text></View> : null}
+              {rateSummary.map(([rate, amt]) => isInterState
+                ? <View style={gz.sumRow} key={rate}><Text>IGST {rate}%</Text><Text>{moneyNo(amt)}</Text></View>
+                : (
+                  <React.Fragment key={rate}>
+                    <View style={gz.sumRow}><Text>CGST {Number(rate) / 2}%</Text><Text>{moneyNo(amt / 2)}</Text></View>
+                    <View style={gz.sumRow}><Text>SGST {Number(rate) / 2}%</Text><Text>{moneyNo(amt / 2)}</Text></View>
+                  </React.Fragment>
+                ))}
+              {ptots.roundOff ? <View style={gz.sumRow}><Text>Round Off</Text><Text>{moneyNo(ptots.roundOff)}</Text></View> : null}
+              <View style={gz.sumTotal}><Text>Total</Text><Text>{money(ptots.total)}</Text></View>
+            </View>
+          </View>
+
+          {/* HSN-wise tax summary */}
+          <View style={gz.thead}>
+            <Text style={[gz.th, { flex: 1, textAlign: 'left' }]}>HSN/SAC</Text>
+            <Text style={[gz.th, gz.cTaxable]}>Taxable</Text>
+            {isInterState ? <Text style={[gz.th, gz.cGst]}>IGST</Text> : (<><Text style={[gz.th, gz.cGst]}>CGST</Text><Text style={[gz.th, gz.cGst]}>SGST</Text></>)}
+            <Text style={[gz.th, gz.cGst, { borderRightWidth: 0 }]}>Total Tax</Text>
+          </View>
+          {ptots.hsnSummary.map((h, i) => (
+            <View style={gz.tr} key={i} wrap={false}>
+              <Text style={[gz.td, { flex: 1 }]}>{h.hsn || '-'}</Text>
+              <Text style={[gz.td, gz.cTaxable]}>{moneyNo(h.taxable)}</Text>
+              {isInterState ? <Text style={[gz.td, gz.cGst]}>{moneyNo(h.tax)}</Text> : (<><Text style={[gz.td, gz.cGst]}>{moneyNo(h.tax / 2)}</Text><Text style={[gz.td, gz.cGst]}>{moneyNo(h.tax / 2)}</Text></>)}
+              <Text style={[gz.td, gz.cGst, { borderRightWidth: 0, fontWeight: 'bold' }]}>{moneyNo(h.tax)}</Text>
+            </View>
+          ))}
+
+          {/* Bank details + declaration / signatory */}
+          <View style={gz.footRow}>
+            <View style={gz.bankCell}>
+              {(profile?.bankName || profile?.qrCode) ? (<>
+                <Text style={gz.label}>Bank Details</Text>
+                {profile?.bankName ? <Text style={gz.line}>Bank: {profile.bankName}</Text> : null}
+                {profile?.accountNo ? <Text style={gz.line}>A/C No: {profile.accountNo}</Text> : null}
+                {profile?.ifsc ? <Text style={gz.line}>IFSC: {profile.ifsc}</Text> : null}
+                {profile?.bankExtra ? <Text style={gz.line}>{profile.bankExtra}</Text> : null}
+                {profile?.qrCode ? <Image src={profile.qrCode} style={{ height: 72, width: 72, marginTop: 5 }} /> : null}
+              </>) : null}
+            </View>
+            <View style={gz.signCell}>
+              <Text style={{ fontSize: 8, color: '#333', marginBottom: 22 }}><Text style={{ fontWeight: 'bold' }}>Declaration: </Text>We declare that this {isInv ? 'invoice' : 'quotation'} shows the actual price of the goods/services described and that all particulars are true and correct.</Text>
+              <Text style={{ textAlign: 'right', fontWeight: 'bold' }}>For {profile?.bizName}</Text>
+              <Text style={{ textAlign: 'right', marginTop: 28 }}>Authorised Signatory</Text>
+            </View>
+          </View>
+        </View>
+        {settings?.showBranding !== false ? (
+          <Text style={{ fontSize: 8, color: '#555', marginTop: 6 }}>POWERED BY {settings?.brandName || 'T2GCRM'}</Text>
+        ) : null}
+      </Page>
+    </Document>
+  );
+}
+
 // Resolve the template variant exactly like DocumentTemplate.jsx does.
 function resolveTemplate(data, profile, type) {
   const profileTemplate = type === 'Invoice' ? profile?.invoiceTemplate : profile?.quotationTemplate;
@@ -730,6 +934,7 @@ function resolveTemplate(data, profile, type) {
 
 function DocumentPdf({ data, profile, type, settings }) {
   const t = resolveTemplate(data, profile, type);
+  if (t === 'GST') return <GstDoc data={data} profile={profile} type={type} settings={settings} />;
   if (t === 'Spreadsheet') return <SpreadsheetDoc data={data} profile={profile} type={type} settings={settings} />;
   if (t === 'Formal') return <FormalDoc data={data} profile={profile} type={type} settings={settings} />;
   return <StandardDoc t={t} data={data} profile={profile} type={type} settings={settings} />;
