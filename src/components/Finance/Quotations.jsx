@@ -52,6 +52,7 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   const [editData, setEditData] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [printing, setPrinting] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [custModal, setCustModal] = useState(false);
   const [newCustForm, setNewCustForm] = useState(EMPTY_CUSTOMER);
   const [saving, setSaving] = useState(false);
@@ -96,6 +97,8 @@ export default function Quotations({ user, perms, ownerId, settings }) {
   };
   const customers = modalCustomers;
   useEffect(() => { if (modal || printing) fetchModalCustomers(); }, [!!modal, !!printing]);
+  // Warm the heavy react-pdf bundle when the preview opens so Download is snappy.
+  useEffect(() => { if (printing) import('./DocumentPdf').catch(() => {}); }, [!!printing]);
 
   // NOTE: this initial fetch only preloads the first 500 leads (by the
   // server's default order) — production accounts have 11k+ leads, so a lead
@@ -532,15 +535,19 @@ export default function Quotations({ user, perms, ownerId, settings }) {
           {/* Real downloadable PDF file (named by quotation number). react-pdf is
               dynamically imported so its ~1MB bundle only loads on click. Falls
               back to the Print dialog if generation fails for any reason. */}
-          <button className="btn btn-secondary" onClick={async () => {
+          <button className="btn btn-secondary" disabled={pdfBusy} style={pdfBusy ? { opacity: 0.7, cursor: 'wait' } : undefined} onClick={async () => {
+            if (pdfBusy) return;
+            setPdfBusy(true);
             try {
               const { downloadDocumentPdf } = await import('./DocumentPdf');
               await downloadDocumentPdf({ data: dataWithContext, profile, type: printing?.docType === 'Proforma' ? 'Proforma Invoice' : 'Quotation', settings });
             } catch (e) {
               console.error('PDF download failed', e);
               toast('PDF generation failed — use Print / Save PDF instead', 'error');
+            } finally {
+              setPdfBusy(false);
             }
-          }}>Download PDF</button>
+          }}>{pdfBusy ? 'Generating PDF…' : 'Download PDF'}</button>
           <button className="btn btn-secondary" onClick={() => {
             const q = printing;
             setPrinting(null);

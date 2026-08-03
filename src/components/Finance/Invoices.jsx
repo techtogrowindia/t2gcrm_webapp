@@ -41,6 +41,7 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [printing, setPrinting] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [payModal, setPayModal] = useState(null);
   // A fixed-position menu doesn't travel with the page, so close it on any
   // scroll or outside click rather than leaving it stranded mid-screen.
@@ -111,6 +112,9 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
   // Fetch when any view that needs customer lookup opens: create/edit form,
   // print view, or the payment modal (payment_received WA notif needs the phone).
   useEffect(() => { if (modal || printing || payModal) fetchModalCustomers(); }, [!!modal, !!printing, !!payModal]);
+  // Pre-load the heavy react-pdf bundle the moment the preview opens, so the
+  // Download PDF click doesn't pay the ~1 MB chunk load on top of generation.
+  useEffect(() => { if (printing) import('./DocumentPdf').catch(() => {}); }, [!!printing]);
   useEffect(() => { if (payModal) setPayForm({ ...EMPTY_PAY(), mode: paymentModes[0] || '' }); }, [payModal?.id]);
 
   // NOTE: this initial fetch only preloads the first 500 leads (by the
@@ -635,15 +639,19 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
           {/* Real downloadable PDF file (named by invoice number). react-pdf is
               dynamically imported so its ~1MB bundle only loads on click. Falls
               back to the Print dialog if generation fails for any reason. */}
-          <button className="btn btn-secondary" onClick={async () => {
+          <button className="btn btn-secondary" disabled={pdfBusy} style={pdfBusy ? { opacity: 0.7, cursor: 'wait' } : undefined} onClick={async () => {
+            if (pdfBusy) return;                 // ignore extra clicks while generating
+            setPdfBusy(true);
             try {
               const { downloadDocumentPdf } = await import('./DocumentPdf');
               await downloadDocumentPdf({ data: dataWithContext, profile, type: 'Invoice', settings });
             } catch (e) {
               console.error('PDF download failed', e);
               toast('PDF generation failed — use Print / Save PDF instead', 'error');
+            } finally {
+              setPdfBusy(false);
             }
-          }}>Download PDF</button>
+          }}>{pdfBusy ? 'Generating PDF…' : 'Download PDF'}</button>
           <button className="btn btn-secondary" onClick={() => { 
             const inv = printing;
             setPrinting(null);
