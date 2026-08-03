@@ -762,7 +762,7 @@ const gz = StyleSheet.create({
   sumCell: { width: '42%' },
   sumRow: { flexDirection: 'row', justifyContent: 'space-between', padding: 4, borderBottomWidth: 1, borderColor: '#000' },
   sumTotal: { flexDirection: 'row', justifyContent: 'space-between', padding: 5, fontWeight: 'bold', fontSize: 11 },
-  footRow: { flexDirection: 'row' },
+  footRow: { flexDirection: 'row', borderTopWidth: 1, borderColor: '#000' },
   bankCell: { width: '50%', borderRightWidth: 1, borderColor: '#000', padding: 6 },
   signCell: { width: '50%', padding: 6 },
 });
@@ -788,7 +788,7 @@ function GstDoc({ data, profile, type, settings }) {
     <Document title={`${type} ${data.no || ''}`.trim()}>
       <Page size="A4" style={gz.page}>
         <LogoWatermark profile={profile} />
-        <View style={gz.frame}>
+        <View style={[gz.frame, { flexGrow: 1 }]}>
           <Text style={gz.band}>ORIGINAL FOR RECIPIENT</Text>
           <Text style={gz.title}>{docTitle}</Text>
           {showTax && !gstKnown ? (
@@ -869,6 +869,14 @@ function GstDoc({ data, profile, type, settings }) {
             );
           })}
 
+          {/* Notes & Terms — below items, above totals */}
+          {(data.notes || data.terms) ? (
+            <View style={{ padding: 6, borderBottomWidth: 1, borderColor: '#000' }} wrap={false}>
+              {data.notes ? (<><Text style={gz.label}>Notes</Text><Text style={{ fontSize: 9, marginBottom: data.terms ? 5 : 0 }}>{data.notes}</Text></>) : null}
+              {data.terms ? (<><Text style={gz.label}>Terms &amp; Conditions</Text><Text style={{ fontSize: 9 }}>{data.terms}</Text></>) : null}
+            </View>
+          ) : null}
+
           {/* Amount in words + totals */}
           <View style={gz.totWrap}>
             <View style={gz.wordsCell}>
@@ -909,7 +917,10 @@ function GstDoc({ data, profile, type, settings }) {
           ))}
           </>) : null}
 
-          {/* Bank details + declaration / signatory */}
+          {/* Spacer — grows to push the footer to the bottom of the fixed page */}
+          <View style={{ flexGrow: 1 }} />
+
+          {/* Bank details + declaration / signatory — pinned to page bottom */}
           <View style={gz.footRow}>
             <View style={gz.bankCell}>
               {(profile?.bankName || profile?.qrCode) ? (<>

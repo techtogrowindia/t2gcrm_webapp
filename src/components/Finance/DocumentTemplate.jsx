@@ -76,7 +76,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
         ? data.shipTo
         : [(clientMatch.companyName || data.companyName || data.client), clientMatch.address].filter(Boolean).join('\n');
       return (
-        <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', color: '#000', border: bc }}>
+        <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', color: '#000', border: bc, display: 'flex', flexDirection: 'column', minHeight: '258mm' }}>
           <div style={{ textAlign: 'center', fontSize: '8px', borderBottom: bc, padding: '2px' }}>ORIGINAL FOR RECIPIENT</div>
           <div style={{ textAlign: 'center', fontWeight: 800, fontSize: '15px', padding: '6px', borderBottom: bc, letterSpacing: '1px' }}>{docTitle}</div>
           {showTax && !gstKnown && (
@@ -164,6 +164,20 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
             </tbody>
           </table>
 
+          {/* Notes & Terms — below items, above totals */}
+          {(data.notes || data.terms) && (
+            <div style={{ padding: '8px', borderBottom: bc, fontSize: '10px' }}>
+              {data.notes && (<>
+                <div style={{ fontWeight: 700 }}>Notes</div>
+                <div style={{ whiteSpace: 'pre-wrap', marginBottom: data.terms ? 6 : 0 }}>{data.notes}</div>
+              </>)}
+              {data.terms && (<>
+                <div style={{ fontWeight: 700 }}>Terms &amp; Conditions</div>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{data.terms}</div>
+              </>)}
+            </div>
+          )}
+
           {/* Amount in words + totals */}
           <div style={{ display: 'flex', borderTop: bc, borderBottom: bc }}>
             <div style={{ width: '58%', borderRight: bc, padding: '8px', fontSize: '10px' }}>
@@ -205,8 +219,11 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
           </table>
           )}
 
-          {/* Bank details + declaration/signatory */}
-          <div style={{ display: 'flex' }}>
+          {/* Spacer — grows to push the footer to the bottom of the fixed page */}
+          <div style={{ flex: 1 }} />
+
+          {/* Bank details + declaration/signatory — pinned to page bottom */}
+          <div style={{ display: 'flex', borderTop: bc }}>
             <div style={{ width: '50%', borderRight: bc, padding: '8px', fontSize: '10px' }}>
               {(profile.bankName || profile.qrCode) && (<>
                 <div style={{ fontWeight: 700, marginBottom: 3 }}>Bank Details</div>
