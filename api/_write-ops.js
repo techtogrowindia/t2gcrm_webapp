@@ -12,6 +12,7 @@
 // ===================================================================
 import { tx } from '@instantdb/admin';
 import { pgRunOps, pgRead, pgReadAll } from './data-pg.js';
+import { assigneeFields } from './_assignee.js';
 
 const USE_PG_DATA = process.env.USE_PG_DATA === 'true';
 
@@ -68,6 +69,27 @@ export async function runOpsByOwner(db, ops) {
     byOwner.get(owner).push(op);
   }
   for (const [owner, ownerOps] of byOwner) await pgRunOps(owner, ownerOps);
+}
+
+// Stamp an inbound integration lead's assignee NAME + stable assignedToId in
+// place, so webhook-created leads are matched by id (rename-safe) exactly like
+// web- and mobile-created ones — a name-only lead is what hid a member's leads.
+// Only touches leads that name an assignee; never throws, so a lookup failure
+// leaves the name for the backfill to resolve rather than failing the webhook.
+export async function stampLeadAssignee(db, ownerId, lead) {
+  if (!lead || !String(lead.assign || '').trim()) return lead;
+  lead.assignedAt = lead.createdAt;   // dated "assigned" reports count off this
+  try {
+    const { teamMembers } = await readData(db, ownerId, {
+      teamMembers: { $: { where: { userId: ownerId } } },
+    });
+    const a = assigneeFields(lead.assign, teamMembers || []);
+    lead.assign = a.assign;             // an email/alias becomes the member's exact name
+    lead.assignedToId = a.assignedToId; // stable id, kept in step with the name
+  } catch (e) {
+    console.error('[assignee] webhook resolve failed:', e?.message || e);
+  }
+  return lead;
 }
 
 export { USE_PG_DATA };

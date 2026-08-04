@@ -1,5 +1,5 @@
 import { init } from '@instantdb/admin';
-import { opU, runOps, readData } from '../_write-ops.js';
+import { opU, runOps, readData, stampLeadAssignee } from '../_write-ops.js';
 import { getLeadFormConfig, coerceLeadStage } from '../_lead-config.js';
 
 const WEBHOOK_NAME = 'gsheets';
@@ -178,7 +178,7 @@ export default async function handler(req, res) {
       console.log(`Lead already exists (${existingLead.id}). Added activity log instead.`);
     } else {
       // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
-      if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+      await stampLeadAssignee(db, userId, lead);
       // Integration payloads map whatever the remote source sends straight onto
       // the lead, bypassing the validation /api/data applies. Coerce the stage
       // to one the business actually uses, so an inbound enquiry can't land in

@@ -1,5 +1,5 @@
 import { init } from '@instantdb/admin';
-import { opU, runOps, readData } from '../_write-ops.js';
+import { opU, runOps, readData, stampLeadAssignee } from '../_write-ops.js';
 import { getLeadFormConfig, coerceLeadStage } from '../_lead-config.js';
 
 const WEBHOOK_NAME = 'indiamart';
@@ -141,7 +141,7 @@ export default async function handler(req, res) {
           lead.actorId = null;
           lead.createdAt = Date.now();
           // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
-          if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+          await stampLeadAssignee(db, userId, lead);
           const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
           if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
@@ -287,7 +287,7 @@ export default async function handler(req, res) {
             lead.actorId = null;
             lead.createdAt = Date.now();
             // Create-with-assignee → stamp assignedAt so dated "assigned" reports count it
-            if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+            await stampLeadAssignee(db, userId, lead);
             // Record the source's unique ID for future syncs
             const uniqueId = incomingLead.UNIQUE_QUERY_ID || incomingLead.unique_query_id;
             if (uniqueId) lead.sourceLeadId = String(uniqueId);

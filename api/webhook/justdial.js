@@ -1,5 +1,5 @@
 import { init } from '@instantdb/admin';
-import { opU, runOps, readData } from '../_write-ops.js';
+import { opU, runOps, readData, stampLeadAssignee } from '../_write-ops.js';
 import { getLeadFormConfig, coerceLeadStage } from '../_lead-config.js';
 
 const WEBHOOK_NAME = 'justdial';
@@ -149,7 +149,7 @@ export default async function handler(req, res) {
           lead.userId = userId;
           lead.actorId = null;
           lead.createdAt = Date.now();
-          if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+          await stampLeadAssignee(db, userId, lead);
           const uniqueId = incomingLead.leadid || incomingLead.lead_id;
           if (uniqueId) lead.sourceLeadId = String(uniqueId);
 
@@ -289,7 +289,7 @@ export default async function handler(req, res) {
             lead.userId = userId;
             lead.actorId = null;
             lead.createdAt = Date.now();
-            if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+            await stampLeadAssignee(db, userId, lead);
             const uniqueId = incomingLead.leadid || incomingLead.lead_id;
             if (uniqueId) lead.sourceLeadId = String(uniqueId);
 

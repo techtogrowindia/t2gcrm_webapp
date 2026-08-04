@@ -446,6 +446,11 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
 
     setSaving(true);
     try {
+      // Keep the stable assignee id in lockstep with the chosen name so leads are
+      // matched by id (rename-safe) instead of by display name — the drift that hid
+      // ARS members' own leads. team holds { id, name, email }; assign stores a name
+      // (occasionally an email), so resolve on both. null when unassigned/unknown.
+      const assigneeIdFor = (val) => (team.find(t => t.name === val || (t.email && t.email === val)) || {}).id || null;
       if (editData) {
         const changes = [];
         const fields = { name: 'Name', phone: 'Phone', email: 'Email', source: 'Source', stage: 'Stage', assign: 'Assignee', followup: 'Follow Up', requirement: 'Requirement', notes: 'Notes', productCat: 'Product Category' };
@@ -474,8 +479,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
         if (editData.stage !== form.stage) {
           updates.stageChangedAt = Date.now();
         }
-        if (form.assign && form.assign !== editData.assign) {
-          updates.assignedAt = Date.now();
+        if (form.assign !== editData.assign) {
+          // sync the stable id whenever the assignee changes (null when cleared)
+          updates.assignedToId = assigneeIdFor(form.assign);
+          if (form.assign) updates.assignedAt = Date.now();
         }
         await dbWrite(dbOp.update('leads', editData.id, updates));
 
@@ -544,7 +551,10 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       } else {
         const newId = id();
         const newLeadPayload = { ...form, userId: ownerId, actorId: user.id, createdAt: Date.now() };
-        if (form.assign) newLeadPayload.assignedAt = newLeadPayload.createdAt;
+        if (form.assign) {
+          newLeadPayload.assignedAt = newLeadPayload.createdAt;
+          newLeadPayload.assignedToId = assigneeIdFor(form.assign);
+        }
         await dbWrite([
           dbOp.update('leads', newId, newLeadPayload),
           dbOp.update('activityLogs', id(), {
@@ -721,7 +731,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
     // spaces + lowercase) name -> the member's exact stored name, so we can
     // canonicalize case/space variants and reject unknown assignees.
     const memberByNorm = new Map(
-      (team || []).filter(m => m.name).map(m => [normalizeName(m.name).toLowerCase(), m.name])
+      (team || []).filter(m => m.name).map(m => [normalizeName(m.name).toLowerCase(), m])
     );
 
     // PASS 1 — parse + validate + intra-file dedup (all synchronous, no network).
@@ -784,7 +794,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       // so we never import a lead assigned to someone who isn't on the team.
       if (lead.assign && String(lead.assign).trim()) {
         const canonical = memberByNorm.get(normalizeName(lead.assign).toLowerCase());
-        if (canonical) lead.assign = canonical;
+        if (canonical) lead.assign = canonical.name;
         else {
           invalidFields.push(`Row ${rowIndex}: ${lead.name} (Assignee '${lead.assign}' is not a team member)`);
           hasInvalidField = true;
@@ -816,8 +826,12 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
       if (emailKey) emailIndexLocal.set(emailKey, true);
       if (phoneKey) phoneIndexLocal.set(phoneKey, true);
 
-      // Create-with-assignee (bulk import) → stamp assignedAt so dated "assigned" reports count it
-      if ((lead.assign || '').trim()) lead.assignedAt = lead.createdAt;
+      // Create-with-assignee (bulk import) → stamp assignedAt + the stable assignedToId
+      // so imported leads are matched by id (rename-safe) like the rest of the app.
+      if ((lead.assign || '').trim()) {
+        lead.assignedAt = lead.createdAt;
+        lead.assignedToId = (memberByNorm.get(normalizeName(lead.assign).toLowerCase()) || {}).id || null;
+      }
       candidates.push({ lead, rowIndex, phone: lead.phone || '', email: lead.email || '' });
       rowIndex++;
     }
