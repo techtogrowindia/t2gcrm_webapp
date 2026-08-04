@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { dbWrite, dbOp } from '../../utils/dbWrite';
 import db from '../../instant';
 import { id } from '@instantdb/react';
-import { fmtD, fmt, stageBadgeClass } from '../../utils/helpers';
+import { fmtD, fmtDT, fmt, stageBadgeClass } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext';
 import { logActivity } from '../../utils/activityLogger';
 
@@ -17,6 +17,9 @@ export default function Expenses({ user, perms, ownerId }) {
   const [modal, setModal] = useState(false);
   const [editData, setEditData] = useState(null);
   const [form, setForm] = useState(EMPTY);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [viewData, setViewData] = useState(null);
   const toast = useToast();
 
   const { data } = db.useQuery({
@@ -36,6 +39,12 @@ export default function Expenses({ user, perms, ownerId }) {
 
   const total = useMemo(() => expenses.filter(e => e.status === 'Approved').reduce((s, e) => s + (e.amount || 0), 0), [expenses]);
   const pending = useMemo(() => expenses.filter(e => e.status === 'Pending').reduce((s, e) => s + (e.amount || 0), 0), [expenses]);
+
+  // Client-side pagination (default 25/page). `page` is clamped so a delete on
+  // the last page can't strand us on an empty page.
+  const totalPages = Math.max(1, Math.ceil(expenses.length / pageSize));
+  const page = Math.min(currentPage, totalPages);
+  const paged = useMemo(() => expenses.slice((page - 1) * pageSize, page * pageSize), [expenses, page, pageSize]);
 
   const save = async () => {
     if (editData && !canEdit) { toast('Permission denied: cannot edit expenses', 'error'); return; }
@@ -88,28 +97,31 @@ export default function Expenses({ user, perms, ownerId }) {
   return (
     <div>
       <div className="sh"><div><h2>Expenses</h2></div>{canCreate && <button className="btn btn-primary btn-sm" onClick={() => { setEditData(null); setForm(EMPTY); setModal(true); }}>+ Add Expense</button>}</div>
-      <div className="stat-grid" style={{ marginBottom: 18 }}>
-        <div className="stat-card sc-green"><div className="lbl">Approved</div><div className="val">{fmt(total)}</div></div>
-        <div className="stat-card sc-yellow"><div className="lbl">Pending</div><div className="val">{fmt(pending)}</div></div>
-        <div className="stat-card sc-blue"><div className="lbl">Total Entries</div><div className="val">{expenses.length}</div></div>
+      {/* Wider cards + smaller value font so lakh/crore amounts don't overflow the tile */}
+      <div className="stat-grid" style={{ marginBottom: 18, gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))' }}>
+        <div className="stat-card sc-green"><div className="lbl">Approved</div><div className="val" style={{ fontSize: 20 }}>{fmt(total)}</div></div>
+        <div className="stat-card sc-yellow"><div className="lbl">Pending</div><div className="val" style={{ fontSize: 20 }}>{fmt(pending)}</div></div>
+        <div className="stat-card sc-blue"><div className="lbl">Total Entries</div><div className="val" style={{ fontSize: 20 }}>{expenses.length}</div></div>
       </div>
       <div className="tw">
         <div className="tw-head"><h3>Expenses ({expenses.length})</h3></div>
         <div className="tw-scroll">
           <table>
-            <thead><tr><th>#</th><th>Description</th><th>Category</th><th>Date</th><th>Amount</th><th>Tax (GST)</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>#</th><th>Description</th><th>Category</th><th>Date</th><th>Submitted</th><th>Amount</th><th>Tax (GST)</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>
-              {expenses.length === 0 ? <tr><td colSpan={7} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>No expenses</td></tr>
-                : expenses.map((e, i) => (
+              {expenses.length === 0 ? <tr><td colSpan={9} style={{ textAlign: 'center', padding: 28, color: 'var(--muted)' }}>No expenses</td></tr>
+                : paged.map((e, i) => (
                   <tr key={e.id}>
-                    <td style={{ color: 'var(--muted)', fontSize: 11 }}>{i + 1}</td>
+                    <td style={{ color: 'var(--muted)', fontSize: 11 }}>{(page - 1) * pageSize + i + 1}</td>
                     <td>{e.desc}</td>
                     <td><span className="badge bg-gray">{e.category}</span></td>
                     <td style={{ fontSize: 12 }}>{fmtD(e.date)}</td>
+                    <td style={{ fontSize: 12, color: 'var(--muted)' }}>{fmtDT(e.createdAt)}</td>
                     <td style={{ fontWeight: 700 }}>{fmt(e.amount)}</td>
                     <td style={{ fontSize: 12, color: '#16a34a' }}>{e.taxAmt ? fmt(e.taxAmt) : '—'}</td>
                      <td><span className={`badge ${stageBadgeClass(e.status)}`}>{e.status}</span></td>
                      <td style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                       <button className="btn btn-secondary btn-sm" onClick={() => setViewData(e)}>View</button>
                        {e.status === 'Pending' && canEdit && <><button className="btn btn-sm" style={{ background: '#dcfce7', color: '#166534' }} onClick={() => changeStatus(e.id, 'Approved')}>✓</button><button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={() => changeStatus(e.id, 'Rejected')}>✕</button></>}
                        {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => { setEditData(e); setForm({ desc: e.desc, amount: e.amount, category: e.category, date: e.date || '', status: e.status, notes: e.notes || '' }); setModal(true); }}>Edit</button>}
                        {canDelete && <button className="btn btn-sm" style={{ background: '#fee2e2', color: '#991b1b' }} onClick={() => del(e.id)}>Del</button>}
@@ -119,6 +131,21 @@ export default function Expenses({ user, perms, ownerId }) {
             </tbody>
           </table>
         </div>
+        {expenses.length > 0 && (
+          <div className="tw-foot" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', flexWrap: 'wrap', gap: 8, borderTop: '1px solid var(--border)' }}>
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              Showing <strong>{(page - 1) * pageSize + 1}</strong>–<strong>{Math.min(page * pageSize, expenses.length)}</strong> of <strong>{expenses.length}</strong>
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <select value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setCurrentPage(1); }} style={{ fontSize: 12, padding: '3px 6px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                {[25, 50, 100].map(n => <option key={n} value={n}>{n}/page</option>)}
+              </select>
+              <button className="btn btn-secondary btn-sm" disabled={page === 1} onClick={() => setCurrentPage(page - 1)}>&#8249; Prev</button>
+              <span style={{ fontSize: 12 }}>Page {page} / {totalPages}</span>
+              <button className="btn btn-secondary btn-sm" disabled={page >= totalPages} onClick={() => setCurrentPage(page + 1)}>Next &#8250;</button>
+            </div>
+          </div>
+        )}
       </div>
       {modal && (
         <div className="mo open">
@@ -146,6 +173,29 @@ export default function Expenses({ user, perms, ownerId }) {
               </div>
             </div>
             <div className="mo-foot"><button className="btn btn-secondary btn-sm" onClick={() => setModal(false)}>Cancel</button><button className="btn btn-primary btn-sm" onClick={save}>Save</button></div>
+          </div>
+        </div>
+      )}
+      {viewData && (
+        <div className="mo open">
+          <div className="mo-box">
+            <div className="mo-head"><h3>Expense Details</h3><button className="btn-icon" onClick={() => setViewData(null)}>✕</button></div>
+            <div className="mo-body">
+              <div className="fgrid">
+                <div className="fg span2"><label>Description</label><div style={{ fontWeight: 600 }}>{viewData.desc || '—'}</div></div>
+                <div className="fg"><label>Category</label><div><span className="badge bg-gray">{viewData.category || '—'}</span></div></div>
+                <div className="fg"><label>Status</label><div><span className={`badge ${stageBadgeClass(viewData.status)}`}>{viewData.status || '—'}</span></div></div>
+                <div className="fg"><label>Amount (Incl. Tax)</label><div style={{ fontWeight: 700 }}>{fmt(viewData.amount)}</div></div>
+                <div className="fg"><label>Tax (GST)</label><div>{viewData.taxAmt ? `${fmt(viewData.taxAmt)}${viewData.taxRate ? ` (${viewData.taxRate}%)` : ''}` : '—'}</div></div>
+                <div className="fg"><label>Expense Date</label><div>{fmtD(viewData.date)}</div></div>
+                <div className="fg"><label>Submitted</label><div>{fmtDT(viewData.createdAt)}</div></div>
+                <div className="fg span2"><label>Notes</label><div style={{ whiteSpace: 'pre-wrap', color: viewData.notes ? 'inherit' : 'var(--muted)' }}>{viewData.notes || '—'}</div></div>
+              </div>
+            </div>
+            <div className="mo-foot">
+              {canEdit && <button className="btn btn-secondary btn-sm" onClick={() => { const ex = viewData; setViewData(null); setEditData(ex); setForm({ desc: ex.desc, amount: ex.amount, category: ex.category, date: ex.date || '', status: ex.status, notes: ex.notes || '' }); setModal(true); }}>Edit</button>}
+              <button className="btn btn-primary btn-sm" onClick={() => setViewData(null)}>Close</button>
+            </div>
           </div>
         </div>
       )}
