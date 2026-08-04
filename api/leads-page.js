@@ -69,16 +69,14 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 3. Stage visibility (savedLeadStages + disabledStages) -----------
-    // Mirror the same filtering that dashboard-stats applies so both
-    // endpoints report identical totals.
-    const disabledSet = new Set(disabledStages || []);
-    if (Array.isArray(visibleStages) && visibleStages.length > 0) {
-      const vs = new Set(visibleStages);
-      leads = leads.filter(l => vs.has(l.stage) && !disabledSet.has(l.stage));
-    } else if (disabledSet.size > 0) {
-      leads = leads.filter(l => !disabledSet.has(l.stage));
-    }
+    // --- 3. Stage visibility — DELIBERATELY show everything ---------------
+    // The Leads page is the cleanup surface: a lead must never be hidden just
+    // because its stage is disabled, was renamed in Settings, is mistyped, or
+    // is blank — that is exactly how leads went missing and became impossible
+    // to find and fix. The Stage dropdown (built from the `facets` below) lets
+    // the user narrow on demand, and disabled stages are simply not offered
+    // when CREATING a lead (client-side). `visibleStages` / `disabledStages`
+    // are intentionally NOT used to drop rows here anymore.
 
     // --- 3b. Single-lead lookup (deep links) ------------------------------
     // Opening one lead by id — from a dashboard tile, My Day, or a
@@ -97,11 +95,38 @@ export default async function handler(req, res) {
       return res.status(200).json({ items: one, counts: {}, totalFiltered: one.length, planTotal: null, single: true });
     }
 
+    // --- Facets: the distinct values actually present in the caller's leads,
+    // so the client can build filter dropdowns that include off-settings
+    // values (typos, renamed/disabled stages, ex-staff) plus a "None" entry
+    // for blanks — nothing becomes unfilterable. Computed over the team-visible
+    // set, BEFORE the dropdown filters, so every value is always offered.
+    const facetKeys = ['source', 'stage', 'requirement', 'assign'];
+    const facetMaps = { source: new Map(), stage: new Map(), requirement: new Map(), assign: new Map() };
+    const facetBlanks = { source: 0, stage: 0, requirement: 0, assign: 0 };
+    for (const l of leads) {
+      for (const k of facetKeys) {
+        const v = (l[k] == null ? '' : String(l[k])).trim();
+        if (!v) { facetBlanks[k]++; continue; }
+        facetMaps[k].set(v, (facetMaps[k].get(v) || 0) + 1);
+      }
+    }
+    const facetArr = (m) => [...m.entries()].map(([v, n]) => ({ v, n })).sort((a, b) => b.n - a.n || a.v.localeCompare(b.v));
+    const facets = {
+      source: facetArr(facetMaps.source),
+      stage: facetArr(facetMaps.stage),
+      requirement: facetArr(facetMaps.requirement),
+      assign: facetArr(facetMaps.assign),
+      blanks: facetBlanks,
+    };
+
     // --- 4. Dropdown filters (baseFiltered equivalent) --------------------
+    // '__none__' matches leads whose field is blank (the "No Source / No
+    // Requirement / No Stage" options); any other value is an exact match, so
+    // off-settings values selected from the facet list still filter correctly.
     const baseFiltered = leads.filter(l => {
-      if (srcFilter && l.source !== srcFilter) return false;
-      if (stgFilter && l.stage !== stgFilter) return false;
-      if (reqFilter && l.requirement !== reqFilter) return false;
+      if (srcFilter) { if (srcFilter === '__none__') { if ((l.source || '').trim()) return false; } else if (l.source !== srcFilter) return false; }
+      if (stgFilter) { if (stgFilter === '__none__') { if ((l.stage || '').trim()) return false; } else if (l.stage !== stgFilter) return false; }
+      if (reqFilter) { if (reqFilter === '__none__') { if ((l.requirement || '').trim()) return false; } else if (l.requirement !== reqFilter) return false; }
       if (prodFilter) {
         // '__none__' = leads with no linked product; otherwise match the product id
         if (prodFilter === '__none__') { if (l.productId) return false; }
@@ -238,7 +263,7 @@ export default async function handler(req, res) {
       items = filteredForTab.slice((p - 1) * ps, p * ps);
     }
 
-    return res.status(200).json({ items, counts, totalFiltered, planTotal });
+    return res.status(200).json({ items, counts, totalFiltered, planTotal, facets });
   } catch (err) {
     console.error('leads-page error:', err);
     return res.status(500).json({ error: err.message });

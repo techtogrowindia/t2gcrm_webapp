@@ -130,6 +130,21 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   // `leads` is ONLY the current page after server filtering. Duplicate checks
   // that used to scan a full in-memory list now go through /api/lead-check-duplicate.
   const leads = pageData?.items || [];
+  // Distinct values actually present in the data (from /api/leads-page), used
+  // to build filter dropdowns that never miss an off-settings value.
+  const facets = pageData?.facets || { source: [], stage: [], requirement: [], assign: [], blanks: {} };
+  // Build <option>s for a filter: configured values first, then values that are
+  // present in the data but NOT in settings (so they stay selectable/fixable),
+  // then a "None" entry for blanks. facetList = [{ v, n }] from the server.
+  const facetOptions = (configList, facetList, blankCount, noneLabel) => {
+    const cfg = new Set(configList || []);
+    const extras = (facetList || []).filter(f => f.v && !cfg.has(f.v));
+    return [
+      ...(configList || []).map(v => <option key={`c:${v}`} value={v}>{v}</option>),
+      ...extras.map(f => <option key={`x:${f.v}`} value={f.v}>{f.v} — not in settings ({f.n})</option>),
+      ...(blankCount > 0 ? [<option key="__none__" value="__none__">— {noneLabel} ({blankCount}) —</option>] : []),
+    ];
+  };
   const customers = data?.customers || [];
   const teamRaw = data?.teamMembers || [];
   // Persist last known team list so the dropdown never flashes empty while the
@@ -252,6 +267,12 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
   // Server has already sliced to current page — no client-side pagination.
   const paginated = leads;
   const filtered = leads; // kept for export/bulk-select; export now uses current page only
+  // Leads whose stage isn't one of the Kanban columns (disabled / renamed /
+  // mistyped / blank) — surfaced in an "Other" column so they're never invisible.
+  const otherStageLeads = useMemo(() => {
+    const cols = new Set(activeStages);
+    return leads.filter(l => !cols.has(l.stage));
+  }, [leads, activeStages]);
 
   useEffect(() => { setCurrentPage(1); }, [tab, debouncedSearch, srcFilter, stgFilter, reqFilter, prodFilter, staffFilter, pageSize]);
 
@@ -1500,6 +1521,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   <div className="fg"><label>Stage</label>
                     <select value={form.stage} onChange={f('stage')}>
                       {!form.stage && <option value="">Select Stage</option>}
+                      {form.stage && !activeStages.includes(form.stage) && <option value={form.stage}>{form.stage} (current — pick a new stage)</option>}
                       {activeStages.map(s => <option key={s}>{s}</option>)}
                     </select>
                   </div>
@@ -1811,15 +1833,15 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   </div>
                   <select className="si" style={{ width: 130 }} value={srcFilter} onChange={e => setSrcFilter(e.target.value)}>
                     <option value="">All Sources</option>
-                    {activeSources.map(s => <option key={s}>{s}</option>)}
+                    {facetOptions(activeSources, facets.source, facets.blanks?.source, 'No Source')}
                   </select>
                   <select className="si" style={{ width: 130 }} value={stgFilter} onChange={e => setStgFilter(e.target.value)}>
                     <option value="">All Stages</option>
-                    {allEnabledStages.map(s => <option key={s}>{s}</option>)}
+                    {facetOptions(allEnabledStages, facets.stage, facets.blanks?.stage, 'No / Unknown Stage')}
                   </select>
                   <select className="si" style={{ width: 150 }} value={reqFilter} onChange={e => setReqFilter(e.target.value)}>
                     <option value="">All Requirements</option>
-                    {activeRequirements.map(r => <option key={r}>{r}</option>)}
+                    {facetOptions(activeRequirements, facets.requirement, facets.blanks?.requirement, 'No Requirement')}
                   </select>
                   {products.length > 0 && (
                     <select className="si" style={{ width: 150 }} value={prodFilter} onChange={e => setProdFilter(e.target.value)}>
@@ -1835,6 +1857,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                         <option value="my">My Leads</option>
                         <option value="unassigned">Unassigned</option>
                         {team.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+                        {(facets.assign || []).filter(f => f.v && !team.some(t => t.name === f.v)).map(f => <option key={`xa:${f.v}`} value={f.v}>{f.v} — not on team ({f.n})</option>)}
                       </>
                     ) : (
                       <>
@@ -2073,15 +2096,15 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               </div>
               <select className="si" style={{ width: 120, padding: '4px 8px' }} value={srcFilter} onChange={e => setSrcFilter(e.target.value)}>
                 <option value="">All Sources</option>
-                {activeSources.map(s => <option key={s}>{s}</option>)}
+                {facetOptions(activeSources, facets.source, facets.blanks?.source, 'No Source')}
               </select>
               <select className="si" style={{ width: 120, padding: '4px 8px' }} value={stgFilter} onChange={e => setStgFilter(e.target.value)}>
                 <option value="">All Stages</option>
-                {allEnabledStages.map(s => <option key={s}>{s}</option>)}
+                {facetOptions(allEnabledStages, facets.stage, facets.blanks?.stage, 'No / Unknown Stage')}
               </select>
               <select className="si" style={{ width: 145, padding: '4px 8px' }} value={reqFilter} onChange={e => setReqFilter(e.target.value)}>
                 <option value="">All Requirements</option>
-                {activeRequirements.map(r => <option key={r}>{r}</option>)}
+                {facetOptions(activeRequirements, facets.requirement, facets.blanks?.requirement, 'No Requirement')}
               </select>
               {products.length > 0 && (
                 <select className="si" style={{ width: 145, padding: '4px 8px' }} value={prodFilter} onChange={e => setProdFilter(e.target.value)}>
@@ -2097,6 +2120,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                     <option value="my">My Leads</option>
                     <option value="unassigned">Unassigned</option>
                     {team.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
+                    {(facets.assign || []).filter(f => f.v && !team.some(t => t.name === f.v)).map(f => <option key={`xa:${f.v}`} value={f.v}>{f.v} — not on team ({f.n})</option>)}
                   </>
                 ) : (
                   <>
@@ -2108,19 +2132,21 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
               </select>
           </div>
           <div className="kanban">
-          {activeStages.map(stage => {
-            const cards = filtered.filter(l => l.stage === stage);
+          {[...activeStages, ...(otherStageLeads.length ? ['__other__'] : [])].map(stage => {
+            const isOther = stage === '__other__';
+            const cards = isOther ? otherStageLeads : filtered.filter(l => l.stage === stage);
             const isOver = dragOverStage === stage;
             return (
               <div
                 key={stage}
                 className="kb-col"
                 style={{ background: isOver ? 'rgba(99,102,241,0.06)' : undefined, outline: isOver ? '2px dashed var(--accent)' : undefined, borderRadius: 8, transition: 'background 0.15s' }}
-                onDragOver={e => { e.preventDefault(); setDragOverStage(stage); }}
+                onDragOver={e => { if (isOther) return; e.preventDefault(); setDragOverStage(stage); }}
                 onDragLeave={() => setDragOverStage(null)}
                 onDrop={async e => {
                   e.preventDefault();
                   setDragOverStage(null);
+                  if (isOther) return; // "Other" isn't a real stage — drag cards OUT of it to fix them
                   const lid = dragLeadId.current;
                   if (!lid) return;
                   const lead = leads.find(l => l.id === lid);
@@ -2141,7 +2167,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                   toast(`Moved to ${stage}`, 'success');
                 }}
               >
-                <div className="kb-col-head">{stage} <span>{cards.length}</span></div>
+                <div className="kb-col-head">{isOther ? '⚠ Other / Unknown' : stage} <span>{cards.length}</span></div>
                 <div className="kb-col-cards">
                 {cards.map(l => (
                   <div
@@ -2213,6 +2239,7 @@ export default function LeadsView({ user, perms, ownerId, planEnforcement }) {
                 <div className="fg"><label>Stage</label>
                   <select value={form.stage} onChange={f('stage')}>
                     {!form.stage && <option value="">Select Stage</option>}
+                    {form.stage && !allEnabledStages.includes(form.stage) && <option value={form.stage}>{form.stage} (current — pick a new stage)</option>}
                     {allEnabledStages.map(s => <option key={s}>{s}</option>)}
                   </select>
                 </div>

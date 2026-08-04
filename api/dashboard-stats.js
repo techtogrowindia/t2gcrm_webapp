@@ -64,7 +64,9 @@ export default async function handler(req, res) {
       ? new Set(savedLeadStages) : null;
     const disabledSet = new Set(disabledStages || []);
     leads = leads.filter(l => {
-      if (stageSet && !stageSet.has(l.stage)) return false;
+      // Personal "visible stages" narrowing removed here: only a stage the
+      // business has DISABLED hides a lead, so a mistyped / blank / renamed
+      // stage still counts in the KPIs instead of silently disappearing.
       if (disabledSet.has(l.stage)) return false;
       return true;
     });

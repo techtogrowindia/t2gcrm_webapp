@@ -206,10 +206,10 @@ export default async function handler(req, res) {
         const savedLeadStages = profile.leadStages || null;
         const disabledStages = profile.disabledStages || [];
         const disabledSet = new Set(disabledStages);
-        if (Array.isArray(savedLeadStages) && savedLeadStages.length > 0) {
-          const vs = new Set(savedLeadStages);
-          result = result.filter(l => vs.has(l.stage) && !disabledSet.has(l.stage));
-        } else if (disabledSet.size > 0) {
+        // Only a DISABLED stage hides a lead on mobile now — a renamed,
+        // mistyped or blank stage must not silently disappear (the "missing
+        // leads" bug). Personal visible-stage narrowing is no longer applied.
+        if (disabledSet.size > 0) {
           result = result.filter(l => !disabledSet.has(l.stage));
         }
 
