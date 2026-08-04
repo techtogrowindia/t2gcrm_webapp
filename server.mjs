@@ -23,6 +23,7 @@ import dashboardWidgetsHandler from './api/dashboard-widgets.js';
 import fieldUsageHandler from './api/field-usage.js';
 import syncWonLeadsHandler from './api/sync-won-leads.js';
 import renameAssigneeHandler from './api/rename-assignee.js';
+import memberReassignHandler from './api/member-reassign.js';
 import leadCheckDuplicateHandler from './api/lead-check-duplicate.js';
 import leadLookupHandler from './api/lead-lookup.js';
 import leadFormConfigHandler from './api/lead-form-config.js';
@@ -87,6 +88,7 @@ app.all('/api/dashboard-widgets', wrap(dashboardWidgetsHandler));
 app.all('/api/field-usage', wrap(fieldUsageHandler));
 app.all('/api/sync-won-leads', wrap(syncWonLeadsHandler));
 app.all('/api/rename-assignee', wrap(renameAssigneeHandler));
+app.all('/api/member-reassign', wrap(memberReassignHandler));
 app.all('/api/lead-check-duplicate', wrap(leadCheckDuplicateHandler));
 // The mobile app calls this on every incoming call to show whether the caller
 // is already a lead. The file existed but was never routed, so it 404'd and the

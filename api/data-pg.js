@@ -24,6 +24,12 @@ const CASCADE = {
   quotes:    [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }],
   projects:  [{ table: 'activity_logs', field: 'entityId' }, { table: 'tasks', field: 'projectId' }, { table: 'expenses', field: 'projectId' }, { table: 'appointments', field: 'entityId' }],
   vendors:   [{ table: 'activity_logs', field: 'entityId' }, { table: 'appointments', field: 'entityId' }, { table: 'purchase_orders', field: 'vendorId' }],
+  // Deleting a team member must also delete their LOGIN, or the credential is
+  // left orphaned (it can still sign in, but resolves to a member that no longer
+  // exists — every lead they own then vanishes from visibility). This was the
+  // exact bug behind the arsenggsales4 orphan. Their assigned leads are NOT
+  // cascaded — those are reassigned first (the delete is blocked until they are).
+  teamMembers: [{ table: 'credentials', field: 'teamMemberId' }],
 };
 
 // ── InstantDB collection → Postgres table name ───────────────────

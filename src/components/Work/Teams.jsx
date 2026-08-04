@@ -103,6 +103,8 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
   const [roleForm, setRoleForm] = useState(EMPTY_ROLE);
   const [pwdForm, setPwdForm] = useState({ password: '', confirm: '' });
   const [pwdLoading, setPwdLoading] = useState(false);
+  const [reassignModal, setReassignModal] = useState(null); // { member, counts, targetId } — delete-guard
+  const [reassignBusy, setReassignBusy] = useState(false);
   const toast = useToast();
 
   const { data } = db.useQuery({
@@ -203,28 +205,64 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
     setModal(false);
   };
 
+  // The delete itself (routes through /api/data so the server cascade removes
+  // the login credential — otherwise the login is orphaned, which is what broke
+  // arsenggsales4). Throws on failure; callers handle the toast.
+  const performDelete = async (tid) => {
+    const res = await fetch('/api/data', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        module: 'teams', ownerId, actorId: user.id, userName: user.email,
+        id: tid, logText: 'Team member removed from CRM',
+      }),
+    });
+    if (!res.ok) throw new Error('Failed to remove member');
+  };
+
   const del = async (tid) => {
     if (!canDelete) { toast('Permission denied: cannot remove members', 'error'); return; }
-    if (!confirm('Remove this team member?\n\nThis will also permanently delete:\n• Login credentials (they can no longer sign in)\n• Attendance records\n• Performance stats\n• Activity logs')) return;
+    const member = team.find(t => t.id === tid);
+    if (!member) return;
+    // GUARD: never delete a member who still owns records — that orphans the
+    // leads (they vanish from visibility). Count what's assigned first.
+    let counts;
     try {
-      // Route through /api/data so cascade (credentials, attendance, memberStats, activityLogs) runs
-      const res = await fetch('/api/data', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          module: 'teams',
-          ownerId,
-          actorId: user.id,
-          userName: user.email,
-          id: tid,
-          logText: 'Team member removed from CRM'
-        })
+      const r = await fetch('/api/member-reassign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, action: 'count', fromId: member.id, fromName: member.name }),
       });
-      if (!res.ok) throw new Error('Failed to remove member');
-      toast('Member removed permanently', 'success');
-    } catch (e) {
-      toast('Error removing member', 'error');
-    }
+      if (!r.ok) throw new Error();
+      counts = await r.json();
+    } catch { toast('Could not check this member’s assigned records — try again', 'error'); return; }
+
+    if ((counts.total || 0) > 0) { setReassignModal({ member, counts, targetId: '' }); return; }
+
+    // Nothing assigned → safe to remove directly.
+    if (!confirm('Remove this team member?\n\nThis will also permanently delete their login credentials (they can no longer sign in).')) return;
+    try { await performDelete(tid); toast('Member removed permanently', 'success'); }
+    catch { toast('Error removing member', 'error'); }
+  };
+
+  // Reassign every record to the chosen member, THEN delete — the only path to
+  // remove a member who owns records, so nothing is ever left orphaned.
+  const confirmReassignAndDelete = async () => {
+    if (!reassignModal) return;
+    const { member, targetId } = reassignModal;
+    const target = team.find(t => t.id === targetId);
+    if (!target) { toast('Choose who to reassign the records to', 'error'); return; }
+    setReassignBusy(true);
+    try {
+      const rr = await fetch('/api/member-reassign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId, action: 'reassign', fromId: member.id, fromName: member.name, toId: target.id, toName: target.name }),
+      });
+      if (!rr.ok) throw new Error('reassign failed');
+      await performDelete(member.id);
+      toast(`Records moved to ${target.name} and member removed`, 'success');
+      setReassignModal(null);
+    } catch { toast('Reassign / remove failed — nothing was deleted', 'error'); }
+    finally { setReassignBusy(false); }
   };
   const toggleActive = async (m) => { 
     if (!canEdit) { toast('Permission denied', 'error'); return; }
@@ -636,6 +674,44 @@ export default function Teams({ user, ownerId, perms, planEnforcement }) {
               <button className="btn btn-secondary btn-sm" onClick={() => setPwdModal(null)}>Cancel</button>
               <button className="btn btn-primary btn-sm" onClick={handleSetPassword} disabled={pwdLoading}>
                 {pwdLoading ? 'Setting...' : '✅ Set Password'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {reassignModal && (
+        <div className="mo open">
+          <div className="mo-box" style={{ width: 440 }}>
+            <div className="mo-head">
+              <h3>Reassign before removing {reassignModal.member.name}</h3>
+              <button className="btn-icon" onClick={() => !reassignBusy && setReassignModal(null)}>✕</button>
+            </div>
+            <div className="mo-body">
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px', marginBottom: 16, fontSize: 12, color: '#991b1b' }}>
+                This member still owns records. They must be reassigned before removal — otherwise those leads would disappear from everyone’s view.
+              </div>
+              <ul style={{ margin: '0 0 16px', paddingLeft: 18, fontSize: 13 }}>
+                {Object.entries(reassignModal.counts.byCollection || {}).filter(([, n]) => n > 0).map(([c, n]) => (
+                  <li key={c}><strong>{n}</strong> {c}</li>
+                ))}
+              </ul>
+              <div className="fgrid">
+                <div className="fg span2">
+                  <label>Reassign all of them to</label>
+                  <select value={reassignModal.targetId} onChange={e => setReassignModal(m => ({ ...m, targetId: e.target.value }))}>
+                    <option value="">Select member…</option>
+                    {team.filter(t => t.id !== reassignModal.member.id && t.active !== false).map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="mo-foot">
+              <button className="btn btn-secondary btn-sm" disabled={reassignBusy} onClick={() => setReassignModal(null)}>Cancel</button>
+              <button className="btn btn-primary btn-sm" disabled={reassignBusy || !reassignModal.targetId} onClick={confirmReassignAndDelete}>
+                {reassignBusy ? 'Working…' : 'Reassign & Remove'}
               </button>
             </div>
           </div>
