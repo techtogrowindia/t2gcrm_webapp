@@ -149,7 +149,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                 return (
                   <tr key={i}>
                     <td style={{ ...td, textAlign: 'center' }}>{i + 1}</td>
-                    <td style={td}><div style={{ fontWeight: 600 }}>{it.name}</div>{it.desc && <div style={{ fontSize: '9px', color: '#333' }}>{it.desc}</div>}</td>
+                    <td style={td}><div style={{ fontWeight: 600 }}>{it.name}</div>{it.desc && <div style={{ fontSize: '9px', color: '#333', whiteSpace: 'pre-wrap' }}>{it.desc}</div>}</td>
                     <td style={{ ...td, textAlign: 'center' }}>{it.hsn || '-'}</td>
                     <td style={{ ...td, textAlign: 'center' }}>{it.qty} {it.unit || ''}</td>
                     <td style={{ ...td, textAlign: 'right' }}>{moneyNo(it.rate)}</td>
@@ -875,7 +875,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
                 <td style={{ padding: '14px 8px', fontSize: 13 }}>
                   <div><strong>{it.name}</strong></div>
                   {it.sku && <div style={{ fontSize: 10, color: '#000', marginTop: 2 }}>Code: {it.sku}</div>}
-                  {it.desc && <div style={{ fontSize: 11, color: '#000', marginTop: 2 }}>{it.desc}</div>}
+                  {it.desc && <div style={{ fontSize: 11, color: '#000', marginTop: 2, whiteSpace: 'pre-wrap' }}>{it.desc}</div>}
                 </td>
                 <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'center' }}>{it.qty} {it.unit || ''}</td>
                 <td style={{ padding: '14px 8px', fontSize: 13, textAlign: 'right' }}>{money(it.rate)}</td>
