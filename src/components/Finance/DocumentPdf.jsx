@@ -923,11 +923,11 @@ function GstDoc({ data, profile, type, settings }) {
           ))}
           </View>) : null}
 
-          {/* Spacer — grows to push the footer to the bottom of the fixed page */}
-          <View style={{ flexGrow: 1 }} />
-
-          {/* Bank details + declaration / signatory — pinned to page bottom */}
-          <View style={gz.footRow} wrap={false}>
+          {/* Bank details + declaration / signatory. Flows right after the
+              content (no grow-spacer) so a short invoice keeps everything on one
+              page instead of leaving a big gap and pushing this onto a second.
+              The fixed frame border still closes the page correctly. */}
+          <View style={[gz.footRow, { marginTop: 20 }]} wrap={false}>
             <View style={gz.bankCell}>
               {(profile?.bankName || profile?.qrCode) ? (<>
                 <Text style={gz.label}>Bank Details</Text>

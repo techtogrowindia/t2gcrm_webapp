@@ -222,11 +222,10 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
           </table>
           )}
 
-          {/* Spacer — grows to push the footer to the bottom of the fixed page */}
-          <div style={{ flex: 1 }} />
-
-          {/* Bank details + declaration/signatory — pinned to page bottom */}
-          <div style={{ display: 'flex', borderTop: bc, pageBreakInside: 'avoid' }}>
+          {/* Bank details + declaration/signatory. Flows right after the content
+              (no grow-spacer) so a short invoice keeps everything on one page
+              instead of leaving a big gap and pushing this onto a second. */}
+          <div style={{ display: 'flex', borderTop: bc, pageBreakInside: 'avoid', marginTop: 20 }}>
             <div style={{ width: '50%', borderRight: bc, padding: '8px', fontSize: '10px' }}>
               {(profile.bankName || profile.qrCode) && (<>
                 <div style={{ fontWeight: 700, marginBottom: 3 }}>Bank Details</div>
