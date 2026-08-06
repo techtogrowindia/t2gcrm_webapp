@@ -79,7 +79,7 @@ export default function DocumentTemplate({ data, profile, type = 'Invoice', prev
         ? data.shipTo
         : [(clientMatch.companyName || data.companyName || data.client), clientMatch.address].filter(Boolean).join('\n');
       return (
-        <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', color: '#000', border: bc, display: 'flex', flexDirection: 'column', minHeight: '258mm' }}>
+        <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', color: '#000', border: bc, display: 'flex', flexDirection: 'column' }}>
           <div style={{ textAlign: 'center', fontSize: '8px', borderBottom: bc, padding: '2px' }}>ORIGINAL FOR RECIPIENT</div>
           <div style={{ textAlign: 'center', fontWeight: 800, fontSize: '15px', padding: '6px', borderBottom: bc, letterSpacing: '1px' }}>{docTitle}</div>
           {showTax && !gstKnown && (
