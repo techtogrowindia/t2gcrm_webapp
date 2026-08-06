@@ -830,9 +830,10 @@ export default function Quotations({ user, perms, ownerId, settings }) {
                                 updates.rate = pMatch.rate || 0;
                                 updates.taxRate = pMatch.tax || 0;
                                 updates.unit = pMatch.unit || 'Nos';
+                                if (pMatch.hsn) updates.hsn = pMatch.hsn; // carry the product's HSN/SAC code onto the line
                                 // Carry the product's description onto the line so it prints on
                                 // every quotation/invoice format (prefer the detailed field).
-                                const pDesc = pMatch.description || pMatch.desc || '';
+                                const pDesc = pMatch.desc || pMatch.description || '';
                                 if (pDesc) updates.desc = pDesc;
                               }
                               const its = form.items.map((x, idx) => idx === i ? { ...x, ...updates } : x);
