@@ -1117,6 +1117,10 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                                 updates.rate = pMatch.rate || 0;
                                 updates.taxRate = pMatch.tax || 0;
                                 updates.unit = pMatch.unit || 'Nos';
+                                // Carry the product's description onto the line so it prints on
+                                // every invoice/quotation format (prefer the detailed field).
+                                const pDesc = pMatch.description || pMatch.desc || '';
+                                if (pDesc) updates.desc = pDesc;
                               }
                               const its = form.items.map((x, idx) => idx === i ? { ...x, ...updates } : x);
                               setForm(prev => {
@@ -1136,6 +1140,13 @@ export default function Invoices({ user, perms, ownerId, settings, planEnforceme
                             placeholder="Select Product"
                           />
                         </div>
+                        <textarea
+                          className="li-input"
+                          value={it.desc || ''}
+                          onChange={e => updateItem(i, 'desc', e.target.value)}
+                          placeholder="Description (auto-filled from the product; prints under the item on every format)"
+                          style={{ width: '100%', minHeight: 34, marginTop: 6, fontSize: 12, resize: 'vertical', whiteSpace: 'pre-wrap' }}
+                        />
                       </td>
                       <td><input className="li-input" value={it.hsn || ''} onChange={e => updateItem(i, 'hsn', e.target.value)} placeholder="HSN" style={{ width: 90 }} /></td>
                       <td><input className="li-input" type="number" value={it.qty} onChange={e => updateItem(i, 'qty', e.target.value)} style={{ width: 95, textAlign: 'center' }} /></td>
