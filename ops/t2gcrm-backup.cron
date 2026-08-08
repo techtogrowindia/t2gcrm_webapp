@@ -1,0 +1,8 @@
+# T2GCRM off-site Postgres backup -> Google Drive. Runs every 2 hours.
+# Deploy:  sudo cp ops/t2gcrm-backup.cron /etc/cron.d/t2gcrm-backup && sudo chmod 644 /etc/cron.d/t2gcrm-backup
+# NOTE: /etc/cron.d entries have a USER field (root) that a normal crontab does not.
+# Living in /etc/cron.d (a file) survives a wiped user crontab, and it is checked
+# into the repo so restoring it is one command.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 */2 * * * root /usr/local/bin/pg_backup_offsite.sh >> /var/log/t2gcrm-backup.log 2>&1
