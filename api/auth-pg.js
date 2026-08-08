@@ -190,12 +190,23 @@ export default async function handler(req, res) {
       const ordered = [...rows].sort(
         (a, b) => Number(!!a.is_team || !!a.is_partner) - Number(!!b.is_team || !!b.is_partner)
       );
+      // Match against BOTH the promoted `password_hash` column AND `doc.password`.
+      // The InstantDB->PG import left many owner rows with the real bcrypt hash in
+      // doc.password while the promoted column drifted to a different value — so
+      // checking only the column locked those owners out even with the correct
+      // password. Team rows created after cutover have a correct column, which is
+      // why "team can log in but owners can't". Accept either hash.
+      const hashesOf = (c) => [c.password_hash, c?.doc?.password]
+        .filter(h => typeof h === 'string' && h.startsWith('$2'));
       let cred = null;
       for (const c of ordered) {
-        if (c.password_hash && await bcrypt.compare(password, c.password_hash)) { cred = c; break; }
+        for (const h of hashesOf(c)) {
+          if (await bcrypt.compare(password, h)) { cred = c; break; }
+        }
+        if (cred) break;
       }
       if (!cred) {
-        if (!rows.some(c => c.password_hash))
+        if (!rows.some(c => hashesOf(c).length))
           return res.status(401).json({ error: 'No password set — use magic code to login' });
         return res.status(401).json({ error: 'Invalid email or password' });
       }
